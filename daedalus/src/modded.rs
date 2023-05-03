@@ -1,10 +1,10 @@
-use crate::{download_file, Error};
+use crate::{download_file, Branding, Error, BRANDING};
 
 use crate::minecraft::{
     Argument, ArgumentType, Library, VersionInfo, VersionType,
 };
 use chrono::{DateTime, Utc};
-use lazy_static::lazy_static;
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -17,14 +17,6 @@ pub const CURRENT_FABRIC_FORMAT_VERSION: usize = 0;
 pub const CURRENT_FORGE_FORMAT_VERSION: usize = 0;
 /// The latest version of the format the quilt model structs deserialize to
 pub const CURRENT_QUILT_FORMAT_VERSION: usize = 0;
-
-lazy_static! {
-    /// The dummy replace string library names, inheritsFrom, and version names should be replaced with
-    pub static ref DUMMY_REPLACE_STRING: String = format!(
-        "${{{}.gameVersion}}",
-        env!("BRAND_NAME")
-    );
-}
 
 /// A data variable entry that depends on the side of the installation
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
@@ -139,7 +131,10 @@ pub fn merge_partial_version(
         asset_index: merge.asset_index,
         assets: merge.assets,
         downloads: merge.downloads,
-        id: partial.id.replace(&*DUMMY_REPLACE_STRING, &merge_id),
+        id: partial.id.replace(
+            &BRANDING.get_or_init(Branding::default).dummy_replace_string,
+            &merge_id,
+        ),
         java_version: merge.java_version,
         libraries: partial
             .libraries
@@ -148,7 +143,12 @@ pub fn merge_partial_version(
             .map(|x| Library {
                 downloads: x.downloads,
                 extract: x.extract,
-                name: x.name.replace(&*DUMMY_REPLACE_STRING, &merge_id),
+                name: x.name.replace(
+                    &BRANDING
+                        .get_or_init(Branding::default)
+                        .dummy_replace_string,
+                    &merge_id,
+                ),
                 url: x.url,
                 natives: x.natives,
                 rules: x.rules,

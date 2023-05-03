@@ -1,3 +1,4 @@
+use daedalus::{Branding, BRANDING};
 use log::{error, info, warn};
 use s3::creds::Credentials;
 use s3::error::S3Error;
@@ -44,6 +45,12 @@ async fn main() {
 
         return;
     }
+
+    Branding::set_branding(Branding::new(
+        dotenvy::var("BRAND_NAME").unwrap(),
+        dotenvy::var("SUPPORT_EMAIL").unwrap(),
+    ))
+    .unwrap();
 
     let mut timer = tokio::time::interval(Duration::from_secs(60 * 60));
     let semaphore = Arc::new(Semaphore::new(10));

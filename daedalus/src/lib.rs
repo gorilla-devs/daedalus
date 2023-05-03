@@ -4,10 +4,55 @@
 
 #![warn(missing_docs, unused_import_braces, missing_debug_implementations)]
 
+use once_cell::sync::OnceCell;
+
 /// Models and methods for fetching metadata for Minecraft
 pub mod minecraft;
 /// Models and methods for fetching metadata for Minecraft mod loaders
 pub mod modded;
+
+/// Your branding, used for the user agent and similar
+#[derive(Debug)]
+pub struct Branding {
+    /// The name of your application
+    pub header_value: String,
+    /// The string to replace in the name of the application
+    pub dummy_replace_string: String,
+}
+
+/// The branding of your application
+pub static BRANDING: OnceCell<Branding> = OnceCell::new();
+
+impl Branding {
+    /// Creates a new branding instance
+    pub fn new(name: String, email: String) -> Branding {
+        let email = format!(
+            "{}/daedalus/{} <{}>",
+            name,
+            env!("CARGO_PKG_VERSION"),
+            email
+        );
+        let dummy_replace_string = format!("${{{}.gameVersion}}", name);
+
+        Branding {
+            header_value: email,
+            dummy_replace_string,
+        }
+    }
+
+    /// Returns the branding instance
+    pub fn set_branding(branding: Branding) -> Result<(), Error> {
+        BRANDING
+            .set(branding)
+            .map_err(|_| Error::BrandingAlreadySet)
+    }
+}
+
+impl Default for Branding {
+    fn default() -> Self {
+        Branding::new("unbranded".to_string(), "unbranded".to_string())
+    }
+}
 
 #[derive(thiserror::Error, Debug)]
 /// An error type representing possible errors when fetching metadata
@@ -39,6 +84,9 @@ pub enum Error {
     /// Error while parsing input
     #[error("{0}")]
     ParseError(String),
+    /// The branding has already been set
+    #[error("Branding already set")]
+    BrandingAlreadySet,
 }
 
 /// Converts a maven artifact to a path
@@ -152,12 +200,9 @@ pub async fn download_file(
     sha1: Option<&str>,
 ) -> Result<bytes::Bytes, Error> {
     let mut headers = reqwest::header::HeaderMap::new();
-    if let Ok(header) = reqwest::header::HeaderValue::from_str(&format!(
-        "{}/daedalus/{} ({})",
-        env!("BRAND_NAME"),
-        env!("CARGO_PKG_VERSION"),
-        env!("SUPPORT_EMAIL")
-    )) {
+    if let Ok(header) = reqwest::header::HeaderValue::from_str(
+        &BRANDING.get_or_init(Branding::default).header_value,
+    ) {
         headers.insert(reqwest::header::USER_AGENT, header);
     }
     let client = reqwest::Client::builder()
