@@ -273,12 +273,6 @@ struct LibraryPatch {
 
 /// Fetches the list of fabric versions
 async fn get_library_patches() -> Result<Vec<LibraryPatch>, Error> {
-    Ok(serde_json::from_slice(
-        tokio::fs::read_to_string(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("library-patches.json"),
-        )
-        .await?
-        .as_bytes(),
-    )?)
+    let patches = include_bytes!("../library-patches.json");
+    Ok(serde_json::from_slice(patches)?)
 }
