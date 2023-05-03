@@ -4,7 +4,6 @@ use crate::minecraft::{
     Argument, ArgumentType, Library, VersionInfo, VersionType,
 };
 use chrono::{DateTime, Utc};
-use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -29,7 +28,7 @@ pub struct SidedDataEntry {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// A partial version returned by fabric meta
 pub struct PartialVersionInfo {
@@ -67,7 +66,7 @@ pub struct PartialVersionInfo {
 
 /// A processor to be ran after downloading the files
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Processor {
     /// Maven coordinates for the JAR library of this processor.
     pub jar: String,
