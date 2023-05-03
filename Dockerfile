@@ -16,6 +16,7 @@ RUN apt-get update \
 RUN update-ca-certificates
 
 COPY --from=build /usr/src/daedalus/target/release/daedalus_client /daedalus/daedalus_client
+COPY --from=build /usr/src/daedalus/.env /daedalus/.env
 WORKDIR /daedalus_client
 
 CMD RUST_LOG=info /daedalus/daedalus_client
