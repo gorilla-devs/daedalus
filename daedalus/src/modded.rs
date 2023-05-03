@@ -19,7 +19,7 @@ pub const CURRENT_QUILT_FORMAT_VERSION: usize = 0;
 
 /// A data variable entry that depends on the side of the installation
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SidedDataEntry {
     /// The value on the client
     pub client: String,
