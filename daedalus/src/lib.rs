@@ -153,8 +153,10 @@ pub async fn download_file(
 ) -> Result<bytes::Bytes, Error> {
     let mut headers = reqwest::header::HeaderMap::new();
     if let Ok(header) = reqwest::header::HeaderValue::from_str(&format!(
-        "modrinth/daedalus/{} (support@modrinth.com)",
-        env!("CARGO_PKG_VERSION")
+        "{}/daedalus/{} ({})",
+        env!("BRAND_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        env!("SUPPORT_EMAIL")
     )) {
         headers.insert(reqwest::header::USER_AGENT, header);
     }

@@ -130,6 +130,9 @@ fn check_env_vars() -> bool {
     failed |= check_var::<String>("S3_REGION");
     failed |= check_var::<String>("S3_BUCKET_NAME");
 
+    failed |= check_var::<String>("BRAND_NAME");
+    failed |= check_var::<String>("SUPPORT_EMAIL");
+
     failed
 }
 

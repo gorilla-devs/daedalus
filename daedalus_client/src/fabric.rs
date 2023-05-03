@@ -49,7 +49,7 @@ pub async fn retrieve_data(
             |(stable, loader)| async {
                 {
                     if versions.iter().any(|x| {
-                        x.id == DUMMY_REPLACE_STRING
+                        x.id == *DUMMY_REPLACE_STRING
                             && x.loaders.iter().any(|x| x.id == loader)
                     }) {
                         return Ok(None);
@@ -82,7 +82,7 @@ pub async fn retrieve_data(
                             visited_artifacts_mutex.lock().await;
 
                         if visited_assets.contains(&lib.name) {
-                            lib.name = lib.name.replace(DUMMY_GAME_VERSION, DUMMY_REPLACE_STRING);
+                            lib.name = lib.name.replace(DUMMY_GAME_VERSION, &DUMMY_REPLACE_STRING);
                             lib.url = Some(format_url("maven/"));
 
                             return Ok(lib);
@@ -92,7 +92,7 @@ pub async fn retrieve_data(
                     }
 
                     if lib.name.contains(DUMMY_GAME_VERSION) {
-                        lib.name = lib.name.replace(DUMMY_GAME_VERSION, DUMMY_REPLACE_STRING);
+                        lib.name = lib.name.replace(DUMMY_GAME_VERSION, &DUMMY_REPLACE_STRING);
                         futures::future::try_join_all(list.game.clone().into_iter().map(|game_version| async {
                             let semaphore = semaphore.clone();
                             let uploaded_files_mutex = uploaded_files_mutex.clone();
@@ -101,7 +101,7 @@ pub async fn retrieve_data(
 
                             async move {
                                 let artifact_path =
-                                    daedalus::get_path_from_artifact(&lib_name.replace(DUMMY_REPLACE_STRING, &game_version.version))?;
+                                    daedalus::get_path_from_artifact(&lib_name.replace(&*DUMMY_REPLACE_STRING, &game_version.version))?;
 
                                 let artifact = download_file(
                                     &format!(
@@ -179,14 +179,14 @@ pub async fn retrieve_data(
                     arguments: version.arguments,
                     id: version
                         .id
-                        .replace(DUMMY_GAME_VERSION, DUMMY_REPLACE_STRING),
+                        .replace(DUMMY_GAME_VERSION, &DUMMY_REPLACE_STRING),
                     main_class: version.main_class,
                     release_time: version.release_time,
                     time: version.time,
                     type_: version.type_,
                     inherits_from: version
                         .inherits_from
-                        .replace(DUMMY_GAME_VERSION, DUMMY_REPLACE_STRING),
+                        .replace(DUMMY_GAME_VERSION, &DUMMY_REPLACE_STRING),
                     libraries: libs,
                     minecraft_arguments: version.minecraft_arguments,
                     processors: None,
@@ -218,7 +218,7 @@ pub async fn retrieve_data(
     let mut loader_version_mutex = loader_version_mutex.into_inner();
     if !loader_version_mutex.is_empty() {
         if let Some(version) =
-            versions.iter_mut().find(|x| x.id == DUMMY_REPLACE_STRING)
+            versions.iter_mut().find(|x| x.id == *DUMMY_REPLACE_STRING)
         {
             version.loaders.append(&mut loader_version_mutex);
         } else {

@@ -6,6 +6,7 @@ use daedalus::minecraft::{
 };
 use log::info;
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
@@ -25,9 +26,10 @@ pub async fn retrieve_data(
 
     let mut manifest =
         daedalus::minecraft::fetch_version_manifest(None).await?;
+
     let cloned_manifest = Arc::new(Mutex::new(manifest.clone()));
 
-    let patches = fetch_library_patches(None, semaphore.clone()).await?;
+    let patches = get_library_patches().await?;
     let cloned_patches = Arc::new(&patches);
 
     let visited_assets_mutex = Arc::new(Mutex::new(Vec::new()));
@@ -66,7 +68,10 @@ pub async fn retrieve_data(
                 let mut version_info =
                     daedalus::minecraft::fetch_version_info(version).await?;
 
-                fn patch_library(patches: &Vec<LibraryPatch>, mut library: Library) -> Vec<Library> {
+                fn patch_library(
+                    patches: &Vec<LibraryPatch>,
+                    mut library: Library,
+                ) -> Vec<Library> {
                     let mut val = Vec::new();
 
                     let actual_patches = patches
@@ -74,15 +79,20 @@ pub async fn retrieve_data(
                         .filter(|x| x.match_.contains(&library.name))
                         .collect::<Vec<_>>();
 
-                    if !actual_patches.is_empty()
-                    {
+                    if !actual_patches.is_empty() {
                         for patch in actual_patches {
                             if let Some(additional_libraries) =
                                 &patch.additional_libraries
                             {
                                 for additional_library in additional_libraries {
-                                    if patch.patch_additional_libraries.unwrap_or(false) {
-                                        let mut libs = patch_library(patches, additional_library.clone());
+                                    if patch
+                                        .patch_additional_libraries
+                                        .unwrap_or(false)
+                                    {
+                                        let mut libs = patch_library(
+                                            patches,
+                                            additional_library.clone(),
+                                        );
                                         val.append(&mut libs)
                                     } else {
                                         val.push(additional_library.clone());
@@ -262,16 +272,13 @@ struct LibraryPatch {
 }
 
 /// Fetches the list of fabric versions
-async fn fetch_library_patches(
-    url: Option<&str>,
-    semaphore: Arc<Semaphore>,
-) -> Result<Vec<LibraryPatch>, Error> {
+async fn get_library_patches() -> Result<Vec<LibraryPatch>, Error> {
     Ok(serde_json::from_slice(
-        &download_file(
-            url.unwrap_or(&format_url("library-patches.json")),
-            None,
-            semaphore,
+        tokio::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("library-patches.json"),
         )
-        .await?,
+        .await?
+        .as_bytes(),
     )?)
 }
