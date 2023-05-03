@@ -103,7 +103,7 @@ pub async fn fetch_version_manifest(
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Information about the assets of the game
 pub struct AssetIndex {
@@ -120,7 +120,7 @@ pub struct AssetIndex {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone)]
 #[serde(rename_all = "snake_case")]
 /// The type of download
 pub enum DownloadType {
@@ -137,7 +137,7 @@ pub enum DownloadType {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 /// Download information of a file
 pub struct Download {
     /// The SHA1 hash of the file
@@ -261,7 +261,7 @@ pub struct LibraryExtract {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Information about the java version the game needs
 pub struct JavaVersion {
@@ -397,7 +397,7 @@ pub enum ArgumentType {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Information about a version
 pub struct VersionInfo {
@@ -451,7 +451,7 @@ pub async fn fetch_version_info(
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 /// An asset of the game
 pub struct Asset {
     /// The SHA1 hash of the asset file
@@ -461,7 +461,7 @@ pub struct Asset {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 /// An index containing all assets the game needs
 pub struct AssetsIndex {
     /// A hashmap containing the filename (key) and asset (value)
