@@ -24,3 +24,6 @@ tokio = { version = "1", features = ["full"] }
 sha1 = { version = "0.6.1", features = ["std"] }
 bincode = { version = "2.0.0-rc.2", features = ["serde"], optional = true }
 lazy_static = "1.4.0"
+
+[build-dependencies]
+dotenvy = "0.15.6"
