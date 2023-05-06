@@ -152,9 +152,8 @@ pub struct Download {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// Download information of a library
 pub struct LibraryDownload {
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// The path that the library should be saved to
-    pub path: Option<String>,
+    pub path: String,
     /// The SHA1 hash of the library
     pub sha1: String,
     /// The size of the library
