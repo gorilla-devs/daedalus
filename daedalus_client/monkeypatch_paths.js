@@ -51,11 +51,9 @@ for (patch of patches) {
         lib.downloads.artifact.path = libPath;
       }
       if (lib.downloads.classifiers) {
-        for (_classifier in lib.downloads.classifiers) {
-          let classifier = "natives-" + _classifier.split("-")[1];
-
+        for (classifier in lib.downloads.classifiers) {
           let libPath = generate_lib_path(lib.name || fallbackName, classifier);
-          lib.downloads.classifiers[_classifier].path = libPath;
+          lib.downloads.classifiers[classifier].path = libPath;
         }
       }
     }
@@ -67,14 +65,12 @@ for (patch of patches) {
       lib.downloads.artifact.path = libPath;
     }
     if (lib.downloads.classifiers) {
-      for (_classifier in lib.downloads.classifiers) {
-        let classifier = "natives-" + _classifier.split("-")[1];
-
+      for (classifier in lib.downloads.classifiers) {
         let libPath = generate_lib_path(lib.name || fallbackName, classifier);
-        lib.downloads.classifiers[_classifier].path = libPath;
+        lib.downloads.classifiers[classifier].path = libPath;
       }
     }
   }
 }
 
-fs.writeFileSync("library-patches-out.json", JSON.stringify(patches, null, 2));
+fs.writeFileSync("library-patches.json", JSON.stringify(patches, null, 2));

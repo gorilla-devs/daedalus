@@ -94,19 +94,19 @@
             "sha1": "5189eb40db3087fb11ca063b68fa4f4c20b199dd",
             "size": 10031,
             "url": "https://github.com/r58Playz/jinput-m1/raw/main/plugins/OSX/bin/jinput-platform-2.0.5.jar",
-            "path": "net/java/jinput/jinput-platform/2.0.5/jinput-platform-2.0.5-natives-osx.jar"
+            "path": "net/java/jinput/jinput-platform/2.0.5/jinput-platform-2.0.5-natives-osx-arm64.jar"
           },
           "natives-linux-arm64": {
             "sha1": "42b388ccb7c63cec4e9f24f4dddef33325f8b212",
             "size": 10932,
             "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm64/raw/lwjgl-2.9.4/jinput-platform-2.0.5-natives-linux.jar",
-            "path": "net/java/jinput/jinput-platform/2.0.5/jinput-platform-2.0.5-natives-linux.jar"
+            "path": "net/java/jinput/jinput-platform/2.0.5/jinput-platform-2.0.5-natives-linux-arm64.jar"
           },
           "natives-linux-arm32": {
             "sha1": "f3c455b71c5146acb5f8a9513247fc06db182fd5",
             "size": 4521,
             "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm32/raw/lwjgl-2.9.4/jinput-platform-2.0.5-natives-linux.jar",
-            "path": "net/java/jinput/jinput-platform/2.0.5/jinput-platform-2.0.5-natives-linux.jar"
+            "path": "net/java/jinput/jinput-platform/2.0.5/jinput-platform-2.0.5-natives-linux-arm32.jar"
           }
         }
       },
@@ -316,19 +316,19 @@
             "sha1": "eff546c0b319d6ffc7a835652124c18089c67f36",
             "size": 488316,
             "url": "https://github.com/MinecraftMachina/lwjgl/releases/download/2.9.4-20150209-mmachina.2/lwjgl-platform-2.9.4-nightly-20150209-natives-osx.jar",
-            "path": "org/lwjgl/lwjgl/lwjgl-platform/2.9.4-nightly-20150209/lwjgl-platform-2.9.4-nightly-20150209-natives-osx.jar"
+            "path": "org/lwjgl/lwjgl/lwjgl-platform/2.9.4-nightly-20150209/lwjgl-platform-2.9.4-nightly-20150209-natives-osx-arm64.jar"
           },
           "natives-linux-arm64": {
             "sha1": "63ac7da0f4a4785c7eadc0f8edc1e9dcc4dd08cb",
             "size": 579979,
             "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm64/raw/lwjgl-2.9.4/lwjgl-platform-2.9.4-nightly-20150209-natives-linux.jar",
-            "path": "org/lwjgl/lwjgl/lwjgl-platform/2.9.4-nightly-20150209/lwjgl-platform-2.9.4-nightly-20150209-natives-linux.jar"
+            "path": "org/lwjgl/lwjgl/lwjgl-platform/2.9.4-nightly-20150209/lwjgl-platform-2.9.4-nightly-20150209-natives-linux-arm64.jar"
           },
           "natives-linux-arm32": {
             "sha1": "fa483e540a9a753a5ffbb23dcf7879a5bf752611",
             "size": 475177,
             "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm32/raw/lwjgl-2.9.4/lwjgl-platform-2.9.4-nightly-20150209-natives-linux.jar",
-            "path": "org/lwjgl/lwjgl/lwjgl-platform/2.9.4-nightly-20150209/lwjgl-platform-2.9.4-nightly-20150209-natives-linux.jar"
+            "path": "org/lwjgl/lwjgl/lwjgl-platform/2.9.4-nightly-20150209/lwjgl-platform-2.9.4-nightly-20150209-natives-linux-arm32.jar"
           }
         }
       },
@@ -405,7 +405,7 @@
               "sha1": "074ad243761147df0d060fbefc814614d2ff75cc",
               "size": 85072,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm64/raw/lwjgl-3.2.2/lwjgl-glfw-natives-linux-arm64.jar",
-              "path": "org/lwjgl/lwjgl-glfw/3.2.2-gman64.1/lwjgl-glfw-3.2.2-gman64.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-glfw/3.2.2-gman64.1/lwjgl-glfw-3.2.2-gman64.1-natives-linux-arm64.jar"
             }
           }
         },
@@ -454,7 +454,7 @@
               "sha1": "4265f2fbe3b9d642591165165a17cf406cf7b98e",
               "size": 80186,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm32/raw/lwjgl-3.2.2/lwjgl-glfw-natives-linux-arm32.jar",
-              "path": "org/lwjgl/lwjgl-glfw/3.2.2-gman32.1/lwjgl-glfw-3.2.2-gman32.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-glfw/3.2.2-gman32.1/lwjgl-glfw-3.2.2-gman32.1-natives-linux-arm32.jar"
             }
           }
         },
@@ -503,7 +503,7 @@
               "sha1": "71d793d0a5a42e3dfe78eb882abc2523a2c6b496",
               "size": 129076,
               "url": "https://github.com/MinecraftMachina/lwjgl3/releases/download/3.3.1-mmachina.1/lwjgl-glfw-natives-macos-arm64.jar",
-              "path": "org/lwjgl/lwjgl-glfw/3.3.1-mmachina.1/lwjgl-glfw-3.3.1-mmachina.1-natives-osx.jar"
+              "path": "org/lwjgl/lwjgl-glfw/3.3.1-mmachina.1/lwjgl-glfw-3.3.1-mmachina.1-natives-osx-arm64.jar"
             }
           }
         },
@@ -588,7 +588,7 @@
               "sha1": "762d7d80c9cdf3a3f3fc80c8a5f86612255edfe0",
               "size": 156343,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm64/raw/lwjgl-3.2.2/lwjgl-jemalloc-patched-natives-linux-arm64.jar",
-              "path": "org/lwjgl/lwjgl-jemalloc/3.2.2-gman64.2/lwjgl-jemalloc-3.2.2-gman64.2-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-jemalloc/3.2.2-gman64.2/lwjgl-jemalloc-3.2.2-gman64.2-natives-linux-arm64.jar"
             }
           }
         },
@@ -637,7 +637,7 @@
               "sha1": "9163a2a5559ef87bc13ead8fea84417ea3928748",
               "size": 134237,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm32/raw/lwjgl-3.2.2/lwjgl-jemalloc-natives-linux-arm32.jar",
-              "path": "org/lwjgl/lwjgl-jemalloc/3.2.2-gman32.1/lwjgl-jemalloc-3.2.2-gman32.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-jemalloc/3.2.2-gman32.1/lwjgl-jemalloc-3.2.2-gman32.1-natives-linux-arm32.jar"
             }
           }
         },
@@ -686,7 +686,7 @@
               "sha1": "b0be721188d2e7195798780b1c5fe7eafe8091c1",
               "size": 103478,
               "url": "https://github.com/MinecraftMachina/lwjgl3/releases/download/3.3.1-mmachina.1/lwjgl-jemalloc-natives-macos-arm64.jar",
-              "path": "org/lwjgl/lwjgl-jemalloc/3.3.1-mmachina.1/lwjgl-jemalloc-3.3.1-mmachina.1-natives-osx.jar"
+              "path": "org/lwjgl/lwjgl-jemalloc/3.3.1-mmachina.1/lwjgl-jemalloc-3.3.1-mmachina.1-natives-osx-arm64.jar"
             }
           }
         },
@@ -771,7 +771,7 @@
               "sha1": "948e415b5b2a2c650c25b377a4a9f443b21ce92e",
               "size": 469432,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm64/raw/lwjgl-3.2.2/lwjgl-openal-natives-linux-arm64.jar",
-              "path": "org/lwjgl/lwjgl-openal/3.2.2-gman64.1/lwjgl-openal-3.2.2-gman64.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-openal/3.2.2-gman64.1/lwjgl-openal-3.2.2-gman64.1-natives-linux-arm64.jar"
             }
           }
         },
@@ -820,7 +820,7 @@
               "sha1": "ecbc981fdd996492a1f6334f003ed62e5a8c0cd5",
               "size": 398418,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm32/raw/lwjgl-3.2.2/lwjgl-openal-natives-linux-arm32.jar",
-              "path": "org/lwjgl/lwjgl-openal/3.2.2-gman32.1/lwjgl-openal-3.2.2-gman32.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-openal/3.2.2-gman32.1/lwjgl-openal-3.2.2-gman32.1-natives-linux-arm32.jar"
             }
           }
         },
@@ -869,7 +869,7 @@
               "sha1": "6b80fc0b982a0723b141e88859c42d6f71bd723f",
               "size": 346131,
               "url": "https://github.com/MinecraftMachina/lwjgl3/releases/download/3.3.1-mmachina.1/lwjgl-openal-natives-macos-arm64.jar",
-              "path": "org/lwjgl/lwjgl-openal/3.3.1-mmachina.1/lwjgl-openal-3.3.1-mmachina.1-natives-osx.jar"
+              "path": "org/lwjgl/lwjgl-openal/3.3.1-mmachina.1/lwjgl-openal-3.3.1-mmachina.1-natives-osx-arm64.jar"
             }
           }
         },
@@ -954,7 +954,7 @@
               "sha1": "bd40897077bf7d12f562da898b18ac2c68e1f9d7",
               "size": 56109,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm64/raw/lwjgl-3.2.2/lwjgl-opengl-natives-linux-arm64.jar",
-              "path": "org/lwjgl/lwjgl-opengl/3.2.2-gman64.1/lwjgl-opengl-3.2.2-gman64.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-opengl/3.2.2-gman64.1/lwjgl-opengl-3.2.2-gman64.1-natives-linux-arm64.jar"
             }
           }
         },
@@ -1003,7 +1003,7 @@
               "sha1": "3af5599c74dd76dd8dbb567b3f9b4963a6abeed5",
               "size": 56388,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm32/raw/lwjgl-3.2.2/lwjgl-opengl-natives-linux-arm32.jar",
-              "path": "org/lwjgl/lwjgl-opengl/3.2.2-gman32.1/lwjgl-opengl-3.2.2-gman32.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-opengl/3.2.2-gman32.1/lwjgl-opengl-3.2.2-gman32.1-natives-linux-arm32.jar"
             }
           }
         },
@@ -1052,7 +1052,7 @@
               "sha1": "bb575058e0372f515587b5d2d04ff7db185f3ffe",
               "size": 41667,
               "url": "https://github.com/MinecraftMachina/lwjgl3/releases/download/3.3.1-mmachina.1/lwjgl-opengl-natives-macos-arm64.jar",
-              "path": "org/lwjgl/lwjgl-opengl/3.3.1-mmachina.1/lwjgl-opengl-3.3.1-mmachina.1-natives-osx.jar"
+              "path": "org/lwjgl/lwjgl-opengl/3.3.1-mmachina.1/lwjgl-opengl-3.3.1-mmachina.1-natives-osx-arm64.jar"
             }
           }
         },
@@ -1137,7 +1137,7 @@
               "sha1": "077efa7d7ea41b32df5c6078e912e724cccd06db",
               "size": 202038,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm64/raw/lwjgl-3.2.2/lwjgl-stb-natives-linux-arm64.jar",
-              "path": "org/lwjgl/lwjgl-stb/3.2.2-gman64.1/lwjgl-stb-3.2.2-gman64.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-stb/3.2.2-gman64.1/lwjgl-stb-3.2.2-gman64.1-natives-linux-arm64.jar"
             }
           }
         },
@@ -1186,7 +1186,7 @@
               "sha1": "ec9d70aaebd0ff76dfeecf8f00b56118bf3706b1",
               "size": 149387,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm32/raw/lwjgl-3.2.2/lwjgl-stb-natives-linux-arm32.jar",
-              "path": "org/lwjgl/lwjgl-stb/3.2.2-gman32.1/lwjgl-stb-3.2.2-gman32.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-stb/3.2.2-gman32.1/lwjgl-stb-3.2.2-gman32.1-natives-linux-arm32.jar"
             }
           }
         },
@@ -1235,7 +1235,7 @@
               "sha1": "98f0ad956c754723ef354d50057cc30417ef376a",
               "size": 178409,
               "url": "https://github.com/MinecraftMachina/lwjgl3/releases/download/3.3.1-mmachina.1/lwjgl-stb-natives-macos-arm64.jar",
-              "path": "org/lwjgl/lwjgl-stb/3.3.1-mmachina.1/lwjgl-stb-3.3.1-mmachina.1-natives-osx.jar"
+              "path": "org/lwjgl/lwjgl-stb/3.3.1-mmachina.1/lwjgl-stb-3.3.1-mmachina.1-natives-osx-arm64.jar"
             }
           }
         },
@@ -1320,7 +1320,7 @@
               "sha1": "37c744ca289b5d7ae155d79e39029488b3254e5b",
               "size": 37893,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm64/raw/lwjgl-3.2.2/lwjgl-tinyfd-natives-linux-arm64.jar",
-              "path": "org/lwjgl/lwjgl-tinyfd/3.2.2-gman64.1/lwjgl-tinyfd-3.2.2-gman64.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-tinyfd/3.2.2-gman64.1/lwjgl-tinyfd-3.2.2-gman64.1-natives-linux-arm64.jar"
             }
           }
         },
@@ -1369,7 +1369,7 @@
               "sha1": "82d16054ada6633297a3108fb6d8bae98800c76f",
               "size": 41663,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm32/raw/lwjgl-3.2.2/lwjgl-tinyfd-natives-linux-arm32.jar",
-              "path": "org/lwjgl/lwjgl-tinyfd/3.2.2-gman32.1/lwjgl-tinyfd-3.2.2-gman32.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl-tinyfd/3.2.2-gman32.1/lwjgl-tinyfd-3.2.2-gman32.1-natives-linux-arm32.jar"
             }
           }
         },
@@ -1418,7 +1418,7 @@
               "sha1": "015b931a2daba8f0c317d84c9d14e8e98ae56e0c",
               "size": 41384,
               "url": "https://github.com/MinecraftMachina/lwjgl3/releases/download/3.3.1-mmachina.1/lwjgl-tinyfd-natives-macos-arm64.jar",
-              "path": "org/lwjgl/lwjgl-tinyfd/3.3.1-mmachina.1/lwjgl-tinyfd-3.3.1-mmachina.1-natives-osx.jar"
+              "path": "org/lwjgl/lwjgl-tinyfd/3.3.1-mmachina.1/lwjgl-tinyfd-3.3.1-mmachina.1-natives-osx-arm64.jar"
             }
           }
         },
@@ -1503,7 +1503,7 @@
               "sha1": "612efd57d12b2e48e554858eb35e7e2eb46ebb4c",
               "size": 87121,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm64/raw/lwjgl-3.2.2/lwjgl-natives-linux-arm64.jar",
-              "path": "org/lwjgl/lwjgl/3.2.2-gman64.1/lwjgl-3.2.2-gman64.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl/3.2.2-gman64.1/lwjgl-3.2.2-gman64.1-natives-linux-arm64.jar"
             }
           }
         },
@@ -1552,7 +1552,7 @@
               "sha1": "6bd0b37fef777a309936a72dc7f63126e8c79ea5",
               "size": 90296,
               "url": "https://github.com/theofficialgman/lwjgl3-binaries-arm32/raw/lwjgl-3.2.2/lwjgl-natives-linux-arm32.jar",
-              "path": "org/lwjgl/lwjgl/3.2.2-gman32.1/lwjgl-3.2.2-gman32.1-natives-linux.jar"
+              "path": "org/lwjgl/lwjgl/3.2.2-gman32.1/lwjgl-3.2.2-gman32.1-natives-linux-arm32.jar"
             }
           }
         },
@@ -1601,7 +1601,7 @@
               "sha1": "984df31fadaab86838877b112e5b4e4f68a00ccf",
               "size": 42693,
               "url": "https://github.com/MinecraftMachina/lwjgl3/releases/download/3.3.1-mmachina.1/lwjgl-natives-macos-arm64.jar",
-              "path": "org/lwjgl/lwjgl/3.3.1-mmachina.1/lwjgl-3.3.1-mmachina.1-natives-osx.jar"
+              "path": "org/lwjgl/lwjgl/3.3.1-mmachina.1/lwjgl-3.3.1-mmachina.1-natives-osx-arm64.jar"
             }
           }
         },
