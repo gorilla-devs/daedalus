@@ -2,11 +2,12 @@ use crate::download_file;
 use crate::{format_url, upload_file_to_bucket, Error};
 use daedalus::get_hash;
 use daedalus::minecraft::{
-    merge_partial_library, Library, PartialLibrary, VersionManifest,
+    merge_partial_library, Library, MinecraftJavaProfile, PartialLibrary,
+    VersionInfo, VersionManifest,
 };
 use log::info;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
@@ -71,6 +72,7 @@ pub async fn retrieve_data(
                 fn patch_library(
                     patches: &Vec<LibraryPatch>,
                     mut library: Library,
+                    version_info: &VersionInfo,
                 ) -> Vec<Library> {
                     let mut val = Vec::new();
 
@@ -81,6 +83,15 @@ pub async fn retrieve_data(
 
                     if !actual_patches.is_empty() {
                         for patch in actual_patches {
+                            println!("{} {}", version_info.id, patch._comment);
+
+                            if let Some(override_) = &patch.override_ {
+                                library = merge_partial_library(
+                                    override_.clone(),
+                                    library,
+                                );
+                            }
+
                             if let Some(additional_libraries) =
                                 &patch.additional_libraries
                             {
@@ -92,17 +103,13 @@ pub async fn retrieve_data(
                                         let mut libs = patch_library(
                                             patches,
                                             additional_library.clone(),
+                                            version_info,
                                         );
                                         val.append(&mut libs)
                                     } else {
                                         val.push(additional_library.clone());
                                     }
                                 }
-                            } else if let Some(override_) = &patch.override_ {
-                                library = merge_partial_library(
-                                    override_.clone(),
-                                    library,
-                                );
                             }
                         }
 
@@ -115,8 +122,9 @@ pub async fn retrieve_data(
                 }
 
                 let mut new_libraries = Vec::new();
-                for library in version_info.libraries {
-                    let mut libs = patch_library(&patches, library);
+                for library in version_info.libraries.clone() {
+                    let mut libs =
+                        patch_library(&patches, library, &version_info);
                     new_libraries.append(&mut libs)
                 }
                 version_info.libraries = new_libraries;
@@ -153,6 +161,27 @@ pub async fn retrieve_data(
                         Some(version_info.asset_index.sha1.clone());
                     cloned_manifest.versions[position].assets_index_url =
                         Some(format_url(&assets_path));
+                    cloned_manifest.versions[position].java_profile = {
+                        let java_version = version_info.java_version.as_ref();
+
+                        if let Some(java_version) = java_version {
+                            match MinecraftJavaProfile::try_from(
+                                &*java_version.component,
+                            ) {
+                                Ok(x) => Some(x),
+                                Err(_) => {
+                                    info!(
+                                        "Unknown java version: {}",
+                                        java_version.component
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            Some(MinecraftJavaProfile::JRELegacy)
+                        }
+                    };
+
                     cloned_manifest.versions[position].sha1 = version_info_hash;
                 }
 

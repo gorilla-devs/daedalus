@@ -3,6 +3,7 @@ use crate::{download_file, Error};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::convert::TryFrom;
 
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
@@ -60,13 +61,61 @@ pub struct Version {
     /// Whether the version supports the latest player safety features
     pub compliance_level: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// (Modrinth Provided) The link to the assets index for this version
-    /// This is only available when using the Modrinth mirror
+    /// (GDLauncher Provided) The link to the assets index for this version
+    /// This is only available when using the GDLauncher mirror
     pub assets_index_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// (Modrinth Provided) The SHA1 hash of the assets index for this version
-    /// This is only available when using the Modrinth mirror
+    /// (GDLauncher Provided) The SHA1 hash of the assets index for this version
+    /// This is only available when using the GDLauncher mirror
     pub assets_index_sha1: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// (GDLauncher Provided) The java profile required to run this mc version
+    pub java_profile: Option<MinecraftJavaProfile>,
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+/// Java profile required to run this mc version
+pub enum MinecraftJavaProfile {
+    /// Java 8
+    JRELegacy,
+    /// Java 16
+    JavaRuntimeAlpha,
+    /// Java 17
+    JavaRuntimeBeta,
+    /// Java 17
+    JavaRuntimeGamma,
+    /// Java 14
+    MinecraftJavaExe,
+}
+
+impl MinecraftJavaProfile {
+    /// Converts the version type to a string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MinecraftJavaProfile::JRELegacy => "jre-legacy",
+            MinecraftJavaProfile::JavaRuntimeAlpha => "java-runtime-alpha",
+            MinecraftJavaProfile::JavaRuntimeBeta => "java-runtime-beta",
+            MinecraftJavaProfile::JavaRuntimeGamma => "java-runtime-gamma",
+            MinecraftJavaProfile::MinecraftJavaExe => "minecraft-java-exe",
+        }
+    }
+}
+
+impl TryFrom<&str> for MinecraftJavaProfile {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "jre-legacy" => Ok(MinecraftJavaProfile::JRELegacy),
+            "java-runtime-alpha" => Ok(MinecraftJavaProfile::JavaRuntimeAlpha),
+            "java-runtime-beta" => Ok(MinecraftJavaProfile::JavaRuntimeBeta),
+            "java-runtime-gamma" => Ok(MinecraftJavaProfile::JavaRuntimeGamma),
+            "minecraft-java-exe" => Ok(MinecraftJavaProfile::MinecraftJavaExe),
+            _ => Err(Error::InvalidMinecraftJavaProfile(value.to_string())),
+        }
+    }
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
@@ -326,7 +375,24 @@ pub fn merge_partial_library(
     mut merge: Library,
 ) -> Library {
     if let Some(downloads) = partial.downloads {
-        merge.downloads = Some(downloads)
+        if let Some(merge_downloads) = &mut merge.downloads {
+            if let Some(artifact) = downloads.artifact {
+                merge_downloads.artifact = Some(artifact);
+            }
+            if let Some(classifiers) = downloads.classifiers {
+                if let Some(merge_classifiers) =
+                    &mut merge_downloads.classifiers
+                {
+                    for classifier in classifiers {
+                        merge_classifiers.insert(classifier.0, classifier.1);
+                    }
+                } else {
+                    merge_downloads.classifiers = Some(classifiers);
+                }
+            }
+        } else {
+            merge.downloads = Some(downloads)
+        }
     }
     if let Some(extract) = partial.extract {
         merge.extract = Some(extract)
@@ -338,10 +404,22 @@ pub fn merge_partial_library(
         merge.url = Some(url)
     }
     if let Some(natives) = partial.natives {
-        merge.natives = Some(natives)
+        if let Some(merge_natives) = &mut merge.natives {
+            for native in natives {
+                merge_natives.insert(native.0, native.1);
+            }
+        } else {
+            merge.natives = Some(natives);
+        }
     }
     if let Some(rules) = partial.rules {
-        merge.rules = Some(rules)
+        if let Some(merge_rules) = &mut merge.rules {
+            for rule in rules {
+                merge_rules.push(rule);
+            }
+        } else {
+            merge.rules = Some(rules)
+        }
     }
     if let Some(checksums) = partial.checksums {
         merge.checksums = Some(checksums)

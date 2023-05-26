@@ -87,6 +87,9 @@ pub enum Error {
     /// The branding has already been set
     #[error("Branding already set")]
     BrandingAlreadySet,
+    /// Invalid Minecraft Java Profile
+    #[error("Invalid Minecraft Java Profile")]
+    InvalidMinecraftJavaProfile(String),
 }
 
 /// Converts a maven artifact to a path
