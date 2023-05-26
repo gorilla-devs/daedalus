@@ -2,8 +2,8 @@ use crate::download_file;
 use crate::{format_url, upload_file_to_bucket, Error};
 use daedalus::get_hash;
 use daedalus::minecraft::{
-    merge_partial_library, Library, MinecraftJavaProfile, PartialLibrary,
-    VersionInfo, VersionManifest,
+    merge_partial_library, JavaVersion, Library, MinecraftJavaProfile,
+    PartialLibrary, VersionInfo, VersionManifest,
 };
 use log::info;
 use serde::Deserialize;
@@ -129,6 +129,34 @@ pub async fn retrieve_data(
                 }
                 version_info.libraries = new_libraries;
 
+                // Patch java version
+                version_info.java_version = {
+                    if let Some(java_version) = &version_info.java_version {
+                        match MinecraftJavaProfile::try_from(
+                            &*java_version.component,
+                        ) {
+                            Ok(java_version) => Some(JavaVersion {
+                                component: java_version.as_str().to_string(),
+                                major_version: 0,
+                            }),
+                            Err(err) => {
+                                println!(
+                                    "Unknown java version \"{}\": {}",
+                                    java_version.component, err
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        Some(JavaVersion {
+                            component: MinecraftJavaProfile::JRELegacy
+                                .as_str()
+                                .to_string(),
+                            major_version: 0,
+                        })
+                    }
+                };
+
                 let version_info_hash = get_hash(bytes::Bytes::from(
                     serde_json::to_vec(&version_info)?,
                 ))
@@ -161,26 +189,11 @@ pub async fn retrieve_data(
                         Some(version_info.asset_index.sha1.clone());
                     cloned_manifest.versions[position].assets_index_url =
                         Some(format_url(&assets_path));
-                    cloned_manifest.versions[position].java_profile = {
-                        let java_version = version_info.java_version.as_ref();
-
-                        if let Some(java_version) = java_version {
-                            match MinecraftJavaProfile::try_from(
-                                &*java_version.component,
-                            ) {
-                                Ok(x) => Some(x),
-                                Err(_) => {
-                                    info!(
-                                        "Unknown java version: {}",
-                                        java_version.component
-                                    );
-                                    None
-                                }
-                            }
-                        } else {
-                            Some(MinecraftJavaProfile::JRELegacy)
-                        }
-                    };
+                    cloned_manifest.versions[position].java_profile =
+                        version_info.java_version.as_ref().map(|x| {
+                            MinecraftJavaProfile::try_from(&*x.component)
+                                .expect("Safe to unwrap since we ensure it's valid in version_json already")
+                        });
 
                     cloned_manifest.versions[position].sha1 = version_info_hash;
                 }
