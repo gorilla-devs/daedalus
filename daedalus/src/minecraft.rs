@@ -225,7 +225,7 @@ pub struct LibraryDownloads {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 /// The action a rule can follow
 pub enum RuleAction {
