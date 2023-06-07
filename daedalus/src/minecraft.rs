@@ -369,6 +369,27 @@ pub struct PartialLibrary {
     pub include_in_classpath: Option<bool>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// A dependency rule, either suggests or equals
+pub enum DependencyRule {
+    /// A rule to specify the version exactly
+    Equals(String),
+    /// A rule to suggest a soft requirement
+    Suggests(String),
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+/// A library dependency to help resolve rules
+pub struct Dependency {
+    /// a component uid like `"org.lwjgl"`
+    pub uid: String,
+    /// a rule to specify the version exactly
+    pub rule: DependencyRule,
+}
+
 /// Merges a partial library to make a complete library
 pub fn merge_partial_library(
     partial: PartialLibrary,
@@ -494,6 +515,8 @@ pub struct VersionInfo {
     pub java_version: Option<JavaVersion>,
     /// Libraries that the version depends on
     pub libraries: Vec<Library>,
+    /// Rules to help resolve library conflicts
+    pub requires: Vec<Dependency>,
     /// The classpath to the main class to launch the game
     pub main_class: String,
     #[serde(skip_serializing_if = "Option::is_none")]

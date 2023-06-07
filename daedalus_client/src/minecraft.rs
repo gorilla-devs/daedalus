@@ -83,7 +83,7 @@ pub async fn retrieve_data(
 
                     if !actual_patches.is_empty() {
                         for patch in actual_patches {
-                            println!("{} {}", version_info.id, patch._comment);
+                            info!("processing {} with library patch {}", version_info.id, patch._comment);
 
                             if let Some(override_) = &patch.override_ {
                                 library = merge_partial_library(
@@ -128,6 +128,8 @@ pub async fn retrieve_data(
                     new_libraries.append(&mut libs)
                 }
                 version_info.libraries = new_libraries;
+
+                
 
                 // Patch java version
                 version_info.java_version = {
