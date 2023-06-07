@@ -2,8 +2,10 @@ use crate::modded::{Processor, SidedDataEntry};
 use crate::{download_file, Error};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::convert::TryFrom;
+use std::fmt::Display;
+use std::str::FromStr;
 
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
@@ -71,6 +73,144 @@ pub struct Version {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// (GDLauncher Provided) The java profile required to run this mc version
     pub java_profile: Option<MinecraftJavaProfile>,
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(PartialEq, Eq, Debug, Clone, Default)]
+/// A specifier string for Gradle
+pub struct GradleSpecifier {
+    /// The groups of the artifact
+    pub group: String,
+    /// Artifact name
+    pub name: String,
+    /// Classifier of the artifact
+    pub classifier: Option<String>,
+    /// Version of the artifact
+    pub version: String,
+    /// File extension
+    pub extension: Option<String>,
+}
+
+impl GradleSpecifier {
+    /// Returns the filename of the artifact
+    pub fn filename(&self) -> String {
+        let ext = if let Some(ext) = &self.extension {
+            format!(".{}", ext)
+        } else {
+            "".to_string()
+        };
+        if let Some(classifier) = &self.classifier {
+            format!("{}-{}-{}{}", self.name, self.version, classifier, ext)
+        } else {
+            format!("{}-{}{}", self.name, self.version, ext)
+        }
+    }
+
+    /// returns the base path of the artifact
+    pub fn base(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            self.group.replace(".", "/"),
+            self.name,
+            self.version
+        )
+    }
+
+    /// REturns the full path of the artifact
+    pub fn path(&self) -> String {
+        format!("{}/{}", self.base(), self.filename())
+    }
+}
+
+impl FromStr for GradleSpecifier {
+    type Err = Error;
+
+    fn from_str(specifier: &str) -> Result<Self, Self::Err> {
+        let at_parts = specifier.split('@').collect::<Vec<&str>>();
+
+        let mut parts = at_parts
+            .first()
+            .ok_or(Error::InvalidGradleSpecifier(specifier.to_string()))?
+            .split(':')
+            .collect::<VecDeque<&str>>();
+        let group = parts
+            .pop_front()
+            .ok_or(Error::InvalidGradleSpecifier(specifier.to_string()))?
+            .to_string();
+        let name = parts
+            .pop_front()
+            .ok_or(Error::InvalidGradleSpecifier(specifier.to_string()))?
+            .to_string();
+        let version = parts
+            .pop_front()
+            .ok_or(Error::InvalidGradleSpecifier(specifier.to_string()))?
+            .to_string();
+        let extension = if at_parts.len() == 2 {
+            Some("jar".to_string())
+        } else {
+            Some(at_parts[1].to_string())
+        };
+        let classifier = if let Some(cls) = parts.pop_front() {
+            Some(cls.to_string())
+        } else {
+            None
+        };
+        Ok(GradleSpecifier {
+            group,
+            name,
+            classifier,
+            version,
+            extension,
+        })
+    }
+}
+
+impl Display for GradleSpecifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let extension = if let Some(ext) = &self.extension {
+            if ext != "jar" {
+                format!("@{}", ext)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        if let Some(classifier) = self.classifier.as_ref() {
+            write!(
+                f,
+                "{}:{}:{}:{}{}",
+                self.group, self.name, self.version, classifier, extension
+            )
+        } else {
+            write!(
+                f,
+                "{}:{}:{}{}",
+                self.group, self.name, self.version, extension
+            )
+        }
+    }
+}
+
+impl Serialize for GradleSpecifier {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for GradleSpecifier {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
@@ -330,7 +470,7 @@ pub struct Library {
     /// Rules of the extraction of the file
     pub extract: Option<LibraryExtract>,
     /// The maven name of the library. The format is `groupId:artifactId:version`
-    pub name: String,
+    pub name: GradleSpecifier,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The URL to the repository where the library can be downloaded
     pub url: Option<String>,
@@ -356,7 +496,7 @@ pub struct PartialLibrary {
     /// Rules of the extraction of the file
     pub extract: Option<LibraryExtract>,
     /// The maven name of the library. The format is `groupId:artifactId:version`
-    pub name: Option<String>,
+    pub name: Option<GradleSpecifier>,
     /// The URL to the repository where the library can be downloaded
     pub url: Option<String>,
     /// Native files that the library relies on

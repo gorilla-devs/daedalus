@@ -90,6 +90,9 @@ pub enum Error {
     /// Invalid Minecraft Java Profile
     #[error("Invalid Minecraft Java Profile")]
     InvalidMinecraftJavaProfile(String),
+    /// Invalid Gradle Specifier 
+    #[error("Invalid Gradle specifier '{0}'")]
+    InvalidGradleSpecifier(String),
 }
 
 /// Converts a maven artifact to a path
