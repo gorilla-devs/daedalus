@@ -4,7 +4,10 @@
 
 #![warn(missing_docs, unused_import_braces, missing_debug_implementations)]
 
+use std::{fmt::Display, str::FromStr};
+
 use once_cell::sync::OnceCell;
+use serde::{Deserialize, Serialize};
 
 /// Models and methods for fetching metadata for Minecraft
 pub mod minecraft;
@@ -92,89 +95,258 @@ pub enum Error {
     InvalidMinecraftJavaProfile(String),
 }
 
-/// Converts a maven artifact to a path
-pub fn get_path_from_artifact(artifact: &str) -> Result<String, Error> {
-    let name_items = artifact.split(':').collect::<Vec<&str>>();
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(PartialEq, Eq, Debug, Clone, Default)]
+/// A specifier string for Gradle
+pub struct GradleSpecifier {
+    /// The groups of the artifact
+    pub package: String,
+    /// Artifact name
+    pub artifact: String,
+    /// Classifier of the artifact
+    pub data: Option<String>,
+    /// Version of the artifact
+    pub version: String,
+    /// File extension
+    pub extension: String,
+}
 
-    let package = name_items.first().ok_or_else(|| {
-        Error::ParseError(format!(
-            "Unable to find package for library {}",
-            &artifact
-        ))
-    })?;
-    let name = name_items.get(1).ok_or_else(|| {
-        Error::ParseError(format!(
-            "Unable to find name for library {}",
-            &artifact
-        ))
-    })?;
+impl GradleSpecifier {
+    /// Returns the filename of the artifact
+    pub fn filename(&self) -> String {
+        if let Some(classifier) = &self.data {
+            format!(
+                "{}-{}-{}.{}",
+                self.artifact, self.version, classifier, self.extension
+            )
+        } else {
+            format!("{}-{}.{}", self.artifact, self.version, self.extension)
+        }
+    }
 
-    if name_items.len() == 3 {
-        let version_ext = name_items
+    /// returns the base path of the artifact
+    pub fn base(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            self.package.replace(".", "/"),
+            self.artifact,
+            self.version
+        )
+    }
+
+    /// REturns the full path of the artifact
+    pub fn path(&self) -> String {
+        format!("{}/{}", self.base(), self.filename())
+    }
+}
+
+impl FromStr for GradleSpecifier {
+    type Err = Error;
+
+    fn from_str(specifier: &str) -> Result<Self, Self::Err> {
+        let at_split = specifier.split('@').collect::<Vec<&str>>();
+
+        let name_items = at_split
+            .first()
+            .ok_or_else(|| {
+                Error::ParseError(format!(
+                    "Invalid Gradle Specifier for library {}",
+                    &specifier
+                ))
+            })?
+            .split(':')
+            .collect::<Vec<&str>>();
+
+        let package = name_items
+            .first()
+            .ok_or_else(|| {
+                Error::ParseError(format!(
+                    "Unable to find package for library {}",
+                    &specifier
+                ))
+            })?
+            .to_string();
+        let artifact = name_items
+            .get(1)
+            .ok_or_else(|| {
+                Error::ParseError(format!(
+                    "Unable to find name for library {}",
+                    &specifier
+                ))
+            })?
+            .to_string();
+        let version = name_items
             .get(2)
             .ok_or_else(|| {
                 Error::ParseError(format!(
                     "Unable to find version for library {}",
-                    &artifact
+                    &specifier
                 ))
             })?
-            .split('@')
-            .collect::<Vec<&str>>();
-        let version = version_ext.first().ok_or_else(|| {
-            Error::ParseError(format!(
-                "Unable to find version for library {}",
-                &artifact
-            ))
-        })?;
-        let ext = version_ext.get(1);
+            .to_string();
 
-        Ok(format!(
-            "{}/{}/{}/{}-{}.{}",
-            package.replace('.', "/"),
-            name,
-            version,
-            name,
-            version,
-            ext.unwrap_or(&"jar")
-        ))
-    } else {
-        let version = name_items.get(2).ok_or_else(|| {
-            Error::ParseError(format!(
-                "Unable to find version for library {}",
-                &artifact
-            ))
-        })?;
+        let extension = if at_split.len() == 2 {
+            "jar".to_string()
+        } else {
+            at_split[1].to_string()
+        };
 
-        let data_ext = name_items
-            .get(3)
-            .ok_or_else(|| {
-                Error::ParseError(format!(
-                    "Unable to find data for library {}",
-                    &artifact
-                ))
-            })?
-            .split('@')
-            .collect::<Vec<&str>>();
-        let data = data_ext.first().ok_or_else(|| {
-            Error::ParseError(format!(
-                "Unable to find data for library {}",
-                &artifact
-            ))
-        })?;
-        let ext = data_ext.get(1);
-
-        Ok(format!(
-            "{}/{}/{}/{}-{}-{}.{}",
-            package.replace('.', "/"),
-            name,
-            version,
-            name,
-            version,
+        let data = if name_items.len() == 4 {
+            Some(
+                name_items
+                    .get(3)
+                    .ok_or_else(|| {
+                        Error::ParseError(format!(
+                            "Unable to find data for library {}",
+                            &specifier
+                        ))
+                    })?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        Ok(GradleSpecifier {
+            package,
+            artifact,
             data,
-            ext.unwrap_or(&"jar")
-        ))
+            version,
+            extension,
+        })
     }
 }
+
+impl Display for GradleSpecifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let extension = if self.extension != "jar" {
+            format!("@{}", self.extension)
+        } else {
+            String::new()
+        };
+
+        if let Some(classifier) = self.data.as_ref() {
+            write!(
+                f,
+                "{}:{}:{}:{}{}",
+                self.package,
+                self.artifact,
+                self.version,
+                classifier,
+                extension
+            )
+        } else {
+            write!(
+                f,
+                "{}:{}:{}{}",
+                self.package, self.artifact, self.version, extension
+            )
+        }
+    }
+}
+
+impl Serialize for GradleSpecifier {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for GradleSpecifier {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Converts a maven artifact to a path
+// pub fn get_path_from_artifact(artifact: &str) -> Result<String, Error> {
+//     let name_items = artifact.split(':').collect::<Vec<&str>>();
+//
+//     let package = name_items.first().ok_or_else(|| {
+//         Error::ParseError(format!(
+//             "Unable to find package for library {}",
+//             &artifact
+//         ))
+//     })?;
+//     let name = name_items.get(1).ok_or_else(|| {
+//         Error::ParseError(format!(
+//             "Unable to find name for library {}",
+//             &artifact
+//         ))
+//     })?;
+//
+//     if name_items.len() == 3 {
+//         let version_ext = name_items
+//             .get(2)
+//             .ok_or_else(|| {
+//                 Error::ParseError(format!(
+//                     "Unable to find version for library {}",
+//                     &artifact
+//                 ))
+//             })?
+//             .split('@')
+//             .collect::<Vec<&str>>();
+//         let version = version_ext.first().ok_or_else(|| {
+//             Error::ParseError(format!(
+//                 "Unable to find version for library {}",
+//                 &artifact
+//             ))
+//         })?;
+//         let ext = version_ext.get(1);
+//
+//         Ok(format!(
+//             "{}/{}/{}/{}-{}.{}",
+//             package.replace('.', "/"),
+//             name,
+//             version,
+//             name,
+//             version,
+//             ext.unwrap_or(&"jar")
+//         ))
+//     } else {
+//         let version = name_items.get(2).ok_or_else(|| {
+//             Error::ParseError(format!(
+//                 "Unable to find version for library {}",
+//                 &artifact
+//             ))
+//         })?;
+//
+//         let data_ext = name_items
+//             .get(3)
+//             .ok_or_else(|| {
+//                 Error::ParseError(format!(
+//                     "Unable to find data for library {}",
+//                     &artifact
+//                 ))
+//             })?
+//             .split('@')
+//             .collect::<Vec<&str>>();
+//         let data = data_ext.first().ok_or_else(|| {
+//             Error::ParseError(format!(
+//                 "Unable to find data for library {}",
+//                 &artifact
+//             ))
+//         })?;
+//         let ext = data_ext.get(1);
+//
+//         Ok(format!(
+//             "{}/{}/{}/{}-{}-{}.{}",
+//             package.replace('.', "/"),
+//             name,
+//             version,
+//             name,
+//             version,
+//             data,
+//             ext.unwrap_or(&"jar")
+//         ))
+//     }
+// }
 
 /// Downloads a file from specified mirrors
 pub async fn download_file_mirrors(

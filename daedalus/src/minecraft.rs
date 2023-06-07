@@ -1,5 +1,5 @@
 use crate::modded::{Processor, SidedDataEntry};
-use crate::{download_file, Error};
+use crate::{download_file, Error, GradleSpecifier};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -72,6 +72,7 @@ pub struct Version {
     /// (GDLauncher Provided) The java profile required to run this mc version
     pub java_profile: Option<MinecraftJavaProfile>,
 }
+
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -330,7 +331,7 @@ pub struct Library {
     /// Rules of the extraction of the file
     pub extract: Option<LibraryExtract>,
     /// The maven name of the library. The format is `groupId:artifactId:version`
-    pub name: String,
+    pub name: GradleSpecifier,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The URL to the repository where the library can be downloaded
     pub url: Option<String>,
@@ -356,7 +357,7 @@ pub struct PartialLibrary {
     /// Rules of the extraction of the file
     pub extract: Option<LibraryExtract>,
     /// The maven name of the library. The format is `groupId:artifactId:version`
-    pub name: Option<String>,
+    pub name: Option<GradleSpecifier>,
     /// The URL to the repository where the library can be downloaded
     pub url: Option<String>,
     /// Native files that the library relies on
