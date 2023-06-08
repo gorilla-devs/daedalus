@@ -83,9 +83,9 @@ pub async fn retrieve_data(
                             visited_artifacts_mutex.lock().await;
 
                         if visited_assets.contains(&lib.name) {
-                            lib.name = lib.name.replace(DUMMY_GAME_VERSION, &BRANDING
+                            lib.name = lib.name.to_string().replace(DUMMY_GAME_VERSION, &BRANDING
                             .get_or_init(Branding::default)
-                            .dummy_replace_string);
+                            .dummy_replace_string).parse()?;
                             lib.url = Some(format_url("maven/"));
 
                             return Ok(lib);
@@ -93,15 +93,16 @@ pub async fn retrieve_data(
                             visited_assets.push(lib.name.clone())
                         }
                     }
-
-                    if lib.name.contains(DUMMY_GAME_VERSION) {
-                        lib.name = lib.name.replace(DUMMY_GAME_VERSION, &BRANDING
+                    
+                    let name = lib.name.to_string();
+                    if name.contains(DUMMY_GAME_VERSION) {
+                        lib.name = name.replace(DUMMY_GAME_VERSION, &BRANDING
                             .get_or_init(Branding::default)
-                            .dummy_replace_string);
+                            .dummy_replace_string).parse()?;
                         futures::future::try_join_all(list.game.clone().into_iter().map(|game_version| async {
                             let semaphore = semaphore.clone();
                             let uploaded_files_mutex = uploaded_files_mutex.clone();
-                            let lib_name = lib.name.clone();
+                            let lib_name = lib.name.to_string();
                             let lib_url = lib.url.clone();
 
                             async move {
@@ -142,8 +143,7 @@ pub async fn retrieve_data(
                         return Ok(lib);
                     }
 
-                    let artifact_path =
-                        daedalus::get_path_from_artifact(&lib.name)?;
+                    let artifact_path = lib.name.path();
 
                     let artifact = download_file(
                         &format!(

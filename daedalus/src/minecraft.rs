@@ -383,7 +383,7 @@ pub enum DependencyRule {
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
-/// A library dependency to help resolve rules
+/// A library dependency
 pub struct Dependency {
     /// a component uid like `"org.lwjgl"`
     pub uid: String,
@@ -516,8 +516,9 @@ pub struct VersionInfo {
     pub java_version: Option<JavaVersion>,
     /// Libraries that the version depends on
     pub libraries: Vec<Library>,
-    /// Rules to help resolve library conflicts
-    pub requires: Vec<Dependency>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// dependencies not included in libraries
+    pub requires: Option<Vec<Dependency>>,
     /// The classpath to the main class to launch the game
     pub main_class: String,
     #[serde(skip_serializing_if = "Option::is_none")]

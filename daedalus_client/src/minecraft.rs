@@ -78,7 +78,7 @@ pub async fn retrieve_data(
 
                     let actual_patches = patches
                         .iter()
-                        .filter(|x| x.match_.contains(&library.name))
+                        .filter(|x| x.match_.contains(&library.name.to_string()))
                         .collect::<Vec<_>>();
 
                     if !actual_patches.is_empty() {

@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 use std::time::Instant;
+use std::convert::TryInto;
 use tokio::sync::{Mutex, Semaphore};
 
 lazy_static! {
@@ -175,10 +176,9 @@ pub async fn retrieve_data(
                                                 }
                                             }
 
-                                            let artifact_path =
-                                                daedalus::get_path_from_artifact(&lib.name)?;
+                                            let artifact_path = lib.name.path();
 
-                                            let artifact = if lib.name == forge_universal_path {
+                                            let artifact = if lib.name.to_string() == forge_universal_path {
                                                 forge_universal_bytes.clone()
                                             } else {
                                                 let mirrors = vec![&*url, "https://maven.creeperhost.net/", "https://libraries.minecraft.net/"];
@@ -283,14 +283,14 @@ pub async fn retrieve_data(
                                             let lib_name_clone = lib.name.clone();
 
                                             let lib_bytes = tokio::task::spawn_blocking(move || {
-                                                let mut lib_file = archive_clone.by_name(&format!("maven/{}", daedalus::get_path_from_artifact(&lib_name_clone)?))?;
+                                                let mut lib_file = archive_clone.by_name(&format!("maven/{}", lib_name_clone.path()))?;
                                                 let mut lib_bytes =  Vec::new();
                                                 lib_file.read_to_end(&mut lib_bytes)?;
 
                                                 Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
                                             }).await??;
 
-                                            local_libs.insert(lib.name.clone(), lib_bytes);
+                                            local_libs.insert(lib.name.to_string(), lib_bytes);
                                         }
                                     }
 
@@ -325,7 +325,7 @@ pub async fn retrieve_data(
                                                         libs.push(Library {
                                                             downloads: None,
                                                             extract: None,
-                                                            name: path,
+                                                            name: path.as_str().try_into()?,
                                                             url: Some("".to_string()),
                                                             natives: None,
                                                             rules: None,
@@ -350,8 +350,7 @@ pub async fn retrieve_data(
 
                                     let now = Instant::now();
                                     let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| async {
-                                        let artifact_path =
-                                            daedalus::get_path_from_artifact(&lib.name)?;
+                                        let artifact_path = lib.name.path();
 
                                         {
                                             let mut visited_assets = visited_assets.lock().await;
@@ -374,7 +373,7 @@ pub async fn retrieve_data(
                                         let artifact_bytes = if let Some(ref mut downloads) = lib.downloads {
                                             if let Some(ref mut artifact) = downloads.artifact {
                                                 let res = if artifact.url.is_empty() {
-                                                    local_libs.get(&lib.name).cloned()
+                                                    local_libs.get(&lib.name.to_string()).cloned()
                                                 } else {
                                                     Some(download_file(
                                                         &artifact.url,
@@ -392,7 +391,7 @@ pub async fn retrieve_data(
                                             } else { None }
                                         } else if let Some(ref mut url) = lib.url {
                                             let res = if url.is_empty() {
-                                                local_libs.get(&lib.name).cloned()
+                                                local_libs.get(&lib.name.to_string()).cloned()
                                             } else {
                                                 Some(download_file(
                                                     url,
