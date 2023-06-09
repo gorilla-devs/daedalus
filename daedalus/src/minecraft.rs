@@ -390,6 +390,7 @@ pub struct Dependency {
     /// a component uid like `"org.lwjgl"`
     pub uid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
     /// a rule to specify the version exactly
     pub rule: Option<DependencyRule>,
 }
