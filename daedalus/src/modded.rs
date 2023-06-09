@@ -142,19 +142,28 @@ pub fn merge_partial_version(
             .map(|x| Library {
                 downloads: x.downloads,
                 extract: x.extract,
-                name: x.name.replace(
-                    &BRANDING
-                        .get_or_init(Branding::default)
-                        .dummy_replace_string,
-                    &merge_id,
-                ),
+                name: x
+                    .name
+                    .to_string()
+                    .replace(
+                        &BRANDING
+                            .get_or_init(Branding::default)
+                            .dummy_replace_string,
+                        &merge_id,
+                    )
+                    .parse()
+                    .expect(
+                        "Gradle specifier to still be valid after branding",
+                    ),
                 url: x.url,
                 natives: x.natives,
                 rules: x.rules,
                 checksums: x.checksums,
                 include_in_classpath: x.include_in_classpath,
+                patched: false,
             })
             .collect::<Vec<_>>(),
+        requires: merge.requires,
         main_class: if let Some(main_class) = partial.main_class {
             main_class
         } else {

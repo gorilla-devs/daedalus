@@ -1,8 +1,8 @@
 use crate::modded::{Processor, SidedDataEntry};
-use crate::{download_file, Error};
+use crate::{download_file, Error, GradleSpecifier};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use std::convert::TryFrom;
 
 #[cfg(feature = "bincode")]
@@ -221,11 +221,11 @@ pub struct LibraryDownloads {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Conditional files that may be needed to be downloaded alongside the library
     /// The HashMap key specifies a classifier as additional information for downloading files
-    pub classifiers: Option<HashMap<String, LibraryDownload>>,
+    pub classifiers: Option<BTreeMap<String, LibraryDownload>>,
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 /// The action a rule can follow
 pub enum RuleAction {
@@ -236,7 +236,7 @@ pub enum RuleAction {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone)]
 #[serde(rename_all = "kebab-case")]
 /// An enum representing the different types of operating systems
 pub enum Os {
@@ -259,7 +259,7 @@ pub enum Os {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 /// A rule which depends on what OS the user is on
 pub struct OsRule {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -274,7 +274,7 @@ pub struct OsRule {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 /// A rule which depends on the toggled features of the launcher
 pub struct FeatureRule {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -286,7 +286,7 @@ pub struct FeatureRule {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 /// A rule deciding whether a file is downloaded, an argument is used, etc.
 pub struct Rule {
     /// The action the rule takes
@@ -330,13 +330,13 @@ pub struct Library {
     /// Rules of the extraction of the file
     pub extract: Option<LibraryExtract>,
     /// The maven name of the library. The format is `groupId:artifactId:version`
-    pub name: String,
+    pub name: GradleSpecifier,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The URL to the repository where the library can be downloaded
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Native files that the library relies on
-    pub natives: Option<HashMap<Os, String>>,
+    pub natives: Option<BTreeMap<Os, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Rules deciding whether the library should be downloaded or not
     pub rules: Option<Vec<Rule>>,
@@ -346,6 +346,9 @@ pub struct Library {
     #[serde(default = "default_include_in_classpath")]
     /// Whether the library should be included in the classpath at the game's launch
     pub include_in_classpath: bool,
+    #[serde(skip)]
+    /// if this library was patched or added by a patch
+    pub patched: bool,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -356,17 +359,40 @@ pub struct PartialLibrary {
     /// Rules of the extraction of the file
     pub extract: Option<LibraryExtract>,
     /// The maven name of the library. The format is `groupId:artifactId:version`
-    pub name: Option<String>,
+    pub name: Option<GradleSpecifier>,
     /// The URL to the repository where the library can be downloaded
     pub url: Option<String>,
     /// Native files that the library relies on
-    pub natives: Option<HashMap<Os, String>>,
+    pub natives: Option<BTreeMap<Os, String>>,
     /// Rules deciding whether the library should be downloaded or not
     pub rules: Option<Vec<Rule>>,
     /// SHA1 Checksums for validating the library's integrity. Only present for forge libraries
     pub checksums: Option<Vec<String>>,
     /// Whether the library should be included in the classpath at the game's launch
     pub include_in_classpath: Option<bool>,
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// A dependency rule, either suggests or equals
+pub enum DependencyRule {
+    /// A rule to specify the version exactly
+    Equals(String),
+    /// A rule to suggest a soft requirement
+    Suggests(String),
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+/// A library dependency
+pub struct Dependency {
+    /// a component uid like `"org.lwjgl"`
+    pub uid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
+    /// a rule to specify the version exactly
+    pub rule: Option<DependencyRule>,
 }
 
 /// Merges a partial library to make a complete library
@@ -427,6 +453,7 @@ pub fn merge_partial_library(
     if let Some(include_in_classpath) = partial.include_in_classpath {
         merge.include_in_classpath = include_in_classpath
     }
+    merge.patched = true;
 
     merge
 }
@@ -494,6 +521,9 @@ pub struct VersionInfo {
     pub java_version: Option<JavaVersion>,
     /// Libraries that the version depends on
     pub libraries: Vec<Library>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// dependencies not included in libraries
+    pub requires: Option<Vec<Dependency>>,
     /// The classpath to the main class to launch the game
     pub main_class: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -516,6 +546,62 @@ pub struct VersionInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// (Forge-only) The list of processors to run after downloading the files
     pub processors: Option<Vec<Processor>>,
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+/// Information about grouping of libraries
+pub struct LibraryGroup {
+    /// The version ID of the version
+    pub id: String,
+    /// The version string for this group
+    pub version: String,
+    /// The uid aka maven package group id of this group
+    pub uid: String,
+    #[cfg_attr(feature = "bincode", bincode(with_serde))]
+    /// The time that the version was released
+    pub release_time: DateTime<Utc>,
+    /// The type of version
+    pub type_: VersionType,
+    /// The library listing for this group
+    pub libraries: Vec<Library>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// libraries required by this group
+    pub requires: Option<Vec<Dependency>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// libraries that conflict with this group
+    pub conflicts: Option<Vec<Dependency>>,
+    #[serde(skip_serializing)]
+    /// group has libs with split natives
+    pub has_split_natives: Option<bool>
+}
+
+#[derive(Debug, Clone)]
+/// A paring of a library group with a sha1 of it's json representation
+pub struct LWJGLEntry {
+    /// The sha1 of the groups json representation
+    pub sha1: String,
+    /// LibraryGroup for the entry
+    pub group: LibraryGroup,
+}
+
+impl LWJGLEntry {
+    /// Construct a entry from a LibraryGroup
+    pub fn from_group(group: LibraryGroup) -> Self {
+        use sha1::Sha1;
+
+        // compute a human readable hash of the group's contents less the release time
+        let mut group_copy = group.clone();
+        group_copy.release_time = DateTime::default(); // reset so the hash doesn't account for it
+        let mut hasher = Sha1::new();
+        hasher.update(
+            &serde_json::to_vec(&group_copy).expect("library group to serialize"),
+        );
+
+        let hash = hasher.hexdigest();
+        LWJGLEntry { sha1: hash, group }
+    }
 }
 
 /// Fetches detailed information about a version from the manifest

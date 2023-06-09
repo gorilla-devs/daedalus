@@ -34,6 +34,8 @@ pub enum Error {
     ArcError,
     #[error("Error acquiring semaphore: {0}")]
     AcquireError(#[from] tokio::sync::AcquireError),
+    #[error("Error parsing libraries: {0}")]
+    LibraryError(String),
 }
 
 #[tokio::main]
@@ -56,6 +58,7 @@ async fn main() {
     let semaphore = Arc::new(Semaphore::new(10));
 
     loop {
+        info!("Waiting for next update timer");
         timer.tick().await;
 
         let mut uploaded_files = Vec::new();
@@ -75,36 +78,42 @@ async fn main() {
         };
 
         if let Some(manifest) = versions {
-            match fabric::retrieve_data(
-                &manifest,
-                &mut uploaded_files,
-                semaphore.clone(),
-            )
-            .await
-            {
-                Ok(..) => {}
-                Err(err) => error!("{:?}", err),
-            };
-            match forge::retrieve_data(
-                &manifest,
-                &mut uploaded_files,
-                semaphore.clone(),
-            )
-            .await
-            {
-                Ok(..) => {}
-                Err(err) => error!("{:?}", err),
-            };
-            match quilt::retrieve_data(
-                &manifest,
-                &mut uploaded_files,
-                semaphore.clone(),
-            )
-            .await
-            {
-                Ok(..) => {}
-                Err(err) => error!("{:?}", err),
-            };
+            if cfg!(feature = "fabric") {
+                match fabric::retrieve_data(
+                    &manifest,
+                    &mut uploaded_files,
+                    semaphore.clone(),
+                )
+                .await
+                {
+                    Ok(..) => {}
+                    Err(err) => error!("{:?}", err),
+                };
+            }
+            if cfg!(feature = "forge") {
+                match forge::retrieve_data(
+                    &manifest,
+                    &mut uploaded_files,
+                    semaphore.clone(),
+                )
+                .await
+                {
+                    Ok(..) => {}
+                    Err(err) => error!("{:?}", err),
+                };
+            }
+            if cfg!(feature = "quilt") {
+                match quilt::retrieve_data(
+                    &manifest,
+                    &mut uploaded_files,
+                    semaphore.clone(),
+                )
+                .await
+                {
+                    Ok(..) => {}
+                    Err(err) => error!("{:?}", err),
+                };
+            }
         }
     }
 }
@@ -174,6 +183,11 @@ pub async fn upload_file_to_bucket(
     semaphore: Arc<Semaphore>,
 ) -> Result<(), Error> {
     let _permit = semaphore.acquire().await?;
+
+    if cfg!(feature = "save_local") {
+        return save_file_local(path, bytes, uploaded_files).await;
+    }
+
     info!("{} started uploading", path);
     let key = path.clone();
 
@@ -207,6 +221,31 @@ pub async fn upload_file_to_bucket(
         }
     }
     unreachable!()
+}
+
+pub const LOCAL_SAVE_PATH: &str = "./bucket/";
+
+/// mainly for testing
+pub async fn save_file_local(
+    path: String,
+    bytes: Vec<u8>,
+    uploaded_files: &tokio::sync::Mutex<Vec<String>>,
+) -> Result<(), Error> {
+    info!("{} saving locally", path);
+
+    let local_save_dir = std::path::Path::new(&LOCAL_SAVE_PATH);
+    let save_path = local_save_dir.join(&path);
+
+    std::fs::create_dir_all(
+        save_path.parent().expect("save path not to be a root path"),
+    )
+    .map_err(|err| Error::IoError(err))?;
+
+    std::fs::write(&save_path, bytes).map_err(|err| Error::IoError(err))?;
+    let mut uploaded_files = uploaded_files.lock().await;
+    uploaded_files.push(path.clone());
+
+    Ok(())
 }
 
 pub fn format_url(path: &str) -> String {

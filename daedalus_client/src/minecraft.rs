@@ -1,16 +1,169 @@
 use crate::download_file;
 use crate::{format_url, upload_file_to_bucket, Error};
-use daedalus::get_hash;
 use daedalus::minecraft::{
-    merge_partial_library, JavaVersion, Library, MinecraftJavaProfile,
-    PartialLibrary, VersionInfo, VersionManifest,
+    merge_partial_library, Dependency, DependencyRule, JavaVersion, LWJGLEntry,
+    Library, LibraryGroup, MinecraftJavaProfile, Os, PartialLibrary, Rule,
+    RuleAction, VersionInfo, VersionManifest, VersionType,
 };
-use log::info;
+use daedalus::{get_hash, GradleSpecifier};
+use log::{debug, error, info, warn};
 use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
+
+fn patch_library(
+    patches: &Vec<LibraryPatch>,
+    mut library: Library,
+) -> Vec<Library> {
+    let mut val = Vec::new();
+
+    let actual_patches = patches
+        .iter()
+        .filter(|x| x.match_.contains(&library.name.to_string()))
+        .collect::<Vec<_>>();
+
+    if !actual_patches.is_empty() {
+        for patch in actual_patches {
+            info!(
+                "processing {} with library patch {}",
+                library.name, patch._comment
+            );
+
+            if let Some(override_) = &patch.override_ {
+                library = merge_partial_library(override_.clone(), library);
+            }
+
+            if let Some(additional_libraries) = &patch.additional_libraries {
+                for additional_library in additional_libraries {
+                    if patch.patch_additional_libraries.unwrap_or(false) {
+                        let mut libs =
+                            patch_library(patches, additional_library.clone());
+                        val.append(&mut libs)
+                    } else {
+                        let mut new_lib = additional_library.clone();
+                        new_lib.patched = true;
+                        val.push(new_lib);
+                    }
+                }
+            }
+        }
+
+        val.push(library);
+    } else {
+        val.push(library);
+    }
+
+    val
+}
+
+fn process_single_lwjgl_variant(
+    variant: &LibraryGroup,
+    patches: &Vec<LibraryPatch>,
+) -> Result<Option<(String, LibraryGroup)>, Error> {
+    let lwjgl_version = variant.version.clone();
+    let mut lwjgl = variant.clone();
+
+    let mut new_libraries = Vec::new();
+
+    for library in lwjgl.libraries.clone() {
+        let mut libs = patch_library(patches, library);
+        new_libraries.append(&mut libs);
+    }
+    lwjgl.libraries = new_libraries;
+
+    let version_path = if lwjgl_version.starts_with("2") {
+        lwjgl.id = "LWJGL 2".to_string();
+        lwjgl.uid = "org.lwjgl".to_string();
+        lwjgl.conflicts = Some(vec![Dependency {
+            uid: "org.lwjgl3".to_string(),
+            rule: None,
+        }]);
+
+        format!(
+            "minecraft/v{}/libraries/org.lwjgl/{}.json",
+            daedalus::minecraft::CURRENT_FORMAT_VERSION,
+            lwjgl_version
+        )
+    } else if lwjgl_version.starts_with("3") {
+        lwjgl.id = "LWJGL 3".to_string();
+        lwjgl.uid = "org.lwjgl3".to_string();
+        lwjgl.conflicts = Some(vec![Dependency {
+            uid: "org.lwjgl".to_string(),
+            rule: None,
+        }]);
+
+        // remove jutils and jinput from LWJGL 3
+        // this is a dependency that Mojang kept in, but doesn't belong there anymore
+        let unneeded: HashSet<&str> =
+            vec!["jutils", "jinput"].into_iter().collect();
+        let filtered_libs = lwjgl
+            .libraries
+            .into_iter()
+            .filter(|lib| !unneeded.contains(lib.name.artifact.as_str()))
+            .collect::<Vec<_>>();
+        lwjgl.libraries = filtered_libs;
+
+        format!(
+            "minecraft/v{}/libraries/org.lwjgl3/{}.json",
+            daedalus::minecraft::CURRENT_FORMAT_VERSION,
+            lwjgl_version
+        )
+    } else {
+        return Err(Error::LibraryError(format!(
+            "LWJGL version not recognized: {}",
+            lwjgl.version
+        )));
+    };
+
+    let mut good = true;
+    for lib in &lwjgl.libraries {
+        if lib.patched {
+            continue;
+        }
+        if let Some(natives) = &lib.natives {
+            let checked: HashSet<&Os> =
+                vec![&Os::Linux, &Os::Windows, &Os::Osx]
+                    .into_iter()
+                    .collect();
+            if !checked.is_subset(&natives.clone().keys().collect()) {
+                warn!("LWJGL variant library missing system classifier: {} {} {:?}", lwjgl.version, lib.name, natives.keys());
+                good = false;
+                break;
+            }
+            if lib.downloads.is_some() {
+                if let Some(classifiers) = &lib
+                    .downloads
+                    .clone()
+                    .expect("Unwrap to be safe inside is_some")
+                    .classifiers
+                {
+                    for entry in checked {
+                        let baked_entry = natives.get(entry);
+                        if let Some(baked_entry) = baked_entry {
+                            if !classifiers.contains_key(baked_entry) {
+                                warn!("LWJGL variant library missing download for classifier: {} {} {:?} {:?}", lwjgl.version, lib.name, baked_entry, classifiers.keys().collect::<Vec<_>>());
+                                good = false;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    warn!("LWJGL variant library missing downloads classifiers: {} {}", lwjgl.version, lib.name);
+                    good = false;
+                    break;
+                }
+            }
+        }
+    }
+    if good {
+        Ok(Some((version_path, lwjgl)))
+    } else {
+        Ok(None)
+    }
+}
 
 pub async fn retrieve_data(
     uploaded_files: &mut Vec<String>,
@@ -33,8 +186,69 @@ pub async fn retrieve_data(
     let patches = get_library_patches().await?;
     let cloned_patches = Arc::new(&patches);
 
+    let lwjgl_config = get_lwjgl_config().await?;
+
     let visited_assets_mutex = Arc::new(Mutex::new(Vec::new()));
     let uploaded_files_mutex = Arc::new(Mutex::new(Vec::new()));
+
+    // collections of seen lwjgl versions
+
+    let lwjgl_version_variants_mutex: Arc<
+        Mutex<BTreeMap<String, Vec<LWJGLEntry>>>,
+    > = Arc::new(Mutex::new(BTreeMap::new()));
+    let lwjgl_reject_reasons: HashMap<String, Option<String>> = lwjgl_config
+        .reject
+        .clone()
+        .into_iter()
+        .map(|mark| (mark.match_, mark.reason))
+        .collect();
+    let reject_lwjgl_variants: HashSet<String> = lwjgl_config
+        .reject
+        .into_iter()
+        .map(|mark| mark.match_)
+        .collect();
+    let accept_lwjgl_variants: HashSet<String> = lwjgl_config
+        .accept
+        .into_iter()
+        .map(|mark| mark.match_)
+        .collect();
+
+    async fn add_lwjgl_version(
+        variants_mutex: Arc<Mutex<BTreeMap<String, Vec<LWJGLEntry>>>>,
+        lwjgl: &LibraryGroup,
+    ) {
+        let mut lwjgl_copy = lwjgl.clone();
+        lwjgl_copy.libraries.sort_by_key(|lib| lib.name.clone());
+
+        let entry = LWJGLEntry::from_group(lwjgl_copy);
+        let current_sha1 = entry.sha1.clone();
+        let version = entry.group.version.clone();
+        let mut found = false;
+
+        let mut version_variants = variants_mutex.lock().await;
+
+        let variants = version_variants
+            .entry(version.clone())
+            .or_insert_with(|| Vec::new());
+        for variant in variants.iter_mut() {
+            if entry.sha1 == variant.sha1 {
+                found = true;
+                if entry.group.release_time > variant.group.release_time {
+                    variant.group.release_time = entry.group.release_time;
+                }
+                break;
+            }
+        }
+
+        if !found {
+            info!(
+                "!! New variant for LWJGL version {:?} : {}",
+                version, current_sha1
+            );
+            debug!("New LWLGL variant {:?}", &lwjgl);
+            variants.push(entry);
+        }
+    }
 
     let now = Instant::now();
 
@@ -60,6 +274,8 @@ pub async fn retrieve_data(
             let semaphore = Arc::clone(&semaphore);
             let patches = Arc::clone(&cloned_patches);
 
+            let lwjgl_version_variants_mutex = Arc::clone(&lwjgl_version_variants_mutex);
+
             let assets_hash =
                 old_version.and_then(|x| x.assets_index_sha1.clone());
 
@@ -69,65 +285,168 @@ pub async fn retrieve_data(
                 let mut version_info =
                     daedalus::minecraft::fetch_version_info(version).await?;
 
-                fn patch_library(
-                    patches: &Vec<LibraryPatch>,
-                    mut library: Library,
-                    version_info: &VersionInfo,
-                ) -> Vec<Library> {
-                    let mut val = Vec::new();
 
-                    let actual_patches = patches
-                        .iter()
-                        .filter(|x| x.match_.contains(&library.name))
-                        .collect::<Vec<_>>();
+                fn is_lwjgl(spec: &GradleSpecifier) -> bool {
+                    vec![ "org.lwjgl", "org.lwjgl.lwjgl", "net.java.jinput", "net.java.jutils"]
+                    .contains(&spec.package.as_str())
+                }
 
-                    if !actual_patches.is_empty() {
-                        for patch in actual_patches {
-                            println!("{} {}", version_info.id, patch._comment);
+                fn lib_is_split_natives(lib: &Library) -> bool {
+                    lib.name.data.clone().is_some_and(|data| data.starts_with("natives-"))
+                }
 
-                            if let Some(override_) = &patch.override_ {
-                                library = merge_partial_library(
-                                    override_.clone(),
-                                    library,
-                                );
+                fn version_has_split_natives(ver: &VersionInfo) -> bool {
+                    ver.libraries.iter().any(|lib| lib_is_split_natives(lib))
+                }
+
+                fn is_macos_only(rules: &Option<Vec<Rule>>) -> bool {
+                    let mut allows_osx = false;
+                    let mut allows_all  = false;
+                    if let Some(rules) = rules {
+                        for rule in rules {
+                            if rule.action == RuleAction::Allow && rule.os.is_some() && rule.os.clone().expect("Unwrap to be safe with boolean short circuit").name.is_some_and(|os| os == Os::Osx) {
+                                allows_osx = true;
                             }
-
-                            if let Some(additional_libraries) =
-                                &patch.additional_libraries
-                            {
-                                for additional_library in additional_libraries {
-                                    if patch
-                                        .patch_additional_libraries
-                                        .unwrap_or(false)
-                                    {
-                                        let mut libs = patch_library(
-                                            patches,
-                                            additional_library.clone(),
-                                            version_info,
-                                        );
-                                        val.append(&mut libs)
-                                    } else {
-                                        val.push(additional_library.clone());
-                                    }
-                                }
+                            if rule.action == RuleAction::Allow && rule.os.is_none() {
+                                allows_all = false;
                             }
                         }
 
-                        val.push(library);
+                        allows_osx && !allows_all
                     } else {
-                        val.push(library);
+                        false
                     }
-
-                    val
                 }
+
+                let has_split_natives = version_has_split_natives(&version_info);
+                let mut is_lwjgl_3 = false;
+                let mut lwjgl_buckets: HashMap<Option<Vec<Rule>>, LibraryGroup> = HashMap::new();
+
 
                 let mut new_libraries = Vec::new();
-                for library in version_info.libraries.clone() {
-                    let mut libs =
-                        patch_library(&patches, library, &version_info);
-                    new_libraries.append(&mut libs)
+                info!("Processing libraries for version {}", version_info.id);
+                for mut library in version_info.libraries.clone() {
+                    let spec = &mut library.name;
+                    if is_lwjgl(spec) {
+
+                        let mut rules = None;
+                        let set_version: Option<String> = if has_split_natives { // implies lwjgl3
+                            is_lwjgl_3 = true;
+                            debug!("lwlgl library {} has split natives, version {}", spec, spec.version);
+
+                            Some(spec.version.clone())
+                        } else {
+                            debug!("lwlgl library {} is not split, package: {} artifact:{} version: {}", spec, spec.package, spec.artifact, spec.version);
+                            rules = library.rules.clone();
+                            if is_macos_only(&rules) {
+                                info!("Candidate library {} is only for macOS and is therefore ignored", spec);
+                                continue;
+                            }
+                            // NOTE: Prism does macos only lib exclusion here
+                            if spec.package == "org.lwjgl.lwjgl" && spec.artifact == "lwjgl" {
+                                Some(spec.version.clone())
+                            } else if spec.package == "org.lwjgl" && spec.artifact == "lwjgl" {
+                                is_lwjgl_3 = true;
+                                Some(spec.version.clone())
+                            } else {
+                                None
+                            }
+                        };
+                        debug!("lwjgl library {} is setting version {:?}", spec, set_version);
+
+                        let bucket = lwjgl_buckets.entry(rules.clone()).or_insert_with(|| {
+                            debug!("Creating lwjgl bucket {:?} for {}", &rules, version_info.id);
+                            LibraryGroup {
+                                id: "LWJGL".to_string(),
+                                version: "undetermined".to_string(),
+                                uid: "org.lwjgl".to_string(),
+                                release_time: version_info.release_time,
+                                libraries: Vec::new(),
+                                requires: None,
+                                conflicts: None,
+                                type_: VersionType::Release,
+                                has_split_natives: Some(has_split_natives),
+                            }
+                        });
+                        bucket.has_split_natives = Some(has_split_natives);
+
+                        if let Some(version) = set_version {
+                            debug!("Setting bucket version {} for {}", version, version_info.id);
+                            bucket.version = version;
+                        }
+                        bucket.libraries.push(library);
+                        if version_info.release_time > bucket.release_time {
+                            bucket.release_time = version_info.release_time;
+                        }
+
+                    // else if log4j ?
+                    } else {
+                        let mut libs =
+                            patch_library(&patches, library);
+                        new_libraries.append(&mut libs)
+                    }
                 }
+
+                if lwjgl_buckets.len() == 1 {
+                    for (key, lwjgl) in lwjgl_buckets.iter_mut() {
+                        lwjgl.libraries.sort_by_key(|lib| lib.name.clone() );
+                        add_lwjgl_version(lwjgl_version_variants_mutex.clone(), lwjgl).await;
+                        info!("Found only candidate LWJGL {:?} {:?}", lwjgl.version, key);
+                    }
+                } else {
+                    let common_bucket = lwjgl_buckets.get(&None).cloned();
+                    for (key, lwjgl) in lwjgl_buckets.iter_mut() {
+                        if key.is_none() {
+                            continue
+                        }
+                        if let Some(mut common_bucket) = common_bucket.clone() {
+                            lwjgl.libraries.append(&mut common_bucket.libraries);
+                        }
+                        lwjgl.libraries.sort_by_key(|lib| lib.name.clone() );
+                        add_lwjgl_version(lwjgl_version_variants_mutex.clone(), lwjgl).await;
+                        info!("Found candidate LWJGL {:?} {:?}", lwjgl.version, key);
+                    }
+                    // remove the common bucket
+                    lwjgl_buckets.remove(&None);
+                }
+
                 version_info.libraries = new_libraries;
+
+                let suggested_lwjgl_version = if lwjgl_buckets.len() == 1 {
+                    if is_lwjgl_3 {
+                        Ok(lwjgl_buckets.values().next().expect("Safe to unwrap because there is one item present").version.clone())
+                    } else {
+                        Ok("2.9.4-nightly-20150209".to_string())
+                    }
+                } else {
+                    let bad_versions: HashSet<&str> = vec!["3.1.6", "3.2.1"].into_iter().collect();
+                    let our_versions: HashSet<&str> = lwjgl_buckets.values().into_iter().map(|lwjgl| lwjgl.version.as_str()).collect();
+
+                    if our_versions == bad_versions {
+                        info!("Found broken 3.1.6/3.2.1 LWJGL combo in version {} , forcing LWJGL. 3.2.1", &version_info.id);
+                        Ok("3.2.1".to_string())
+                    } else {
+                        Err(Error::LibraryError(format!("Can not determine a single suggested LWJGL version in version {} from among {:?}", &version_info.id, our_versions)))
+                    }
+
+                }?;
+
+                let lwjgl_dependency = if is_lwjgl_3 {
+                    Dependency {
+                        uid: "org.lwjgl3".to_string(),
+                        rule: Some(DependencyRule::Suggests(suggested_lwjgl_version)),
+                    }
+                } else {
+                    Dependency {
+                        uid: "org.lwjgl2".to_string(),
+                        rule: Some(DependencyRule::Suggests(suggested_lwjgl_version)),
+                    }
+                };
+
+                if version_info.requires.is_none() {
+                    version_info.requires = Some(Vec::new());
+                }
+                version_info.requires.as_mut().expect("Safe to unwrap because we just ensured it's creation").push(lwjgl_dependency);
 
                 // Patch java version
                 version_info.java_version = {
@@ -275,6 +594,108 @@ pub async fn retrieve_data(
     }
     //futures::future::try_join_all(version_futures).await?;
 
+    {
+        debug!("waiting for lock on lwjgl version mutex");
+        let lwjgl_version_variants = lwjgl_version_variants_mutex.lock().await;
+
+        info!("Processing LWJGL variants");
+        for (lwjgl_version_variant, lwjgl_variant_entries) in
+            lwjgl_version_variants.iter()
+        {
+            info!(
+                "{} variant(s) for LWJGL {}",
+                lwjgl_variant_entries.len(),
+                lwjgl_version_variant
+            );
+
+            let mut decided_variant = None;
+            let mut accepted_variants = 0;
+            let mut unknown_variants = 0;
+
+            for variant in lwjgl_variant_entries {
+                if reject_lwjgl_variants.contains(&variant.sha1) {
+                    let reason = lwjgl_reject_reasons
+                    .get(&variant.sha1)
+                    .expect(
+                        "Unwrap to be safe because sha was present in config",
+                    )
+                    .clone()
+                    .unwrap_or("unspecified".to_string());
+                    info!("LWJGL Variant {} for version {} ignored because it was marked as bad. Reason: {}", variant.sha1, lwjgl_version_variant, &reason);
+                    continue;
+                }
+                if accept_lwjgl_variants.contains(&variant.sha1) {
+                    info!(
+                        "LWJGL Variant {} for version {} accepted",
+                        variant.sha1, lwjgl_version_variant
+                    );
+                    decided_variant = Some(variant);
+                    accepted_variants += 1;
+                    continue;
+                }
+
+                // print natives data to decide which  variant to use
+                let natives = variant
+                    .group
+                    .libraries
+                    .iter()
+                    .filter_map(|lib| {
+                        if let Some(natives) = &lib.natives {
+                            Some(natives.keys().cloned().collect::<Vec<_>>())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                warn!(
+                    "Unmarked LWJGL variant {}, #{} ({}) natives: {:?} Split: {}",
+                    variant.sha1,
+                    lwjgl_version_variant,
+                    variant.group.release_time,
+                    natives,
+                    variant
+                        .group
+                        .has_split_natives
+                        .map_or("unknown".to_string(), |b| b.to_string()),
+                );
+                unknown_variants += 1;
+            }
+
+            let uploaded_files_mutex = Arc::clone(&uploaded_files_mutex);
+            let semaphore = Arc::clone(&semaphore);
+            let patches = Arc::clone(&cloned_patches);
+
+            async move {
+
+                if decided_variant.is_some()
+                    && accepted_variants == 1
+                    && unknown_variants == 0
+                {
+                    if let Some((lwjgl_path, lwjgl)) = process_single_lwjgl_variant(&decided_variant.expect("Unwrap to be safe inside is_some").group, &patches)? {
+                        {
+                            debug!("Uploading {}", lwjgl_path);
+                            upload_file_to_bucket(
+                                lwjgl_path,
+                                serde_json::to_vec(&lwjgl)?,
+                                Some("application/json".to_string()),
+                                uploaded_files_mutex.as_ref(),
+                                semaphore.clone(),
+                            ).await?;
+                        }
+
+                    } else {
+                        info!("Skipped LWJGL {}", &decided_variant.expect("Unwrap to be safe inside is_some").group.version);
+                    }
+                } else {
+                    error!("No variant decided for version {} of out {} possible and {} unknown", lwjgl_version_variant, accepted_variants, unknown_variants);
+                }
+
+                Ok::<(), Error>(())
+            }
+            .await?
+        }
+    }
+
     upload_file_to_bucket(
         format!(
             "minecraft/v{}/manifest.json",
@@ -313,8 +734,31 @@ struct LibraryPatch {
     pub patch_additional_libraries: Option<bool>,
 }
 
-/// Fetches the list of fabric versions
+/// Fetches the list of library patches
 async fn get_library_patches() -> Result<Vec<LibraryPatch>, Error> {
     let patches = include_bytes!("../library-patches.json");
     Ok(serde_json::from_slice(patches)?)
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LWJGLVariantMarker {
+    #[serde(rename = "match")]
+    pub match_: String,
+    #[serde(rename = "_comment")]
+    pub _comment: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LWJGLVariantConfig {
+    pub accept: Vec<LWJGLVariantMarker>,
+    pub reject: Vec<LWJGLVariantMarker>,
+}
+
+/// Fetches
+async fn get_lwjgl_config() -> Result<LWJGLVariantConfig, Error> {
+    let config = include_bytes!("../lwjgl-config.json");
+    Ok(serde_json::from_slice(config)?)
 }
