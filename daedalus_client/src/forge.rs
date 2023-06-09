@@ -14,10 +14,10 @@ use log::info;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::io::Read;
 use std::sync::Arc;
 use std::time::Instant;
-use std::convert::TryInto;
 use tokio::sync::{Mutex, Semaphore};
 
 lazy_static! {
@@ -272,7 +272,8 @@ pub async fn retrieve_data(
                                         natives: x.natives,
                                         rules: x.rules,
                                         checksums: x.checksums,
-                                        include_in_classpath: false
+                                        include_in_classpath: false,
+                                        patched: false,
                                     })).collect();
 
                                     let mut local_libs : HashMap<String, bytes::Bytes> = HashMap::new();
@@ -331,6 +332,7 @@ pub async fn retrieve_data(
                                                             rules: None,
                                                             checksums: None,
                                                             include_in_classpath: false,
+                                                            patched: false,
                                                         });
                                                     }
                                                 }

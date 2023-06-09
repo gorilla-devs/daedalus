@@ -1,0 +1,101 @@
+{
+  "accept": [
+    {
+      "match": "e110c423a81ba3db9d2afc0c36762306fc2aa058",
+      "_comment": "#2.9.0 (2013-10-11 15:09:17 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
+    },
+    {
+      "match": "e946455c851e979395d59590e70b2886c4cc6094",
+      "_comment": "#2.9.1 (2015-01-16 14:19:59 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
+    },
+    {
+      "match": "78b7c6bde1a9e1cdc916679cd723c2ad3c5d5a50",
+      "_comment": "#2.9.1-nightly-20131120 (2013-12-09 12:28:10 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
+    },
+    {
+      "match": "5c37090bdf5af642a2d275f650f5964a09d7335f",
+      "_comment": "#2.9.3 (2015-01-30 11:58:24 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
+    },
+    {
+      "match": "d9edd972ff8bdb19c889232409f3438a1be28627",
+      "_comment": "#2.9.4-nightly-20150209 (2017-09-18 08:39:46 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
+    },
+    {
+      "match": "1c0813dd0f1e3a65ada7e58aeb0122499d7e8258",
+      "_comment": "#3.1.2 (2018-06-21 12:57:11 UTC) natives: [[Osx, Windows, Linux]x6 ] Split: false"
+    },
+    {
+      "match": "b41a756fdccd3a804c9e5485ababde79ca956beb",
+      "_comment": "#3.1.6 (2019-01-30 15:16:49 UTC) natives: [[Osx, Windows, Linux]x6 ] Split: False"
+    },
+    {
+      "match": "84ced01dbaa11d56ec304cd615ea346538f8107b",
+      "_comment": "#3.2.1 (2019-06-03 14:34:20 UTC) natives: [[Osx, Windows, Linux]x6 ] Split: false"
+    },
+    {
+      "match": "5b89cf6b701884ebd2e4880d98a86bbf647cc8f2",
+      "_comment": "#3.2.2 (2019-07-11 10:52:33 UTC) natives: [[Osx, Windows, Linux]x6 ] Split false"
+    },
+    {
+      "match": "476c360f7de8ac4d91b4a7712f90c828ea5f7136",
+      "_comment": "#3.3.1 (2023-06-09 14:15:49 UTC) natives: [] Split: true (allow all) (WoA natives)"
+    }
+  ],
+  "reject": [
+    {
+      "match": "1964f870fbb884d090b1984cdab9859d8611bba5",
+      "_comment": "#2.9.0 (2013-10-25 13:00:00 UTC) natives: [[Osx, Windows, Linux], [Windows, Linux]] Split: false",
+      "reason": "only for windows, linux"
+    },
+    {
+      "match": "ab1a6fabc73c2b83bdd9bc896217fe1611b1e303",
+      "_comment": "#2.9.0 (2013-04-25 15:45:00 UTC) natives: [[Osx, Windows, Linux]x3 ] Split: false",
+      "reason": "newer variant available"
+    },
+    {
+      "match": "b6d0206457b37b8663f3d2f24dfa9ace2099a247",
+      "_comment": "#2.9.1 (2014-08-25 14:52:18 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false",
+      "reason": "newer variant available"
+    },
+    {
+      "match": "039c2d17b4907d2b4b96ffcfa8724196ef15641d",
+      "_comment": "#3.1.6 (2019-04-18 11:05:19 UTC) natives: [[Linux]x6 ] Split: false",
+      "reason": "only for linux" 
+    },
+    {
+      "match": "b92b26c14478e8ba7c5dabd04fabe9137cd10c92",
+      "_comment": "#3.2.1 (2019-04-18 11:05:19 UTC) natives: [[Osx, Windows]x6 ] Split: false",
+      "reason": "only for osx, windows"
+    },
+    {
+      "match": "ad452a1d136f216f072ab502797cfb12535829c3",
+      "_comment": "#3.2.2 (2022-04-13 15:41:17 UTC) natives: [[Windows, Linux]x7 ] Split: false",
+      "reason": "only for windows, linux"
+    },
+    {
+      "match": "b682169778ded4dea7fcf69bb7d0ce9374f82fc1",
+      "_comment": "#3.2.2 (2021-10-13 15:23:23 UTC) natives: [[Windows, Linux]x7 ] Split: false",
+      "reason": "only for windows, linux"
+    },
+    {
+      "match": "e2278a46f643e1850dee0bcec9daaff8823243d7",
+      "_comment": "#3.2.2 (2019-11-08 12:42:44 UTC) natives: [[Windows, Linux]x6 ] Split: false",
+      "reason": "only for windows, linux"
+    },
+    {
+      "match": "0e79338a06a8706b809e45045950e4273758d0ad",
+      "_comment": "#3.3.1 (2022-12-05 13:21:34 UTC) natives: [] Split: true",
+      "reason": "newer variant available"
+    },
+    {
+      "match": "8572ad80f0a5755aa645cecf66b8be3012fd32f0",
+      "_comment": "#3.3.1 (2022-04-27 15:54:15 UTC) natives: [[Osx, Windows, Linux]x7 ] Split: false",
+      "reason": "doesn't use split natives, newer variant available"
+    },
+    {
+      "match": "6f8a659552367d8babc900c0267dd2656f439004",
+      "_comment": "#3.3.1 (2022-05-12 15:36:11 UTC) natives: [[Osx, Windows, Linux]x7 ] Split: true",
+      "reason": "newer variant available"
+    }
+  ]
+}

@@ -34,6 +34,8 @@ pub enum Error {
     ArcError,
     #[error("Error acquiring semaphore: {0}")]
     AcquireError(#[from] tokio::sync::AcquireError),
+    #[error("Error parsing libraries: {0}")]
+    LibraryError(String),
 }
 
 #[tokio::main]
@@ -56,6 +58,7 @@ async fn main() {
     let semaphore = Arc::new(Semaphore::new(10));
 
     loop {
+        info!("Waiting for next update timer");
         timer.tick().await;
 
         let mut uploaded_files = Vec::new();
