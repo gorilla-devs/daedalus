@@ -148,9 +148,7 @@ fn process_single_lwjgl_variant(
                                 good = false;
                                 break;
                             }
-
                         }
-                        
                     }
                 } else {
                     warn!("LWJGL variant library missing downloads classifiers: {} {}", lwjgl.version, lib.name);
@@ -650,16 +648,16 @@ pub async fn retrieve_data(
                     })
                     .collect::<Vec<_>>();
                 warn!(
-                "Unmarked LWJGL variant {}, #{} ({}) natives: {:?} Split: {}",
-                variant.sha1,
-                lwjgl_version_variant,
-                variant.group.release_time,
-                natives,
-                variant
-                    .group
-                    .has_split_natives
-                    .map_or("unknown".to_string(), |b| b.to_string()),
-            );
+                    "Unmarked LWJGL variant {}, #{} ({}) natives: {:?} Split: {}",
+                    variant.sha1,
+                    lwjgl_version_variant,
+                    variant.group.release_time,
+                    natives,
+                    variant
+                        .group
+                        .has_split_natives
+                        .map_or("unknown".to_string(), |b| b.to_string()),
+                );
                 unknown_variants += 1;
             }
 
