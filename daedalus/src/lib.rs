@@ -141,7 +141,12 @@ impl GradleSpecifier {
 
     /// Returns if specifier belongs to a lwjgl library
     pub fn is_lwjgl(&self) -> bool {
-        vec![ "org.lwjgl", "org.lwjgl.lwjgl", "net.java.jinput", "net.java.jutils"]
+        vec![
+            "org.lwjgl",
+            "org.lwjgl.lwjgl",
+            "net.java.jinput",
+            "net.java.jutils",
+        ]
         .contains(&self.package.as_str())
     }
 

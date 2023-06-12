@@ -174,7 +174,7 @@ fn map_log4j_artifact(
 ) -> Result<Option<(String, String)>, Error> {
     debug!("log4j version: {}", version);
     let x = lenient_semver::parse(version);
-    if x <= lenient_semver::parse("2.0") { 
+    if x <= lenient_semver::parse("2.0") {
         // all versions below 2.0 (including beta9 and rc2) use a patch from cdn
         debug!("log4j use beta9 patch");
         return Ok(Some((
@@ -182,7 +182,7 @@ fn map_log4j_artifact(
             "https://REPLACE_ME_JOG4J_PATCH_CDN/maven/".to_string(),
         )));
     }
-    if x <= lenient_semver::parse("2.17.1") { 
+    if x <= lenient_semver::parse("2.17.1") {
         // CVE-2021-44832 fixed in 2.17.1
         debug!("bump log4j to 2.17.1");
         return Ok(Some((
@@ -312,7 +312,7 @@ pub async fn retrieve_data(
                 let mut upload_futures = Vec::new();
 
                 let mut version_info =
-                    daedalus::minecraft::fetch_version_info(version).await?; 
+                    daedalus::minecraft::fetch_version_info(version).await?;
 
                 fn lib_is_split_natives(lib: &Library) -> bool {
                     lib.name.data.clone().is_some_and(|data| data.starts_with("natives-"))
@@ -404,7 +404,13 @@ pub async fn retrieve_data(
 
                     } else if spec.is_log4j() {
                         if let Some((version_override, maven_override)) = map_log4j_artifact(&spec.version)? {
-                            let replacement_name = GradleSpecifier { package: "org.apache.logging.log4j".to_string(), artifact: spec.artifact.clone(), data: None, version: version_override.clone(), extension: "jar".to_string() };
+                            let replacement_name = GradleSpecifier {
+                                package: "org.apache.logging.log4j".to_string(),
+                                artifact: spec.artifact.clone(),
+                                data: None,
+                                version: version_override.clone(),
+                                extension: "jar".to_string()
+                            };
                             let (sha1, size) = match version_override.as_str() {
                                 "2.0-beta9-fixed" => {
                                     match spec.artifact.as_str() {
@@ -418,7 +424,6 @@ pub async fn retrieve_data(
                                             Err(Error::LibraryError(format!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override )))
                                         }
                                     }
-                                    
                                 }
                                 "2.17.1" => {
                                     match spec.artifact.as_str() {
