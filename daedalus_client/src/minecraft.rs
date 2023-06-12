@@ -1,11 +1,12 @@
 use crate::download_file;
 use crate::{format_url, upload_file_to_bucket, Error};
-use daedalus::{get_hash, GradleSpecifier};
 use daedalus::minecraft::{
     merge_partial_library, Dependency, DependencyRule, JavaVersion, LWJGLEntry,
-    Library, LibraryGroup, MinecraftJavaProfile, Os, PartialLibrary, Rule,
-    RuleAction, VersionInfo, VersionManifest, VersionType, LibraryDownload, LibraryDownloads,
+    Library, LibraryDownload, LibraryDownloads, LibraryGroup,
+    MinecraftJavaProfile, Os, PartialLibrary, Rule, RuleAction, VersionInfo,
+    VersionManifest, VersionType,
 };
+use daedalus::{get_hash, GradleSpecifier};
 use log::{debug, error, info, warn};
 use semver::Version;
 use serde::Deserialize;
@@ -79,6 +80,7 @@ fn process_single_lwjgl_variant(
         lwjgl.id = "LWJGL 2".to_string();
         lwjgl.uid = "org.lwjgl".to_string();
         lwjgl.conflicts = Some(vec![Dependency {
+            name: "lwjgl".to_string(),
             uid: "org.lwjgl3".to_string(),
             rule: None,
         }]);
@@ -92,6 +94,7 @@ fn process_single_lwjgl_variant(
         lwjgl.id = "LWJGL 3".to_string();
         lwjgl.uid = "org.lwjgl3".to_string();
         lwjgl.conflicts = Some(vec![Dependency {
+            name: "lwjgl".to_string(),
             uid: "org.lwjgl".to_string(),
             rule: None,
         }]);
@@ -166,7 +169,9 @@ fn process_single_lwjgl_variant(
     }
 }
 
-fn map_log4j_artifact(artifact: &str) -> Result<Option<(String, String)>, Error> {
+fn map_log4j_artifact(
+    artifact: &str,
+) -> Result<Option<(String, String)>, Error> {
     let x = Version::parse(artifact)?;
     if x <= Version::parse("2.0")? {
         return Ok(Some((
@@ -505,11 +510,13 @@ pub async fn retrieve_data(
 
                 let lwjgl_dependency = if is_lwjgl_3 {
                     Dependency {
+                        name: "lwjgl".to_string(),
                         uid: "org.lwjgl3".to_string(),
                         rule: Some(DependencyRule::Suggests(suggested_lwjgl_version)),
                     }
                 } else {
                     Dependency {
+                        name: "lwjgl".to_string(),
                         uid: "org.lwjgl2".to_string(),
                         rule: Some(DependencyRule::Suggests(suggested_lwjgl_version)),
                     }

@@ -387,6 +387,8 @@ pub enum DependencyRule {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A library dependency
 pub struct Dependency {
+    /// A group name that identifies a library group this dependency refers to, ie. `"lwjgl"`
+    pub name: String,
     /// a component uid like `"org.lwjgl"`
     pub uid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
