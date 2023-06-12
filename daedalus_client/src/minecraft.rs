@@ -169,17 +169,21 @@ fn process_single_lwjgl_variant(
     }
 }
 
+/// Patch CVE-2021-44228, CVE-2021-44832, CVE-2021-45046
 fn map_log4j_artifact(
-    artifact: &str,
+    version: &str,
 ) -> Result<Option<(String, String)>, Error> {
-    let x = Version::parse(artifact)?;
-    if x <= Version::parse("2.0")? {
+    use versions::Versioning;
+    let x = Versioning::new(version);
+    if x <= Versioning::new("2.0") { 
+        // all versions below 2.0 (including beta9 and rc2) use a patch from cdn
         return Ok(Some((
             "2.0-beta9-fixed".to_string(),
-            "https://files.prismlauncher.org/maven/".to_string(),
+            "https://REPLACE_ME_JOG4J_PATCH_CDN/maven/".to_string(),
         )));
     }
-    if x <= Version::parse("2.17.1")? {
+    if x <= Versioning::new("2.17.1") { 
+        // CVE-2021-44832 fixed in 2.17.1
         return Ok(Some((
             "2.17.1".to_string(),
             "https://repo1.maven.org/maven2/".to_string(),
@@ -397,7 +401,7 @@ pub async fn retrieve_data(
                         }
 
                     } else if spec.is_log4j() {
-                        if let Some((version_override, maven_override)) = map_log4j_artifact(&spec.artifact)? {
+                        if let Some((version_override, maven_override)) = map_log4j_artifact(&spec.version)? {
                             let replacement_name = GradleSpecifier { package: "org.apache.logging.log4j".to_string(), artifact: spec.artifact.clone(), data: None, version: version_override.clone(), extension: "jar".to_string() };
                             let (sha1, size) = match version_override.as_str() {
                                 "2.0-beta9-fixed" => {
