@@ -1,11 +1,12 @@
-use daedalus::{Branding, BRANDING};
+use daedalus::Branding;
 use log::{error, info, warn};
 use s3::creds::Credentials;
 use s3::error::S3Error;
 use s3::{Bucket, Region};
+use std::ffi::OsStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, Mutex};
 
 mod fabric;
 mod forge;
@@ -36,6 +37,10 @@ pub enum Error {
     AcquireError(#[from] tokio::sync::AcquireError),
     #[error("Error parsing libraries: {0}")]
     LibraryError(String),
+    #[error("Error uploading file: {0}")]
+    WalkDirError(#[from] walkdir::Error),
+    #[error("Error uploading file: {0}")]
+    StaticUploadPathError(String)
 }
 
 #[tokio::main]
@@ -56,6 +61,18 @@ async fn main() {
 
     let mut timer = tokio::time::interval(Duration::from_secs(60 * 60));
     let semaphore = Arc::new(Semaphore::new(10));
+
+    {
+        let uploaded_files = Arc::new(Mutex::new(Vec::new()));
+
+        match upload_static_files(&uploaded_files, semaphore.clone()).await
+        {
+            Ok(()) => {},
+            Err(err) => {
+                error!("{:?}", err);
+            }
+        }
+    }
 
     loop {
         info!("Waiting for next update timer");
@@ -276,4 +293,49 @@ pub async fn download_file_mirrors(
     info!("{} finished downloading", base);
 
     Ok(val)
+}
+
+pub async fn upload_static_files(
+    uploaded_files: &tokio::sync::Mutex<Vec<String>>,
+    semaphore: Arc<Semaphore>,
+) -> Result<(), Error> {
+    use path_slash::PathExt as _;
+    let cdn_upload_dir =
+        dotenvy::var("CND_UPLOAD_DIR").unwrap_or("./upload_cdn".to_string());
+    for entry in walkdir::WalkDir::new(&cdn_upload_dir) {
+        let entry = entry?;
+        if entry.path().is_file() {
+            let upload_path = entry.path()
+                .strip_prefix(&cdn_upload_dir)
+                .expect("Unwrap to be safe because we are striping the prefix to the directory walked")
+                 .to_slash()
+                .ok_or_else(|| {
+                    Error::StaticUploadPathError(
+                        format!("Path {} contains non unicode characters", entry.path().display())
+                    )
+                })?;
+            info!(
+                "uploading {} to cnd at path {}",
+                entry.path().display(),
+                upload_path
+            );
+
+            let content_type =
+                match entry.path().extension().and_then(OsStr::to_str) {
+                    Some("json") => Some("application/json".to_string()),
+                    Some("jar") => Some("application/java-archive".to_string()),
+                    _ => None,
+                };
+
+            upload_file_to_bucket(
+                upload_path.to_string(), // NOTE: if path is non utf8 this will not be a pretty path
+                std::fs::read(entry.path())?,
+                content_type,
+                uploaded_files,
+                semaphore.clone(),
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }

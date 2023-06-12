@@ -179,7 +179,7 @@ fn map_log4j_artifact(
         debug!("log4j use beta9 patch");
         return Ok(Some((
             "2.0-beta9-fixed".to_string(),
-            "https://REPLACE_ME_JOG4J_PATCH_CDN/maven/".to_string(),
+            format_url("maven/"),
         )));
     }
     if x <= lenient_semver::parse("2.17.1") {
