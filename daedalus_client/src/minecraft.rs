@@ -8,7 +8,6 @@ use daedalus::minecraft::{
 };
 use daedalus::{get_hash, GradleSpecifier};
 use log::{debug, error, info, warn};
-use semver::Version;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
@@ -173,22 +172,25 @@ fn process_single_lwjgl_variant(
 fn map_log4j_artifact(
     version: &str,
 ) -> Result<Option<(String, String)>, Error> {
-    use versions::Versioning;
-    let x = Versioning::new(version);
-    if x <= Versioning::new("2.0") { 
+    debug!("log4j version: {}", version);
+    let x = lenient_semver::parse(version);
+    if x <= lenient_semver::parse("2.0") { 
         // all versions below 2.0 (including beta9 and rc2) use a patch from cdn
+        debug!("log4j use beta9 patch");
         return Ok(Some((
             "2.0-beta9-fixed".to_string(),
             "https://REPLACE_ME_JOG4J_PATCH_CDN/maven/".to_string(),
         )));
     }
-    if x <= Versioning::new("2.17.1") { 
+    if x <= lenient_semver::parse("2.17.1") { 
         // CVE-2021-44832 fixed in 2.17.1
+        debug!("bump log4j to 2.17.1");
         return Ok(Some((
             "2.17.1".to_string(),
             "https://repo1.maven.org/maven2/".to_string(),
         )));
     }
+    debug!("no log4j match!");
     Ok(None)
 }
 
