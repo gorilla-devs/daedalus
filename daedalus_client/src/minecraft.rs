@@ -1,12 +1,13 @@
 use crate::download_file;
 use crate::{format_url, upload_file_to_bucket, Error};
+use daedalus::{get_hash, GradleSpecifier};
 use daedalus::minecraft::{
     merge_partial_library, Dependency, DependencyRule, JavaVersion, LWJGLEntry,
     Library, LibraryGroup, MinecraftJavaProfile, Os, PartialLibrary, Rule,
-    RuleAction, VersionInfo, VersionManifest, VersionType,
+    RuleAction, VersionInfo, VersionManifest, VersionType, LibraryDownload, LibraryDownloads,
 };
-use daedalus::{get_hash, GradleSpecifier};
 use log::{debug, error, info, warn};
+use semver::Version;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
@@ -165,6 +166,23 @@ fn process_single_lwjgl_variant(
     }
 }
 
+fn map_log4j_artifact(artifact: &str) -> Result<Option<(String, String)>, Error> {
+    let x = Version::parse(artifact)?;
+    if x <= Version::parse("2.0")? {
+        return Ok(Some((
+            "2.0-beta9-fixed".to_string(),
+            "https://files.prismlauncher.org/maven/".to_string(),
+        )));
+    }
+    if x <= Version::parse("2.17.1")? {
+        return Ok(Some((
+            "2.17.1".to_string(),
+            "https://repo1.maven.org/maven2/".to_string(),
+        )));
+    }
+    Ok(None)
+}
+
 pub async fn retrieve_data(
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
@@ -283,13 +301,7 @@ pub async fn retrieve_data(
                 let mut upload_futures = Vec::new();
 
                 let mut version_info =
-                    daedalus::minecraft::fetch_version_info(version).await?;
-
-
-                fn is_lwjgl(spec: &GradleSpecifier) -> bool {
-                    vec![ "org.lwjgl", "org.lwjgl.lwjgl", "net.java.jinput", "net.java.jutils"]
-                    .contains(&spec.package.as_str())
-                }
+                    daedalus::minecraft::fetch_version_info(version).await?; 
 
                 fn lib_is_split_natives(lib: &Library) -> bool {
                     lib.name.data.clone().is_some_and(|data| data.starts_with("natives-"))
@@ -327,7 +339,7 @@ pub async fn retrieve_data(
                 info!("Processing libraries for version {}", version_info.id);
                 for mut library in version_info.libraries.clone() {
                     let spec = &mut library.name;
-                    if is_lwjgl(spec) {
+                    if spec.is_lwjgl() {
 
                         let mut rules = None;
                         let set_version: Option<String> = if has_split_natives { // implies lwjgl3
@@ -379,7 +391,67 @@ pub async fn retrieve_data(
                             bucket.release_time = version_info.release_time;
                         }
 
-                    // else if log4j ?
+                    } else if spec.is_log4j() {
+                        if let Some((version_override, maven_override)) = map_log4j_artifact(&spec.artifact)? {
+                            let replacement_name = GradleSpecifier { package: "org.apache.logging.log4j".to_string(), artifact: spec.artifact.clone(), data: None, version: version_override.clone(), extension: "jar".to_string() };
+                            let (sha1, size) = match version_override.as_str() {
+                                "2.0-beta9-fixed" => {
+                                    match spec.artifact.as_str() {
+                                        "log4j-api" => {
+                                            Ok(("b61eaf2e64d8b0277e188262a8b771bbfa1502b3", 107347))
+                                        }
+                                        "log4j-core" => {
+                                            Ok(("677991ea2d7426f76309a73739cecf609679492c", 677588))
+                                        }
+                                        _ => {
+                                            Err(Error::LibraryError(format!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override )))
+                                        }
+                                    }
+                                    
+                                }
+                                "2.17.1" => {
+                                    match spec.artifact.as_str() {
+                                        "log4j-api" => {
+                                            Ok(("d771af8e336e372fb5399c99edabe0919aeaf5b2", 301872))
+                                        },
+                                        "log4j-core" => {
+                                            Ok(("779f60f3844dadc3ef597976fcb1e5127b1f343d", 1790452))
+                                        },
+                                        "log4j-slf4j18-impl" => {
+                                            Ok(("ca499d751f4ddd8afb016ef698c30be0da1d09f7", 21268))
+                                        }
+                                        _ => {
+                                            Err(Error::LibraryError(format!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override )))
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    Err(Error::LibraryError(format!("Unhandled overridden log4j version: {}", version_override)))
+                                }
+                            }?;
+                            let artifact = LibraryDownload {
+                                path: replacement_name.path(),
+                                sha1: sha1.to_string(),
+                                size,
+                                url: format!("{}{}", maven_override, replacement_name.path()),
+
+                            };
+                            new_libraries.push(
+                                Library {
+                                    name: replacement_name,
+                                    downloads: Some(LibraryDownloads { artifact: Some(artifact), classifiers: None }),
+                                    extract: None,
+                                    url: None,
+                                    natives: None,
+                                    rules: None,
+                                    checksums: None,
+                                    include_in_classpath: false,
+                                    patched: false,
+                                }
+                            );
+                        } else {
+                            new_libraries.push(library)
+                        }
                     } else {
                         let mut libs =
                             patch_library(&patches, library);
