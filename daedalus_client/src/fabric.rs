@@ -93,7 +93,7 @@ pub async fn retrieve_data(
                             visited_assets.push(lib.name.clone())
                         }
                     }
-                    
+
                     let name = lib.name.to_string();
                     if name.contains(DUMMY_GAME_VERSION) {
                         lib.name = name.replace(DUMMY_GAME_VERSION, &BRANDING

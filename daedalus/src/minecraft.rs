@@ -2,7 +2,7 @@ use crate::modded::{Processor, SidedDataEntry};
 use crate::{download_file, Error, GradleSpecifier};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 
 #[cfg(feature = "bincode")]
@@ -236,7 +236,9 @@ pub enum RuleAction {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone)]
+#[derive(
+    Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone,
+)]
 #[serde(rename_all = "kebab-case")]
 /// An enum representing the different types of operating systems
 pub enum Os {
@@ -387,6 +389,8 @@ pub enum DependencyRule {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A library dependency
 pub struct Dependency {
+    /// A group name that identifies a library group this dependency refers to, ie. `"lwjgl"`
+    pub name: String,
     /// a component uid like `"org.lwjgl"`
     pub uid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -574,7 +578,7 @@ pub struct LibraryGroup {
     pub conflicts: Option<Vec<Dependency>>,
     #[serde(skip_serializing)]
     /// group has libs with split natives
-    pub has_split_natives: Option<bool>
+    pub has_split_natives: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -596,7 +600,8 @@ impl LWJGLEntry {
         group_copy.release_time = DateTime::default(); // reset so the hash doesn't account for it
         let mut hasher = Sha1::new();
         hasher.update(
-            &serde_json::to_vec(&group_copy).expect("library group to serialize"),
+            &serde_json::to_vec(&group_copy)
+                .expect("library group to serialize"),
         );
 
         let hash = hasher.hexdigest();

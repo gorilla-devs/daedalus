@@ -134,9 +134,25 @@ impl GradleSpecifier {
         )
     }
 
-    /// REturns the full path of the artifact
+    /// Returns the full path of the artifact
     pub fn path(&self) -> String {
         format!("{}/{}", self.base(), self.filename())
+    }
+
+    /// Returns if specifier belongs to a lwjgl library
+    pub fn is_lwjgl(&self) -> bool {
+        vec![
+            "org.lwjgl",
+            "org.lwjgl.lwjgl",
+            "net.java.jinput",
+            "net.java.jutils",
+        ]
+        .contains(&self.package.as_str())
+    }
+
+    /// returns if the specifier belongs to a log4j library
+    pub fn is_log4j(&self) -> bool {
+        self.package.as_str() == "org.apache.logging.log4j"
     }
 }
 
