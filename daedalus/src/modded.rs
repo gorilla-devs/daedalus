@@ -1,7 +1,8 @@
 use crate::{download_file, Branding, Error, BRANDING};
 
 use crate::minecraft::{
-    Argument, ArgumentType, Library, VersionInfo, VersionType,
+    Argument, ArgumentType, Library, LoggingConfig, LoggingConfigName,
+    VersionInfo, VersionType,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,9 @@ pub struct PartialVersionInfo {
     #[serde(rename = "type")]
     /// The type of version
     pub type_: VersionType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Logging configuration
+    pub logging: Option<HashMap<LoggingConfigName, LoggingConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// (Forge-only)
     pub data: Option<HashMap<String, SidedDataEntry>>,
@@ -175,6 +179,11 @@ pub fn merge_partial_version(
         release_time: partial.release_time,
         time: partial.time,
         type_: partial.type_,
+        logging: if let Some(cfg) = partial.logging {
+            Some(cfg)
+        } else {
+            merge.logging
+        },
         data: partial.data,
         processors: partial.processors,
     }

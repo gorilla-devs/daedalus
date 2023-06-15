@@ -79,7 +79,7 @@ pub struct Version {
 /// Java profile required to run this mc version
 pub enum MinecraftJavaProfile {
     /// Java 8
-    JRELegacy,
+    JreLegacy,
     /// Java 16
     JavaRuntimeAlpha,
     /// Java 17
@@ -94,7 +94,7 @@ impl MinecraftJavaProfile {
     /// Converts the version type to a string
     pub fn as_str(&self) -> &'static str {
         match self {
-            MinecraftJavaProfile::JRELegacy => "jre-legacy",
+            MinecraftJavaProfile::JreLegacy => "jre-legacy",
             MinecraftJavaProfile::JavaRuntimeAlpha => "java-runtime-alpha",
             MinecraftJavaProfile::JavaRuntimeBeta => "java-runtime-beta",
             MinecraftJavaProfile::JavaRuntimeGamma => "java-runtime-gamma",
@@ -108,7 +108,7 @@ impl TryFrom<&str> for MinecraftJavaProfile {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "jre-legacy" => Ok(MinecraftJavaProfile::JRELegacy),
+            "jre-legacy" => Ok(MinecraftJavaProfile::JreLegacy),
             "java-runtime-alpha" => Ok(MinecraftJavaProfile::JavaRuntimeAlpha),
             "java-runtime-beta" => Ok(MinecraftJavaProfile::JavaRuntimeBeta),
             "java-runtime-gamma" => Ok(MinecraftJavaProfile::JavaRuntimeGamma),
@@ -516,6 +516,53 @@ pub enum ArgumentType {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone, Copy)]
+#[serde(rename_all = "kebab-case")]
+/// Java Logging type
+pub enum LoggingType {
+    /// Log4j XML config file
+    Log4j2Xml,
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone, Copy)]
+#[serde(rename_all = "kebab-case")]
+/// Java Logging config names
+pub enum LoggingConfigName {
+    /// Client logging config
+    Client,
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+/// Java Logging artifact for download
+pub struct LoggingArtifact {
+    /// The Name of the artifact
+    id: String,
+    /// The Sha1 hash of the file
+    sha1: String,
+    /// The Size of the file
+    size: u32,
+    /// The url where this file cna be reached
+    url: String,
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+/// Java Logging configuration
+pub struct LoggingConfig {
+    /// Logging config file
+    pub file: LoggingArtifact,
+    /// JVM config arg
+    pub argument: String,
+    #[serde(rename = "type")]
+    /// Logging type
+    pub type_: LoggingType,
+}
+
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Information about a version
@@ -558,6 +605,9 @@ pub struct VersionInfo {
     #[serde(rename = "type")]
     /// The type of version
     pub type_: VersionType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Logging configuration
+    pub logging: Option<HashMap<LoggingConfigName, LoggingConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// (Forge-only)
     pub data: Option<HashMap<String, SidedDataEntry>>,
