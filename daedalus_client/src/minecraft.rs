@@ -177,10 +177,7 @@ fn map_log4j_artifact(
     if x <= lenient_semver::parse("2.0") {
         // all versions below 2.0 (including beta9 and rc2) use a patch from cdn
         debug!("log4j use beta9 patch");
-        return Ok(Some((
-            "2.0-beta9-fixed".to_string(),
-            format_url("maven/"),
-        )));
+        return Ok(Some(("2.0-beta9-fixed".to_string(), format_url("maven/"))));
     }
     if x <= lenient_semver::parse("2.17.1") {
         // CVE-2021-44832 fixed in 2.17.1

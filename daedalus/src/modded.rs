@@ -134,6 +134,7 @@ pub fn merge_partial_version(
             &BRANDING.get_or_init(Branding::default).dummy_replace_string,
             &merge_id,
         ),
+        inherits_from: Some(merge_id.clone()),
         java_version: merge.java_version,
         libraries: partial
             .libraries
