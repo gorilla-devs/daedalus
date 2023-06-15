@@ -458,8 +458,8 @@ pub async fn retrieve_data(
                                     natives: None,
                                     rules: None,
                                     checksums: None,
-                                    include_in_classpath: false,
-                                    patched: false,
+                                    include_in_classpath: library.include_in_classpath,
+                                    patched: true,
                                 }
                             );
                         } else {
@@ -555,7 +555,7 @@ pub async fn retrieve_data(
                         }
                     } else {
                         Some(JavaVersion {
-                            component: MinecraftJavaProfile::JRELegacy
+                            component: MinecraftJavaProfile::JreLegacy
                                 .as_str()
                                 .to_string(),
                             major_version: 0,

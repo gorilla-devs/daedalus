@@ -193,6 +193,7 @@ pub async fn retrieve_data(
                     release_time: version.release_time,
                     time: version.time,
                     type_: version.type_,
+                    logging: None,
                     inherits_from: version
                         .inherits_from
                         .replace(DUMMY_GAME_VERSION, &BRANDING

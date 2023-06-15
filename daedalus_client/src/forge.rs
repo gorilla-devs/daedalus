@@ -219,6 +219,7 @@ pub async fn retrieve_data(
                                         arguments: profile.version_info.minecraft_arguments.map(|x| [(ArgumentType::Game, x.split(' ').map(|x| Argument::Normal(x.to_string())).collect())].iter().cloned().collect()),
                                         libraries: libs,
                                         type_: profile.version_info.type_,
+                                        logging: None,
                                         data: None,
                                         processors: None
                                     };
@@ -436,6 +437,7 @@ pub async fn retrieve_data(
                                         arguments: version_info.arguments,
                                         libraries: libs,
                                         type_: version_info.type_,
+                                        logging: None,
                                         data: Some(profile.data),
                                         processors: Some(profile.processors),
                                     };
