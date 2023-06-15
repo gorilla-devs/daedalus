@@ -539,13 +539,13 @@ pub enum LoggingConfigName {
 /// Java Logging artifact for download
 pub struct LoggingArtifact {
     /// The Name of the artifact
-    id: String,
+    pub id: String,
     /// The Sha1 hash of the file
-    sha1: String,
+    pub sha1: String,
     /// The Size of the file
-    size: u32,
+    pub size: u32,
     /// The url where this file cna be reached
-    url: String,
+    pub url: String,
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
