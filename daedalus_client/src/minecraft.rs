@@ -77,7 +77,7 @@ fn process_single_lwjgl_variant(
 
     let version_path = if lwjgl_version.starts_with("2") {
         lwjgl.id = "LWJGL 2".to_string();
-        lwjgl.uid = "org.lwjgl".to_string();
+        lwjgl.uid = "org.lwjgl2".to_string();
         lwjgl.conflicts = Some(vec![Dependency {
             name: "lwjgl".to_string(),
             uid: "org.lwjgl3".to_string(),
@@ -85,7 +85,7 @@ fn process_single_lwjgl_variant(
         }]);
 
         format!(
-            "minecraft/v{}/libraries/org.lwjgl/{}.json",
+            "minecraft/v{}/libraries/org.lwjgl2/{}.json",
             daedalus::minecraft::CURRENT_FORMAT_VERSION,
             lwjgl_version
         )
@@ -94,7 +94,7 @@ fn process_single_lwjgl_variant(
         lwjgl.uid = "org.lwjgl3".to_string();
         lwjgl.conflicts = Some(vec![Dependency {
             name: "lwjgl".to_string(),
-            uid: "org.lwjgl".to_string(),
+            uid: "org.lwjgl2".to_string(),
             rule: None,
         }]);
 
