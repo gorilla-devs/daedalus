@@ -300,6 +300,7 @@ class LibraryPatch(MetaBase):
     override: Optional[Library]
     additionalLibraries: Optional[List[Library]]
     patchAdditionalLibraries: Optional[bool]
+    listMergeStrategy: Optional[str]
 
     def applies(self, target: Library) -> bool:
         return target.name in self.match
@@ -317,7 +318,7 @@ class LibraryPatches(MetaBase):
 
 def restore_split_natives(specifier: GradleSpecifier) -> bool:
     import re
-    combined_natives = re.compile(r"(.+)-(natives-\w+-[a-zA-Z0-9]+)")
+    combined_natives = re.compile(r"(.+)-(natives-.+)")
     match = combined_natives.match(specifier.artifact)
     if match is not None:
         old = copy.deepcopy(specifier)
@@ -344,12 +345,22 @@ def main():
             if patch.override.name is not None:
                 if restore_split_natives(patch.override.name):
                     change = True
+                    if patch.override.downloads is not None:
+                        if patch.override.downloads.artifact is not None:
+                            if patch.override.downloads.artifact.path  is not None:
+                                patch.override.downloads.artifact.path = patch.override.name.path()
+
 
         if patch.additionalLibraries is not None:
             for lib in patch.additionalLibraries:
                 if lib.name is not None:
                     if restore_split_natives(lib.name):
                         change = True
+                        if lib.downloads is not None:
+                            if lib.downloads.artifact is not None:
+                                if lib.downloads.artifact.path  is not None:
+                                    lib.downloads.artifact.path = lib.name.path()
+
     if change:
         print("Split native restored: backing up old patches.")
         old_patches.write("library-patches.json.bk")

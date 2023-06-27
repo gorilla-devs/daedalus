@@ -811,7 +811,7 @@ pub async fn retrieve_data(
         .into_inner())
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// A version of the fabric loader
 struct LibraryPatch {
@@ -830,7 +830,44 @@ struct LibraryPatch {
 /// Fetches the list of library patches
 async fn get_library_patches() -> Result<Vec<LibraryPatch>, Error> {
     let patches = include_bytes!("../library-patches.json");
-    Ok(serde_json::from_slice(patches)?)
+    let unprocessed_patches: Vec<LibraryPatch> =
+        serde_json::from_slice(patches)?;
+    Ok(unprocessed_patches.iter().map(pre_process_patch).collect())
+}
+
+fn pre_process_patch(patch: &LibraryPatch) -> LibraryPatch {
+    fn patch_url(url: &mut String) {
+        *url = url.replace("${BASE_URL}", &*dotenvy::var("BASE_URL").unwrap());
+    }
+
+    fn patch_downloads(downloads: &mut LibraryDownloads) {
+        if let Some(artifact) = downloads.artifact.as_mut() {
+            patch_url(&mut artifact.url);
+        }
+        if let Some(classifiers) = downloads.classifiers.as_mut() {
+            for (_, artifact) in classifiers.iter_mut() {
+                patch_url(&mut artifact.url);
+            }
+        }
+    }
+
+    let mut patch_copy: LibraryPatch = patch.clone();
+    if let Some(libraries) = patch_copy.additional_libraries.as_mut() {
+        for lib in libraries.iter_mut() {
+            if let Some(downloads) = lib.downloads.as_mut() {
+                patch_downloads(downloads);
+            }
+        }
+    }
+    if let Some(override_) = patch_copy.override_.as_mut() {
+        if let Some(url) = override_.url.as_mut() {
+            patch_url(url);
+        }
+        if let Some(downloads) = override_.downloads.as_mut() {
+            patch_downloads(downloads);
+        }
+    }
+    patch_copy
 }
 
 #[derive(Deserialize, Debug, Clone)]
