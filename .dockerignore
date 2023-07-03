@@ -1,0 +1,8 @@
+.git/
+.github/
+.idea/
+bucket/
+target/
+.env
+.env.example
+.gitignore
