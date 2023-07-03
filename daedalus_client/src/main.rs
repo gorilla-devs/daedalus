@@ -6,7 +6,7 @@ use s3::{Bucket, Region};
 use std::ffi::OsStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Semaphore, Mutex};
+use tokio::sync::{Mutex, Semaphore};
 
 mod fabric;
 mod forge;
@@ -40,7 +40,7 @@ pub enum Error {
     #[error("Error uploading file: {0}")]
     WalkDirError(#[from] walkdir::Error),
     #[error("Error uploading file: {0}")]
-    StaticUploadPathError(String)
+    StaticUploadPathError(String),
 }
 
 #[tokio::main]
@@ -65,9 +65,8 @@ async fn main() {
     {
         let uploaded_files = Arc::new(Mutex::new(Vec::new()));
 
-        match upload_static_files(&uploaded_files, semaphore.clone()).await
-        {
-            Ok(()) => {},
+        match upload_static_files(&uploaded_files, semaphore.clone()).await {
+            Ok(()) => {}
             Err(err) => {
                 error!("{:?}", err);
             }
@@ -301,7 +300,7 @@ pub async fn upload_static_files(
 ) -> Result<(), Error> {
     use path_slash::PathExt as _;
     let cdn_upload_dir =
-        dotenvy::var("CND_UPLOAD_DIR").unwrap_or("./upload_cdn".to_string());
+        dotenvy::var("CDN_UPLOAD_DIR").unwrap_or("./upload_cdn".to_string());
     for entry in walkdir::WalkDir::new(&cdn_upload_dir) {
         let entry = entry?;
         if entry.path().is_file() {
