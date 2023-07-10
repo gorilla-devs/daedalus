@@ -164,47 +164,49 @@ pub async fn retrieve_data(
 
                                     let now = Instant::now();
                                     let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| async {
-                                        {
-                                            let mut visited_assets = visited_assets.lock().await;
-
-                                            if visited_assets.contains(&lib.name) {
-                                                lib.url = Some(format_url("maven/"));
-
-                                                return Ok::<Library, Error>(lib);
-                                            } else {
-                                                visited_assets.push(lib.name.clone())
-                                            }
-                                        }
-
-                                        let artifact_path = lib.name.path();
-
-                                        let mut mirrors = vec!["https://maven.creeperhost.net/", "https://libraries.minecraft.net/"];
                                         // let mut repo_url
-                                        if let Some(url) = lib.url.as_ref() {
-                                            mirrors.insert(0, url)
+                                        if let Some(url) = lib.url {
+                                            {
+                                                let mut visited_assets = visited_assets.lock().await;
+
+                                                if visited_assets.contains(&lib.name) {
+                                                    lib.url = Some(format_url("maven/"));
+
+                                                    return Ok::<Library, Error>(lib);
+                                                } else {
+                                                    visited_assets.push(lib.name.clone())
+                                                }
+                                            }
+
+                                            let artifact_path = lib.name.path();
+
+                                            let mirrors = vec![url.as_str(), "https://maven.creeperhost.net/", "https://libraries.minecraft.net/"];
+
+                                            let artifact = if lib.name.to_string() == forge_universal_path {
+                                                forge_universal_bytes.clone()
+                                            } else {
+                                                download_file_mirrors(
+                                                    &artifact_path,
+                                                    &mirrors,
+                                                    None,
+                                                    semaphore.clone(),
+                                                )
+                                                .await?
+                                            };
+
+                                            lib.url = Some(format_url("maven/"));
+
+                                            upload_file_to_bucket(
+                                                format!("{}/{}", "maven", artifact_path),
+                                                artifact.to_vec(),
+                                                Some("application/java-archive".to_string()),
+                                                uploaded_files_mutex.as_ref(),
+                                                semaphore.clone(),
+                                            ).await?;
+                                        } else if lib.downloads.is_none() {
+                                            lib.url = Some(String::from("https://libraries.minecraft.net/"));
                                         }
 
-                                        let artifact = if lib.name.to_string() == forge_universal_path {
-                                            forge_universal_bytes.clone()
-                                        } else {
-                                            download_file_mirrors(
-                                                &artifact_path,
-                                                &mirrors,
-                                                None,
-                                                semaphore.clone(),
-                                            )
-                                            .await?
-                                        };
-
-                                        lib.url = Some(format_url("maven/"));
-
-                                        upload_file_to_bucket(
-                                            format!("{}/{}", "maven", artifact_path),
-                                            artifact.to_vec(),
-                                            Some("application/java-archive".to_string()),
-                                            uploaded_files_mutex.as_ref(),
-                                            semaphore.clone(),
-                                        ).await?;
 
                                         Ok::<Library, Error>(lib)
                                     })).await?;
@@ -415,18 +417,9 @@ pub async fn retrieve_data(
                                             // assume its a mojang provided lib
                                             info!("Forge library dependency {} has no url, assuming it is mojang provided", lib.name.to_string());
 
-                                            lib.url = Some(format_url("maven/"));
-                                            let mirrors = vec!["https://maven.creeperhost.net/", "https://libraries.minecraft.net/"];
+                                            lib.url = Some(String::from("https://libraries.minecraft.net/"));
 
-                                            let res = download_file_mirrors(
-                                                &lib.name.path(),
-                                                &mirrors,
-                                                None,
-                                                semaphore.clone(),
-                                            )
-                                            .await?;
-
-                                            Some(res)
+                                            None
                                         };
 
                                         if let Some(bytes) = artifact_bytes {
