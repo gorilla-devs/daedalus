@@ -128,6 +128,7 @@ pub async fn retrieve_data(
                                     x.id == minecraft_version).and_then(|x| x.loaders.iter().find(|x| x.id == loader_version_full));
 
                                 if let Some(version) = version {
+                                    info!("Already have Forge {}", loader_version_full.clone());
                                     return Ok::<Option<LoaderVersion>, Error>(Some(version.clone()));
                                 }
                             }
@@ -163,45 +164,47 @@ pub async fn retrieve_data(
 
                                     let now = Instant::now();
                                     let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| async {
-                                        if let Some(url) = lib.url {
-                                            {
-                                                let mut visited_assets = visited_assets.lock().await;
+                                        {
+                                            let mut visited_assets = visited_assets.lock().await;
 
-                                                if visited_assets.contains(&lib.name) {
-                                                    lib.url = Some(format_url("maven/"));
+                                            if visited_assets.contains(&lib.name) {
+                                                lib.url = Some(format_url("maven/"));
 
-                                                    return Ok::<Library, Error>(lib);
-                                                } else {
-                                                    visited_assets.push(lib.name.clone())
-                                                }
-                                            }
-
-                                            let artifact_path = lib.name.path();
-
-                                            let artifact = if lib.name.to_string() == forge_universal_path {
-                                                forge_universal_bytes.clone()
+                                                return Ok::<Library, Error>(lib);
                                             } else {
-                                                let mirrors = vec![&*url, "https://maven.creeperhost.net/", "https://libraries.minecraft.net/"];
-
-                                                download_file_mirrors(
-                                                    &artifact_path,
-                                                    &mirrors,
-                                                    None,
-                                                    semaphore.clone(),
-                                                )
-                                                    .await?
-                                            };
-
-                                            lib.url = Some(format_url("maven/"));
-
-                                            upload_file_to_bucket(
-                                                format!("{}/{}", "maven", artifact_path),
-                                                artifact.to_vec(),
-                                                Some("application/java-archive".to_string()),
-                                                uploaded_files_mutex.as_ref(),
-                                                semaphore.clone(),
-                                            ).await?;
+                                                visited_assets.push(lib.name.clone())
+                                            }
                                         }
+
+                                        let artifact_path = lib.name.path();
+
+                                        let mut mirrors = vec!["https://maven.creeperhost.net/", "https://libraries.minecraft.net/"];
+                                        // let mut repo_url
+                                        if let Some(url) = lib.url.as_ref() {
+                                            mirrors.insert(0, url)
+                                        }
+
+                                        let artifact = if lib.name.to_string() == forge_universal_path {
+                                            forge_universal_bytes.clone()
+                                        } else {
+                                            download_file_mirrors(
+                                                &artifact_path,
+                                                &mirrors,
+                                                None,
+                                                semaphore.clone(),
+                                            )
+                                            .await?
+                                        };
+
+                                        lib.url = Some(format_url("maven/"));
+
+                                        upload_file_to_bucket(
+                                            format!("{}/{}", "maven", artifact_path),
+                                            artifact.to_vec(),
+                                            Some("application/java-archive".to_string()),
+                                            uploaded_files_mutex.as_ref(),
+                                            semaphore.clone(),
+                                        ).await?;
 
                                         Ok::<Library, Error>(lib)
                                     })).await?;
@@ -302,44 +305,44 @@ pub async fn retrieve_data(
                                     for entry in profile.data.values_mut() {
                                         if entry.client.starts_with('/') || entry.server.starts_with('/') {
                                             macro_rules! read_data {
-                                        ($value:expr) => {
-                                            let mut archive_clone = archive.clone();
-                                            let value_clone = $value.clone();
-                                            let lib_bytes = tokio::task::spawn_blocking(move || {
-                                                let mut lib_file = archive_clone.by_name(&value_clone[1..value_clone.len()])?;
-                                                let mut lib_bytes =  Vec::new();
-                                                lib_file.read_to_end(&mut lib_bytes)?;
+                                                ($value:expr) => {
+                                                    let mut archive_clone = archive.clone();
+                                                    let value_clone = $value.clone();
+                                                    let lib_bytes = tokio::task::spawn_blocking(move || {
+                                                        let mut lib_file = archive_clone.by_name(&value_clone[1..value_clone.len()])?;
+                                                        let mut lib_bytes =  Vec::new();
+                                                        lib_file.read_to_end(&mut lib_bytes)?;
 
-                                                Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
-                                            }).await??;
+                                                        Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
+                                                    }).await??;
 
-                                            let split = $value.split('/').last();
+                                                    let split = $value.split('/').last();
 
-                                            if let Some(last) = split {
-                                                let mut file = last.split('.');
+                                                    if let Some(last) = split {
+                                                        let mut file = last.split('.');
 
-                                                if let Some(file_name) = file.next() {
-                                                    if let Some(ext) = file.next() {
-                                                        let path = format!("{}:{}@{}", path.as_deref().unwrap_or(&*format!("net.minecraftforge:forge:{}", version)), file_name, ext);
-                                                        $value = format!("[{}]", &path);
-                                                        local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
+                                                        if let Some(file_name) = file.next() {
+                                                            if let Some(ext) = file.next() {
+                                                                let path = format!("{}:{}@{}", path.as_deref().unwrap_or(&*format!("net.minecraftforge:forge:{}", version)), file_name, ext);
+                                                                $value = format!("[{}]", &path);
+                                                                local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
 
-                                                        libs.push(Library {
-                                                            downloads: None,
-                                                            extract: None,
-                                                            name: path.as_str().try_into()?,
-                                                            url: Some("".to_string()),
-                                                            natives: None,
-                                                            rules: None,
-                                                            checksums: None,
-                                                            include_in_classpath: false,
-                                                            patched: false,
-                                                        });
+                                                                libs.push(Library {
+                                                                    downloads: None,
+                                                                    extract: None,
+                                                                    name: path.as_str().try_into()?,
+                                                                    url: Some("".to_string()),
+                                                                    natives: None,
+                                                                    rules: None,
+                                                                    checksums: None,
+                                                                    include_in_classpath: false,
+                                                                    patched: false,
+                                                                });
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                    }
 
                                             if entry.client.starts_with('/') {
                                                 read_data!(entry.client);
@@ -382,8 +385,7 @@ pub async fn retrieve_data(
                                                         &artifact.url,
                                                         Some(&*artifact.sha1),
                                                         semaphore.clone(),
-                                                    )
-                                                        .await?)
+                                                    ).await?)
                                                 };
 
                                                 if res.is_some() {
@@ -396,12 +398,12 @@ pub async fn retrieve_data(
                                             let res = if url.is_empty() {
                                                 local_libs.get(&lib.name.to_string()).cloned()
                                             } else {
+                                                let lib_url = format!("{}/{}", url, lib.name.path());
                                                 Some(download_file(
-                                                    url,
+                                                    &lib_url,
                                                     None,
                                                     semaphore.clone(),
-                                                )
-                                                    .await?)
+                                                ).await?)
                                             };
 
                                             if res.is_some() {
@@ -409,7 +411,23 @@ pub async fn retrieve_data(
                                             }
 
                                             res
-                                        } else { None };
+                                        } else {
+                                            // assume its a mojang provided lib
+                                            info!("Forge library dependency {} has no url, assuming it is mojang provided", lib.name.to_string());
+
+                                            lib.url = Some(format_url("maven/"));
+                                            let mirrors = vec!["https://maven.creeperhost.net/", "https://libraries.minecraft.net/"];
+
+                                            let res = download_file_mirrors(
+                                                &lib.name.path(),
+                                                &mirrors,
+                                                None,
+                                                semaphore.clone(),
+                                            )
+                                            .await?;
+
+                                            Some(res)
+                                        };
 
                                         if let Some(bytes) = artifact_bytes {
                                             upload_file_to_bucket(
