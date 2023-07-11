@@ -9,11 +9,12 @@ use daedalus::minecraft::{
 use daedalus::modded::{
     LoaderVersion, Manifest, PartialVersionInfo, Processor, SidedDataEntry,
 };
+use daedalus::GradleSpecifier;
 use lazy_static::lazy_static;
 use log::info;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::Read;
 use std::sync::Arc;
@@ -29,6 +30,108 @@ lazy_static! {
         VersionReq::parse(">=32.0.1, <37.0.0").unwrap();
     static ref FORGE_MANIFEST_V3_QUERY: VersionReq =
         VersionReq::parse(">=37.0.0").unwrap();
+}
+
+pub async fn fetch_generated_version_info(
+    version_id: &str,
+) -> Result<daedalus::minecraft::VersionInfo, Error> {
+    let path = format!(
+        "minecraft/v{}/versions/{}.json",
+        daedalus::minecraft::CURRENT_FORMAT_VERSION,
+        version_id
+    );
+
+    Ok(serde_json::from_slice(
+        &daedalus::download_file(&format_url(&path), None).await?,
+    )?)
+}
+
+#[derive(Clone)]
+struct MinecraftVersionCacheEntry {
+    pub id: String,
+    pub libraries: HashSet<GradleSpecifier>,
+}
+
+#[derive(Clone)]
+struct MinecraftVersionLibraryCache {
+    versions: Vec<MinecraftVersionCacheEntry>,
+    max_size: usize,
+}
+
+impl MinecraftVersionLibraryCache {
+    pub fn new() -> Self {
+        MinecraftVersionLibraryCache {
+            versions: Vec::new(),
+            max_size: 20,
+        }
+    }
+
+    pub async fn load_minecraft_version_libs(
+        &mut self,
+        version_id: &str,
+    ) -> Result<&HashSet<GradleSpecifier>, Error> {
+        let index = self.versions.iter().position(|ver| ver.id == version_id);
+
+        if let Some(index) = index {
+            // move found entry to the front of the stack
+            let entry = self.versions.remove(index);
+            self.versions.insert(0, entry);
+            let entry = self
+                .versions
+                .first()
+                .expect("Valid first index as we just inserted it");
+            Ok(&entry.libraries)
+        } else {
+            let generated_version =
+                fetch_generated_version_info(version_id).await?;
+            let libraries: HashSet<GradleSpecifier> = generated_version
+                .libraries
+                .into_iter()
+                .map(|lib| lib.name)
+                .collect();
+            self.versions.insert(
+                0,
+                MinecraftVersionCacheEntry {
+                    id: version_id.to_string(),
+                    libraries,
+                },
+            );
+            // truncate to drop oldest entry ()
+            self.versions.truncate(self.max_size);
+            Ok(&self
+                .versions
+                .get(0)
+                .expect("Valid first index as we just inserted it")
+                .libraries)
+        }
+    }
+}
+
+pub fn should_ignore_artifact(
+    libs: &HashSet<GradleSpecifier>,
+    name: &GradleSpecifier,
+) -> bool {
+    if let Some(ver) = libs.iter().find(|ver| {
+        ver.package == name.package
+            && ver.artifact == name.artifact
+            && ver.data == name.data
+    }) {
+        if ver.version == name.version {
+            // everything matches
+            true
+        } else if lenient_semver::parse(&ver.version)
+            > lenient_semver::parse(&name.version)
+        {
+            // new version is lower
+            true
+        } else {
+            // no match or new version is higher and this is an upgrade
+            false
+        }
+    } else {
+        // no match in set
+        false
+    }
 }
 
 pub async fn retrieve_data(
@@ -50,6 +153,9 @@ pub async fn retrieve_data(
         } else {
             Vec::new()
         }));
+
+    let mc_library_cache_mutex =
+        Arc::new(Mutex::new(MinecraftVersionLibraryCache::new()));
 
     let versions = Arc::new(Mutex::new(Vec::new()));
 
@@ -98,6 +204,7 @@ pub async fn retrieve_data(
 
                 {
                     let loaders_futures = loaders.into_iter().map(|(loader_version_full, version)| async {
+                        let mc_library_cache_mutex = Arc::clone(&mc_library_cache_mutex);
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets_mutex);
                         let uploaded_files_mutex = Arc::clone(&uploaded_files_mutex);
@@ -163,7 +270,17 @@ pub async fn retrieve_data(
                                     let forge_universal_path = profile.install.path.clone();
 
                                     let now = Instant::now();
+
+                                    let minecraft_libs_filter = {
+                                        let mut mc_library_cache = mc_library_cache_mutex.lock().await;
+                                        mc_library_cache.load_minecraft_version_libs(&minecraft_version).await?.clone()
+                                    };
                                     let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| async {
+
+                                        if lib.name.is_lwjgl() || lib.name.is_log4j() || should_ignore_artifact(&minecraft_libs_filter, &lib.name) {
+                                            return Ok::<Option<Library>, Error>(None);
+                                        }
+
                                         // let mut repo_url
                                         if let Some(url) = lib.url {
                                             {
@@ -172,7 +289,7 @@ pub async fn retrieve_data(
                                                 if visited_assets.contains(&lib.name) {
                                                     lib.url = Some(format_url("maven/"));
 
-                                                    return Ok::<Library, Error>(lib);
+                                                    return Ok::<Option<Library>, Error>(Some(lib));
                                                 } else {
                                                     visited_assets.push(lib.name.clone())
                                                 }
@@ -208,7 +325,7 @@ pub async fn retrieve_data(
                                         }
 
 
-                                        Ok::<Library, Error>(lib)
+                                        Ok::<Option<Library>, Error>(Some(lib))
                                     })).await?;
 
                                     let elapsed = now.elapsed();
@@ -222,7 +339,7 @@ pub async fn retrieve_data(
                                         main_class: profile.version_info.main_class,
                                         minecraft_arguments: profile.version_info.minecraft_arguments.clone(),
                                         arguments: profile.version_info.minecraft_arguments.map(|x| [(ArgumentType::Game, x.split(' ').map(|x| Argument::Normal(x.to_string())).collect())].iter().cloned().collect()),
-                                        libraries: libs,
+                                        libraries: libs.into_iter().flatten().collect(),
                                         type_: profile.version_info.type_,
                                         logging: None,
                                         data: None,
