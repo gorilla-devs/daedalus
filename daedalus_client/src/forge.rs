@@ -76,11 +76,6 @@ impl MinecraftVersionLibraryCache {
             // move found entry to the front of the stack
             let entry = self.versions.remove(index);
             self.versions.insert(0, entry);
-            let entry = self
-                .versions
-                .first()
-                .expect("Valid first index as we just inserted it");
-            Ok(&entry.libraries)
         } else {
             let generated_version =
                 fetch_generated_version_info(version_id).await?;
@@ -98,12 +93,13 @@ impl MinecraftVersionLibraryCache {
             );
             // truncate to drop oldest entry ()
             self.versions.truncate(self.max_size);
-            Ok(&self
-                .versions
-                .get(0)
-                .expect("Valid first index as we just inserted it")
-                .libraries)
         }
+
+        let entry = self
+            .versions
+            .first()
+            .expect("Valid first index as we just inserted it");
+        Ok(&entry.libraries)
     }
 }
 
