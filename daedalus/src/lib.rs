@@ -96,7 +96,7 @@ pub enum Error {
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Default)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Default)]
 /// A specifier string for Gradle
 pub struct GradleSpecifier {
     /// The groups of the artifact
