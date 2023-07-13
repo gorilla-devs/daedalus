@@ -269,7 +269,7 @@ pub async fn retrieve_data(
 
                                     let minecraft_libs_filter = {
                                         let mut mc_library_cache = mc_library_cache_mutex.lock().await;
-                                        mc_library_cache.load_minecraft_version_libs(&minecraft_version).await?.clone()
+                                        mc_library_cache.load_minecraft_version_libs(&profile.install.minecraft).await?.clone()
                                     };
                                     let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| async {
 
@@ -470,7 +470,19 @@ pub async fn retrieve_data(
                                     }
 
                                     let now = Instant::now();
+
+
+                                    let minecraft_libs_filter = {
+                                        let mut mc_library_cache = mc_library_cache_mutex.lock().await;
+                                        mc_library_cache.load_minecraft_version_libs(&profile.minecraft).await?.clone()
+                                    };
                                     let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| async {
+
+                                        if lib.name.is_lwjgl() || lib.name.is_log4j() || should_ignore_artifact(&minecraft_libs_filter, &lib.name) {
+                                            return Ok::<Option<Library>, Error>(None);
+                                        }
+
+
                                         let artifact_path = lib.name.path();
 
                                         {
@@ -485,7 +497,7 @@ pub async fn retrieve_data(
                                                     lib.url = Some(format_url("maven/"));
                                                 }
 
-                                                return Ok::<Library, Error>(lib);
+                                                return Ok::<Option<Library>, Error>(Some(lib));
                                             } else {
                                                 visited_assets.push(lib.name.clone())
                                             }
@@ -545,7 +557,7 @@ pub async fn retrieve_data(
                                             ).await?;
                                         }
 
-                                        Ok::<Library, Error>(lib)
+                                        Ok::<Option<Library>, Error>(Some(lib))
                                     })).await?;
 
                                     let elapsed = now.elapsed();
@@ -559,7 +571,7 @@ pub async fn retrieve_data(
                                         main_class: version_info.main_class,
                                         minecraft_arguments: version_info.minecraft_arguments,
                                         arguments: version_info.arguments,
-                                        libraries: libs,
+                                        libraries: libs.into_iter().flatten().collect(),
                                         type_: version_info.type_,
                                         logging: None,
                                         data: Some(profile.data),
@@ -775,3 +787,4 @@ struct ForgeInstallerProfileV2 {
     pub libraries: Vec<Library>,
     pub processors: Vec<Processor>,
 }
+
