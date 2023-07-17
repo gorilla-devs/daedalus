@@ -104,7 +104,7 @@ pub struct GradleSpecifier {
     /// Artifact name
     pub artifact: String,
     /// Classifier of the artifact
-    pub data: Option<String>,
+    pub identifier: Option<String>,
     /// Version of the artifact
     pub version: String,
     /// File extension
@@ -114,7 +114,7 @@ pub struct GradleSpecifier {
 impl GradleSpecifier {
     /// Returns the filename of the artifact
     pub fn filename(&self) -> String {
-        if let Some(classifier) = &self.data {
+        if let Some(classifier) = &self.identifier {
             format!(
                 "{}-{}-{}.{}",
                 self.artifact, self.version, classifier, self.extension
@@ -225,7 +225,7 @@ impl FromStr for GradleSpecifier {
         Ok(GradleSpecifier {
             package,
             artifact,
-            data,
+            identifier: data,
             version,
             extension,
         })
@@ -247,7 +247,7 @@ impl Display for GradleSpecifier {
             String::new()
         };
 
-        if let Some(classifier) = self.data.as_ref() {
+        if let Some(classifier) = self.identifier.as_ref() {
             write!(
                 f,
                 "{}:{}:{}:{}{}",

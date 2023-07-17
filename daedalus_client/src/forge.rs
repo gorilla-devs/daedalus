@@ -110,7 +110,7 @@ pub fn should_ignore_artifact(
     if let Some(ver) = libs.iter().find(|ver| {
         ver.package == name.package
             && ver.artifact == name.artifact
-            && ver.data == name.data
+            && ver.identifier == name.identifier
     }) {
         if ver.version == name.version {
             // everything matches
