@@ -316,7 +316,7 @@ pub async fn retrieve_data(
                     daedalus::minecraft::fetch_version_info(version).await?;
 
                 fn lib_is_split_natives(lib: &Library) -> bool {
-                    lib.name.data.clone().is_some_and(|data| data.starts_with("natives-"))
+                    lib.name.identifier.clone().is_some_and(|data| data.starts_with("natives-"))
                 }
 
                 fn version_has_split_natives(ver: &VersionInfo) -> bool {
@@ -408,7 +408,7 @@ pub async fn retrieve_data(
                             let replacement_name = GradleSpecifier {
                                 package: "org.apache.logging.log4j".to_string(),
                                 artifact: spec.artifact.clone(),
-                                data: None,
+                                identifier: None,
                                 version: version_override.clone(),
                                 extension: "jar".to_string()
                             };

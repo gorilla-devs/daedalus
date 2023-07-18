@@ -4,7 +4,9 @@
 
 #![warn(missing_docs, unused_import_braces, missing_debug_implementations)]
 
-use std::{convert::TryFrom, fmt::Display, str::FromStr};
+use std::{
+    convert::TryFrom, fmt::Display, path::PathBuf, str::FromStr,
+};
 
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
@@ -104,7 +106,7 @@ pub struct GradleSpecifier {
     /// Artifact name
     pub artifact: String,
     /// Classifier of the artifact
-    pub data: Option<String>,
+    pub identifier: Option<String>,
     /// Version of the artifact
     pub version: String,
     /// File extension
@@ -114,13 +116,13 @@ pub struct GradleSpecifier {
 impl GradleSpecifier {
     /// Returns the filename of the artifact
     pub fn filename(&self) -> String {
-        if let Some(classifier) = &self.data {
+        if let Some(identifier) = &self.identifier {
             format!(
                 "{}-{}-{}.{}",
-                self.artifact, self.version, classifier, self.extension
+                &self.artifact, &self.version, identifier, &self.extension
             )
         } else {
-            format!("{}-{}.{}", self.artifact, self.version, self.extension)
+            format!("{}-{}.{}", &self.artifact, &self.version, &self.extension)
         }
     }
 
@@ -128,15 +130,32 @@ impl GradleSpecifier {
     pub fn base(&self) -> String {
         format!(
             "{}/{}/{}",
-            self.package.replace(".", "/"),
-            self.artifact,
-            self.version
+            &self.package.replace('.', "/"),
+            &self.artifact,
+            &self.version
         )
     }
 
     /// Returns the full path of the artifact
     pub fn path(&self) -> String {
         format!("{}/{}", self.base(), self.filename())
+    }
+
+    /// full path of the artifact as a PathBuf
+    pub fn into_path(&self) -> PathBuf {
+        let mut path = PathBuf::new();
+        for part in self.package.split('.') {
+            path = path.join(part);
+        }
+        path.join(&self.artifact)
+            .join(&self.version)
+            .join(self.filename())
+    }
+
+    /// Construct a url for the artifact from a given base
+    pub fn into_url(&self, base_url: &str) -> Result<url::Url, url::ParseError> {
+        let url = url::Url::parse(base_url)?;
+        url.join(&self.base())?.join(&self.filename())
     }
 
     /// Returns if specifier belongs to a lwjgl library
@@ -160,21 +179,28 @@ impl FromStr for GradleSpecifier {
     type Err = Error;
 
     fn from_str(specifier: &str) -> Result<Self, Self::Err> {
-        let at_split = specifier.split('@').collect::<Vec<&str>>();
+        let mut at_split = specifier.split('@');
 
-        let name_items = at_split
-            .first()
+        let mut name_items = at_split
+            .next()
             .ok_or_else(|| {
                 Error::ParseError(format!(
                     "Invalid Gradle Specifier for library {}",
                     &specifier
                 ))
             })?
-            .split(':')
-            .collect::<Vec<&str>>();
+            .split(':');
+
+        let extension = at_split.next().unwrap_or("jar").to_string();
+        if extension.is_empty() {
+            return Err(Error::ParseError(format!(
+                "Empty file extension for library {}",
+                &specifier
+            )));
+        }
 
         let package = name_items
-            .first()
+            .next()
             .ok_or_else(|| {
                 Error::ParseError(format!(
                     "Unable to find package for library {}",
@@ -183,7 +209,7 @@ impl FromStr for GradleSpecifier {
             })?
             .to_string();
         let artifact = name_items
-            .get(1)
+            .next()
             .ok_or_else(|| {
                 Error::ParseError(format!(
                     "Unable to find name for library {}",
@@ -192,7 +218,7 @@ impl FromStr for GradleSpecifier {
             })?
             .to_string();
         let version = name_items
-            .get(2)
+            .next()
             .ok_or_else(|| {
                 Error::ParseError(format!(
                     "Unable to find version for library {}",
@@ -201,31 +227,12 @@ impl FromStr for GradleSpecifier {
             })?
             .to_string();
 
-        let extension = if at_split.len() == 2 {
-            at_split[1].to_string()
-        } else {
-            "jar".to_string()
-        };
+        let identifier = name_items.next().map(|ident| ident.to_string());
 
-        let data = if name_items.len() == 4 {
-            Some(
-                name_items
-                    .get(3)
-                    .ok_or_else(|| {
-                        Error::ParseError(format!(
-                            "Unable to find data for library {}",
-                            &specifier
-                        ))
-                    })?
-                    .to_string(),
-            )
-        } else {
-            None
-        };
         Ok(GradleSpecifier {
             package,
             artifact,
-            data,
+            identifier,
             version,
             extension,
         })
@@ -247,7 +254,7 @@ impl Display for GradleSpecifier {
             String::new()
         };
 
-        if let Some(classifier) = self.data.as_ref() {
+        if let Some(classifier) = self.identifier.as_ref() {
             write!(
                 f,
                 "{}:{}:{}:{}{}",
@@ -388,4 +395,255 @@ pub async fn get_hash(bytes: bytes::Bytes) -> Result<String, Error> {
             .await?;
 
     Ok(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_maven_coordinates(maven_coordinates: &str) -> bool {
+        let gradle_spec = maven_coordinates.parse::<GradleSpecifier>();
+        gradle_spec.is_ok()
+    }
+
+    fn parse_maven_coordinates(
+        maven_coordinates: &str,
+    ) -> Result<GradleSpecifier, Error> {
+        maven_coordinates.parse::<GradleSpecifier>()
+    }
+
+    #[test]
+    fn test_valid_coordinates() {
+        assert!(is_maven_coordinates("com.example:example:1.0.0"));
+        assert!(is_maven_coordinates("com.example:example:1.0.0:identifier"));
+        assert!(is_maven_coordinates("com.example:example:1.0"));
+        assert!(is_maven_coordinates(
+            "com.example:example:1.0:identifier@zip"
+        ));
+        assert!(is_maven_coordinates(
+            "com.example:example-something:full-text-version"
+        ));
+        assert!(is_maven_coordinates(
+            "com.example:example-something:1.0.final"
+        ));
+        assert!(is_maven_coordinates(
+            "com.example:example-something:1.0.0.Final-beta.1"
+        ));
+        assert!(is_maven_coordinates(
+            "com.example.example:example-example:1.0.0"
+        ));
+        assert!(is_maven_coordinates(
+            "com.example.example:example-example:1.0.0.0"
+        ));
+        assert!(is_maven_coordinates(
+            "com.example.example:example-example:1.0.0.0.0.0.0" // Do we want this?
+        ));
+        assert!(is_maven_coordinates(
+            "com.example.example:example-example:1.0.0-SNAPSHOT"
+        ));
+        assert!(is_maven_coordinates(
+            "com.example.example:example-example:1.0.0-beta.1"
+        ));
+
+        assert!(is_maven_coordinates(
+            "com.example.example:example-example:1.0.0+beta.1"
+        ));
+    }
+
+    #[test]
+    fn test_invalid_coordinates() {
+        assert!(!is_maven_coordinates(""));
+        assert!(!is_maven_coordinates("com.example:example"));
+        assert!(!is_maven_coordinates("@com.example:example:1.0.0"));
+        assert!(!is_maven_coordinates("com.example:example:1.0.0:@"));
+        assert!(!is_maven_coordinates("com.example@:example:1.0.0"));
+        assert!(!is_maven_coordinates("com.example:example:1.0.0@"));
+        assert!(!is_maven_coordinates("justsometext"));
+    }
+
+    #[test]
+    fn test_parse_coordinates() {
+        let coordinates = "com.example:example:1.0.0".to_string();
+        let parsed_coordinates = parse_maven_coordinates(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example");
+        assert_eq!(parsed_coordinates.artifact, "example");
+        assert_eq!(parsed_coordinates.version, "1.0.0");
+        assert_eq!(parsed_coordinates.identifier, None);
+        assert_eq!(parsed_coordinates.extension, "jar");
+
+        let coordinates =
+            "com.example.example:example-example:1.0.0-SNAPSHOT".to_string();
+        let parsed_coordinates = parse_maven_coordinates(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example.example");
+        assert_eq!(parsed_coordinates.artifact, "example-example");
+        assert_eq!(parsed_coordinates.version, "1.0.0-SNAPSHOT");
+        assert_eq!(parsed_coordinates.identifier, None);
+        assert_eq!(parsed_coordinates.extension, "jar");
+
+        let coordinates =
+            "com.example.example:example-example:1.0.0-SNAPSHOT@zip"
+                .to_string();
+        let parsed_coordinates = parse_maven_coordinates(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example.example");
+        assert_eq!(parsed_coordinates.artifact, "example-example");
+        assert_eq!(parsed_coordinates.version, "1.0.0-SNAPSHOT");
+        assert_eq!(parsed_coordinates.identifier, None);
+        assert_eq!(parsed_coordinates.extension, "zip");
+
+        let coordinates =
+            "com.example.example:example-example:1.0.0-SNAPSHOT:identifier"
+                .to_string();
+        let parsed_coordinates = parse_maven_coordinates(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example.example");
+        assert_eq!(parsed_coordinates.artifact, "example-example");
+        assert_eq!(parsed_coordinates.version, "1.0.0-SNAPSHOT");
+        assert_eq!(
+            parsed_coordinates.identifier,
+            Some("identifier".to_string())
+        );
+        assert_eq!(parsed_coordinates.extension, "jar");
+
+        let coordinates =
+            "com.example.example:example-example:1.0.0-SNAPSHOT:identifier@zip"
+                .to_string();
+        let parsed_coordinates = parse_maven_coordinates(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example.example");
+        assert_eq!(parsed_coordinates.artifact, "example-example");
+        assert_eq!(parsed_coordinates.version, "1.0.0-SNAPSHOT");
+        assert_eq!(
+            parsed_coordinates.identifier,
+            Some("identifier".to_string())
+        );
+        assert_eq!(parsed_coordinates.extension, "zip");
+    }
+
+    #[test]
+    fn test_try_from() {
+        let coordinates = "com.example:example:1.0.0".to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example");
+        assert_eq!(parsed_coordinates.artifact, "example");
+        assert_eq!(parsed_coordinates.version, "1.0.0");
+        assert_eq!(parsed_coordinates.identifier, None);
+
+        let coordinates = "com.example:example:1.0.0".to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example");
+        assert_eq!(parsed_coordinates.artifact, "example");
+        assert_eq!(parsed_coordinates.version, "1.0.0");
+        assert_eq!(parsed_coordinates.identifier, None);
+
+        let coordinates = "com.example:example:1.0.0@zip".to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example");
+        assert_eq!(parsed_coordinates.artifact, "example");
+        assert_eq!(parsed_coordinates.version, "1.0.0");
+        assert_eq!(parsed_coordinates.identifier, None);
+        assert_eq!(parsed_coordinates.extension, "zip");
+
+        let coordinates =
+            "com.example:example:1.0.0:identifier@zip".to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example");
+        assert_eq!(parsed_coordinates.artifact, "example");
+        assert_eq!(parsed_coordinates.version, "1.0.0");
+        assert_eq!(
+            parsed_coordinates.identifier,
+            Some("identifier".to_owned())
+        );
+        assert_eq!(parsed_coordinates.extension, "zip");
+
+        let coordinates =
+            "com.example:example:1.0.0:identifier-natives-something@zip"
+                .to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        assert_eq!(parsed_coordinates.package, "com.example");
+        assert_eq!(parsed_coordinates.artifact, "example");
+        assert_eq!(parsed_coordinates.version, "1.0.0");
+        assert_eq!(
+            parsed_coordinates.identifier,
+            Some("identifier-natives-something".to_owned())
+        );
+        assert_eq!(parsed_coordinates.extension, "zip");
+
+        let coordinates = "".to_string();
+        assert!(GradleSpecifier::from_str(&coordinates).is_err());
+
+        let coordinates = "justsometext".to_string();
+        assert!(GradleSpecifier::from_str(&coordinates).is_err());
+    }
+
+    #[test]
+    fn test_into_path() {
+        let coordinates = "com.example:example:1.0.0".to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        let path = parsed_coordinates.into_path();
+        assert_eq!(
+            path,
+            PathBuf::from("com")
+                .join("example")
+                .join("example")
+                .join("1.0.0")
+                .join("example-1.0.0.jar")
+        );
+
+        let coordinates = "com.example:example:1.0.0+beta1.2".to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        let path = parsed_coordinates.into_path();
+        assert_eq!(
+            path,
+            PathBuf::from("com")
+                .join("example")
+                .join("example")
+                .join("1.0.0+beta1.2")
+                .join("example-1.0.0+beta1.2.jar")
+        );
+
+        let coordinates = "com.example:example-mc:1.0.0:natives-example".to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        let path = parsed_coordinates.into_path();
+        assert_eq!(
+            path,
+            PathBuf::from("com")
+                .join("example")
+                .join("example-mc")
+                .join("1.0.0")
+                .join("example-mc-1.0.0-natives-example.jar")
+        );
+
+        let coordinates = "com.example:example:1.0.0@zip".to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        let path = parsed_coordinates.into_path();
+        assert_eq!(
+            path,
+            PathBuf::from("com")
+                .join("example")
+                .join("example")
+                .join("1.0.0")
+                .join("example-1.0.0.zip")
+        );
+
+        let coordinates =
+            "com.example:example:1.0.0:identifier@zip".to_string();
+        let parsed_coordinates =
+            GradleSpecifier::from_str(&coordinates).unwrap();
+        let path = parsed_coordinates.into_path();
+        assert_eq!(
+            path,
+            PathBuf::from("com")
+                .join("example")
+                .join("example")
+                .join("1.0.0")
+                .join("example-1.0.0-identifier.zip")
+        );
+    }
 }
