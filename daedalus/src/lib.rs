@@ -155,7 +155,7 @@ impl GradleSpecifier {
     /// Construct a url for the artifact from a given base
     pub fn into_url(&self, base_url: &str) -> Result<url::Url, url::ParseError> {
         let url = url::Url::parse(base_url)?;
-        url.join(&self.base())?.join(&self.filename())
+        url.join(&self.path())
     }
 
     /// Returns if specifier belongs to a lwjgl library
