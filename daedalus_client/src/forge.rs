@@ -492,16 +492,7 @@ pub async fn retrieve_data(
                                     let now = Instant::now();
 
 
-                                    let minecraft_libs_filter = {
-                                        let mut mc_library_cache = mc_library_cache_mutex.lock().await;
-                                        mc_library_cache.load_minecraft_version_libs(&profile.minecraft).await?.clone()
-                                    };
                                     let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| async {
-
-                                        if lib.name.is_lwjgl() || lib.name.is_log4j() || should_ignore_artifact(&minecraft_libs_filter, &lib.name) {
-                                            return Ok::<Option<Library>, Error>(None);
-                                        }
-
 
                                         let artifact_path = lib.name.path();
 
