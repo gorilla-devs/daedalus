@@ -12,7 +12,7 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3.25"
 dotenvy = "0.15.6"
 log = "0.4.17"
-env_logger= "0.10.0"
+env_logger = "0.10.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 lazy_static = "1.4.0"
@@ -28,9 +28,8 @@ walkdir = "2.3.3"
 path-slash = "0.2.1"
 
 [features]
-default = [ "forge", "fabric", "quilt",]
+default = ["forge", "fabric", "quilt"]
 save_local = []
 forge = []
 fabric = []
 quilt = []
-
