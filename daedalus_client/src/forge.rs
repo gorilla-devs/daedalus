@@ -135,13 +135,26 @@ pub async fn retrieve_data(
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), Error> {
+    log::info!("Retrieving Forge data ...");
+
     let maven_metadata = fetch_maven_metadata(None, semaphore.clone()).await?;
-    let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
-        "forge/v{}/manifest.json",
-        daedalus::modded::CURRENT_FORGE_FORMAT_VERSION,
-    )))
-    .await
-    .ok();
+
+    let old_manifest = if cfg!(feature = "save_local") {
+        log::info!("Loading local Forge manifest ...");
+        crate::load_file_local(format!(
+            "forge/v{}/manifest.json",
+            daedalus::modded::CURRENT_FORGE_FORMAT_VERSION,
+        ))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    } else {
+        daedalus::modded::fetch_manifest(&format_url(&format!(
+            "forge/v{}/manifest.json",
+            daedalus::modded::CURRENT_FORGE_FORMAT_VERSION,
+        )))
+        .await
+        .ok()
+    };
 
     let old_versions =
         Arc::new(Mutex::new(if let Some(old_manifest) = old_manifest {
@@ -383,17 +396,24 @@ pub async fn retrieve_data(
                                     }).await??;
 
 
-                                    let mut libs : Vec<Library> = version_info.libraries.into_iter().chain(profile.libraries.into_iter().map(|x| Library {
-                                        downloads: x.downloads,
-                                        extract: x.extract,
-                                        name: x.name,
-                                        url: x.url,
-                                        natives: x.natives,
-                                        rules: x.rules,
-                                        checksums: x.checksums,
-                                        include_in_classpath: false,
-                                        patched: false,
-                                    })).collect();
+                                    let mut libs : Vec<Library> = version_info.libraries
+                                        .into_iter()
+                                        .chain(profile.libraries
+                                            .into_iter()
+                                            .map(|x| Library {
+                                                downloads: x.downloads,
+                                                extract: x.extract,
+                                                name: x.name,
+                                                url: x.url,
+                                                natives: x.natives,
+                                                rules: x.rules,
+                                                checksums: x.checksums,
+                                                include_in_classpath: false,
+                                                patched: false,
+                                            })
+                                        )
+                                        .filter(|lib| !lib.name.is_log4j() )
+                                        .collect();
 
                                     let mut local_libs : HashMap<String, bytes::Bytes> = HashMap::new();
 
@@ -472,16 +492,7 @@ pub async fn retrieve_data(
                                     let now = Instant::now();
 
 
-                                    let minecraft_libs_filter = {
-                                        let mut mc_library_cache = mc_library_cache_mutex.lock().await;
-                                        mc_library_cache.load_minecraft_version_libs(&profile.minecraft).await?.clone()
-                                    };
                                     let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| async {
-
-                                        if lib.name.is_lwjgl() || lib.name.is_log4j() || should_ignore_artifact(&minecraft_libs_filter, &lib.name) {
-                                            return Ok::<Option<Library>, Error>(None);
-                                        }
-
 
                                         let artifact_path = lib.name.path();
 
@@ -787,4 +798,3 @@ struct ForgeInstallerProfileV2 {
     pub libraries: Vec<Library>,
     pub processors: Vec<Processor>,
 }
-

@@ -264,6 +264,19 @@ pub async fn save_file_local(
     Ok(())
 }
 
+/// Load a local file
+/// mainly for testing
+pub fn load_file_local(path: String) -> Result<Vec<u8>, Error> {
+    info!("{} saving locally", path);
+
+    let local_save_dir = std::path::Path::new(&LOCAL_SAVE_PATH);
+    let load_path = local_save_dir.join(&path);
+
+    let bytes = std::fs::read(&load_path).map_err(|err| Error::IoError(err))?;
+
+    Ok(bytes)
+}
+
 pub fn format_url(path: &str) -> String {
     format!("{}/{}", &*dotenvy::var("BASE_URL").unwrap(), path)
 }

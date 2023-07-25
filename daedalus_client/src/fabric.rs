@@ -11,13 +11,26 @@ pub async fn retrieve_data(
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), Error> {
+    log::info!("Retrieving Fabric data ...");
+
     let mut list = fetch_fabric_versions(None, semaphore.clone()).await?;
-    let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
-        "fabric/v{}/manifest.json",
-        daedalus::modded::CURRENT_FABRIC_FORMAT_VERSION,
-    )))
-    .await
-    .ok();
+
+    let old_manifest = if cfg!(feature = "save_local") {
+        log::info!("Loading local Fabric manifest ...");
+        crate::load_file_local(format!(
+            "fabric/v{}/manifest.json",
+            daedalus::modded::CURRENT_FABRIC_FORMAT_VERSION,
+        ))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    } else {
+        daedalus::modded::fetch_manifest(&format_url(&format!(
+            "fabric/v{}/manifest.json",
+            daedalus::modded::CURRENT_FABRIC_FORMAT_VERSION,
+        )))
+        .await
+        .ok()
+    };
 
     let mut versions = if let Some(old_manifest) = old_manifest {
         old_manifest.game_versions
