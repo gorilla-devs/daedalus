@@ -199,14 +199,24 @@ pub async fn retrieve_data(
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
 ) -> Result<VersionManifest, Error> {
-    let old_manifest = daedalus::minecraft::fetch_version_manifest(Some(
-        &*format_url(&format!(
+    log::info!("Retrieving Minecraft data ...");
+
+    let old_manifest = if cfg!(feature = "save_local") {
+        log::info!("Loading local Minecraft manifest ...");
+        crate::load_file_local(format!(
             "minecraft/v{}/manifest.json",
             daedalus::minecraft::CURRENT_FORMAT_VERSION
-        )),
-    ))
-    .await
-    .ok();
+        ))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    } else {
+        daedalus::modded::fetch_manifest(&format_url(&format!(
+            "minecraft/v{}/manifest.json",
+            daedalus::minecraft::CURRENT_FORMAT_VERSION
+        )))
+        .await
+        .ok()
+    };
 
     let mut manifest =
         daedalus::minecraft::fetch_version_manifest(None).await?;

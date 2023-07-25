@@ -4,9 +4,7 @@
 
 #![warn(missing_docs, unused_import_braces, missing_debug_implementations)]
 
-use std::{
-    convert::TryFrom, fmt::Display, path::PathBuf, str::FromStr,
-};
+use std::{convert::TryFrom, fmt::Display, path::PathBuf, str::FromStr};
 
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
@@ -153,7 +151,10 @@ impl GradleSpecifier {
     }
 
     /// Construct a url for the artifact from a given base
-    pub fn into_url(&self, base_url: &str) -> Result<url::Url, url::ParseError> {
+    pub fn into_url(
+        &self,
+        base_url: &str,
+    ) -> Result<url::Url, url::ParseError> {
         let url = url::Url::parse(base_url)?;
         url.join(&self.path())
     }
@@ -606,7 +607,8 @@ mod tests {
                 .join("example-1.0.0+beta1.2.jar")
         );
 
-        let coordinates = "com.example:example-mc:1.0.0:natives-example".to_string();
+        let coordinates =
+            "com.example:example-mc:1.0.0:natives-example".to_string();
         let parsed_coordinates =
             GradleSpecifier::from_str(&coordinates).unwrap();
         let path = parsed_coordinates.into_path();
