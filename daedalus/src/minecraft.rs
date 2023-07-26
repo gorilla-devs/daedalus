@@ -719,6 +719,13 @@ pub struct Asset {
 pub struct AssetsIndex {
     /// A hashmap containing the filename (key) and asset (value)
     pub objects: HashMap<String, Asset>,
+    #[serde(default)]
+    #[serde(rename = "virtual")]
+    /// If the index should be reconstructed at a virtual path
+    pub map_virtual: bool,
+    #[serde(default)]
+    /// If the index should be reconstructed in the instance's resource directory
+    pub map_to_resources: bool,
 }
 
 /// Fetches the assets index from the version info
