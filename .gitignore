@@ -121,3 +121,4 @@ Cargo.lock
 *.pdb
 
 .env
+bucket

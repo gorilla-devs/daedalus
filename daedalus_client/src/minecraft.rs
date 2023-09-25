@@ -210,10 +210,12 @@ pub async fn retrieve_data(
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
     } else {
-        daedalus::minecraft::fetch_version_manifest(Some(&format_url(&format!(
-            "minecraft/v{}/manifest.json",
-            daedalus::minecraft::CURRENT_FORMAT_VERSION
-        ))))
+        daedalus::minecraft::fetch_version_manifest(Some(&format_url(
+            &format!(
+                "minecraft/v{}/manifest.json",
+                daedalus::minecraft::CURRENT_FORMAT_VERSION
+            ),
+        )))
         .await
         .ok()
     };

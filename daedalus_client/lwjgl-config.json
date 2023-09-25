@@ -39,6 +39,10 @@
     {
       "match": "476c360f7de8ac4d91b4a7712f90c828ea5f7136",
       "_comment": "#3.3.1 (2023-06-09 14:15:49 UTC) natives: [] Split: true (allow all) (WoA natives)"
+    },
+    {
+      "match": "97c512a2043cac92b33adc9da93f502fa25cdc43",
+      "_comment": "#3.3.2 (2023-09-18 12:34:57 UTC) natives: [[Osx, Windows, Linux] ] Split: false"
     }
   ],
   "reject": [
@@ -60,7 +64,7 @@
     {
       "match": "039c2d17b4907d2b4b96ffcfa8724196ef15641d",
       "_comment": "#3.1.6 (2019-04-18 11:05:19 UTC) natives: [[Linux]x6 ] Split: false",
-      "reason": "only for linux" 
+      "reason": "only for linux"
     },
     {
       "match": "b92b26c14478e8ba7c5dabd04fabe9137cd10c92",
