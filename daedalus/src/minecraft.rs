@@ -86,6 +86,8 @@ pub enum MinecraftJavaProfile {
     JavaRuntimeBeta,
     /// Java 17
     JavaRuntimeGamma,
+    /// Java 17
+    JavaRuntimeGammaSnapshot,
     /// Java 14
     MinecraftJavaExe,
 }
@@ -98,6 +100,9 @@ impl MinecraftJavaProfile {
             MinecraftJavaProfile::JavaRuntimeAlpha => "java-runtime-alpha",
             MinecraftJavaProfile::JavaRuntimeBeta => "java-runtime-beta",
             MinecraftJavaProfile::JavaRuntimeGamma => "java-runtime-gamma",
+            MinecraftJavaProfile::JavaRuntimeGammaSnapshot => {
+                "java-runtime-gamma-snapshot"
+            }
             MinecraftJavaProfile::MinecraftJavaExe => "minecraft-java-exe",
         }
     }
@@ -112,6 +117,9 @@ impl TryFrom<&str> for MinecraftJavaProfile {
             "java-runtime-alpha" => Ok(MinecraftJavaProfile::JavaRuntimeAlpha),
             "java-runtime-beta" => Ok(MinecraftJavaProfile::JavaRuntimeBeta),
             "java-runtime-gamma" => Ok(MinecraftJavaProfile::JavaRuntimeGamma),
+            "java-runtime-gamma-snapshot" => {
+                Ok(MinecraftJavaProfile::JavaRuntimeGammaSnapshot)
+            }
             "minecraft-java-exe" => Ok(MinecraftJavaProfile::MinecraftJavaExe),
             _ => Err(Error::InvalidMinecraftJavaProfile(value.to_string())),
         }
