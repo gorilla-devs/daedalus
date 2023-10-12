@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, Semaphore};
 mod fabric;
 mod forge;
 mod minecraft;
+mod neoforged;
 mod quilt;
 
 #[derive(thiserror::Error, Debug)]
@@ -19,6 +20,8 @@ pub enum Error {
     DaedalusError(#[from] daedalus::Error),
     #[error("Error while deserializing JSON")]
     SerdeError(#[from] serde_json::Error),
+    #[error("Error while deserializing XML")]
+    XMLError(#[from] serde_xml_rs::Error),
     #[error("Unable to fetch {item}")]
     FetchError { inner: reqwest::Error, item: String },
     #[error("Error while managing asynchronous tasks")]
@@ -85,9 +88,13 @@ async fn main() {
         )
         .await
         {
-            Ok(res) => Some(res),
+            Ok(res) => {
+                info!("Minecraft data retrieved");
+
+                Some(res)
+            }
             Err(err) => {
-                error!("{:?}", err);
+                error!("MC Error: {:?}", err);
 
                 None
             }
@@ -102,8 +109,10 @@ async fn main() {
                 )
                 .await
                 {
-                    Ok(..) => {}
-                    Err(err) => error!("{:?}", err),
+                    Ok(..) => {
+                        info!("Fabric data retrieved")
+                    }
+                    Err(err) => error!("Fabric error: {:?}", err),
                 };
             }
             if cfg!(feature = "forge") {
@@ -114,8 +123,10 @@ async fn main() {
                 )
                 .await
                 {
-                    Ok(..) => {}
-                    Err(err) => error!("{:?}", err),
+                    Ok(..) => {
+                        info!("Forge data retrieved")
+                    }
+                    Err(err) => error!("Forge error: {:?}", err),
                 };
             }
             if cfg!(feature = "quilt") {
@@ -126,8 +137,24 @@ async fn main() {
                 )
                 .await
                 {
-                    Ok(..) => {}
-                    Err(err) => error!("{:?}", err),
+                    Ok(..) => {
+                        info!("Quilt data retrieved")
+                    }
+                    Err(err) => error!("Quilt error: {:?}", err),
+                };
+            }
+            if cfg!(feature = "neoforged") {
+                match neoforged::retrieve_data(
+                    &manifest,
+                    &mut uploaded_files,
+                    semaphore.clone(),
+                )
+                .await
+                {
+                    Ok(..) => {
+                        info!("Neoforged data retrieved")
+                    }
+                    Err(err) => error!("Neoforged error: {:?}", err),
                 };
             }
         }
