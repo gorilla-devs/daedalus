@@ -43,8 +43,27 @@ pub async fn retrieve_data(
     {
         let mut loaders = loaders_mutex.write().await;
 
-        for loader in &list.loader {
-            loaders.push((Box::new(loader.stable), loader.version.clone()))
+        for (index, loader) in list.loader.iter().enumerate() {
+            if versions.iter().any(|x| {
+                x.id == BRANDING
+                    .get_or_init(Branding::default)
+                    .dummy_replace_string
+                    && x.loaders.iter().any(|x| x.id == loader.version)
+            }) {
+                if index == 0 {
+                    loaders.push((
+                        Box::new(loader.stable),
+                        loader.version.clone(),
+                        Box::new(true),
+                    ))
+                }
+            } else {
+                loaders.push((
+                    Box::new(loader.stable),
+                    loader.version.clone(),
+                    Box::new(false),
+                ))
+            }
         }
 
         list.loader
@@ -58,18 +77,7 @@ pub async fn retrieve_data(
 
     let loader_versions = futures::future::try_join_all(
         loaders_mutex.read().await.clone().into_iter().map(
-            |(stable, loader)| async {
-                {
-                    if versions.iter().any(|x| {
-                        x.id == BRANDING
-                            .get_or_init(Branding::default)
-                            .dummy_replace_string
-                            && x.loaders.iter().any(|x| x.id == loader)
-                    }) {
-                        return Ok(None);
-                    }
-                }
-
+            |(stable, loader, skip_upload)| async {
                 let version = fetch_fabric_version(
                     DUMMY_GAME_VERSION,
                     &loader,
@@ -77,9 +85,10 @@ pub async fn retrieve_data(
                 )
                 .await?;
 
-                Ok::<Option<(Box<bool>, String, PartialVersionInfo)>, Error>(
-                    Some((stable, loader, version)),
-                )
+                Ok::<
+                    Option<(Box<bool>, String, PartialVersionInfo, Box<bool>)>,
+                    Error,
+                >(Some((stable, loader, version, skip_upload)))
             },
         ),
     )
@@ -88,7 +97,7 @@ pub async fn retrieve_data(
     let visited_artifacts_mutex = Arc::new(Mutex::new(Vec::new()));
     futures::future::try_join_all(loader_versions.into_iter()
         .flatten().map(
-        |(stable, loader, version)| async {
+        |(stable, loader, version, skip_upload)| async {
             let libs = futures::future::try_join_all(
                 version.libraries.into_iter().map(|mut lib| async {
                     {
@@ -186,6 +195,12 @@ pub async fn retrieve_data(
                 }),
             )
             .await?;
+
+            if async move {
+                *skip_upload
+            }.await {
+                return Ok::<(), Error>(())
+            }
 
             let version_path = format!(
                 "fabric/v{}/versions/{}.json",
