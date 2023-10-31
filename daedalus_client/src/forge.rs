@@ -53,7 +53,7 @@ struct MinecraftVersionCacheEntry {
 }
 
 #[derive(Clone)]
-struct MinecraftVersionLibraryCache {
+pub struct MinecraftVersionLibraryCache {
     versions: Vec<MinecraftVersionCacheEntry>,
     max_size: usize,
 }
@@ -77,8 +77,20 @@ impl MinecraftVersionLibraryCache {
             let entry = self.versions.remove(index);
             self.versions.insert(0, entry);
         } else {
-            let generated_version =
-                fetch_generated_version_info(version_id).await?;
+            let generated_version = if cfg!(feature = "save_local") {
+                let path = format!(
+                    "minecraft/v{}/versions/{}.json",
+                    daedalus::minecraft::CURRENT_FORMAT_VERSION,
+                    version_id
+                );
+
+                crate::load_file_local(path).and_then(|bytes| {
+                    serde_json::from_slice(&bytes).map_err(Into::into)
+                })
+            } else {
+                fetch_generated_version_info(version_id).await
+            }?;
+
             let libraries: HashSet<GradleSpecifier> = generated_version
                 .libraries
                 .into_iter()

@@ -31,12 +31,6 @@ pub async fn retrieve_data(
         .await
         .ok()
     };
-    let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
-        "quilt/v{}/manifest.json",
-        daedalus::modded::CURRENT_QUILT_FORMAT_VERSION,
-    )))
-    .await
-    .ok();
 
     let mut versions = if let Some(old_manifest) = old_manifest {
         old_manifest.game_versions
@@ -48,9 +42,27 @@ pub async fn retrieve_data(
 
     {
         let mut loaders = loaders_mutex.write().await;
-
-        for loader in &list.loader {
-            loaders.push((Box::new(false), loader.version.clone()))
+        for (index, loader) in list.loader.iter().enumerate() {
+            if versions.iter().any(|x| {
+                x.id == BRANDING
+                    .get_or_init(Branding::default)
+                    .dummy_replace_string
+                    && x.loaders.iter().any(|x| x.id == loader.version)
+            }) {
+                if index == 0 {
+                    loaders.push((
+                        Box::new(false),
+                        loader.version.clone(),
+                        Box::new(true),
+                    ))
+                }
+            } else {
+                loaders.push((
+                    Box::new(false),
+                    loader.version.clone(),
+                    Box::new(false),
+                ))
+            }
         }
 
         list.loader
@@ -64,7 +76,7 @@ pub async fn retrieve_data(
 
     let loader_versions = futures::future::try_join_all(
         loaders_mutex.read().await.clone().into_iter().map(
-            |(stable, loader)| async {
+            |(stable, loader, skip_upload)| async {
                 {
                     if versions.iter().any(|x| {
                         x.id == BRANDING
@@ -83,9 +95,10 @@ pub async fn retrieve_data(
                 )
                 .await?;
 
-                Ok::<Option<(Box<bool>, String, PartialVersionInfo)>, Error>(
-                    Some((stable, loader, version)),
-                )
+                Ok::<
+                    Option<(Box<bool>, String, PartialVersionInfo, Box<bool>)>,
+                    Error,
+                >(Some((stable, loader, version, skip_upload)))
             },
         ),
     )
@@ -94,7 +107,7 @@ pub async fn retrieve_data(
     let visited_artifacts_mutex = Arc::new(Mutex::new(Vec::new()));
     futures::future::try_join_all(loader_versions.into_iter()
         .flatten().map(
-        |(stable, loader, version)| async {
+        |(stable, loader, version, skip_upload)| async {
             let libs = futures::future::try_join_all(
                 version.libraries.into_iter().map(|mut lib| async {
                     {
@@ -191,6 +204,13 @@ pub async fn retrieve_data(
                 }),
             )
             .await?;
+
+
+            if async move {
+                *skip_upload
+            }.await {
+                return Ok::<(), Error>(())
+            }
 
             let version_path = format!(
                 "quilt/v{}/versions/{}.json",
@@ -292,18 +312,13 @@ pub async fn retrieve_data(
         version.loaders.sort_by(|x, y| {
             list.loader
                 .iter()
-                .position(|z| {
-                    x.id.split('-').next().unwrap_or_default() == &*z.version
-                })
+                .position(|z| y.id == z.version)
                 .unwrap_or_default()
                 .cmp(
                     &list
                         .loader
                         .iter()
-                        .position(|z| {
-                            y.id.split('-').next().unwrap_or_default()
-                                == z.version
-                        })
+                        .position(|z| y.id == z.version)
                         .unwrap_or_default(),
                 )
         })
