@@ -22,14 +22,14 @@ pub async fn retrieve_data(
     let old_manifest = if cfg!(feature = "save_local") {
         log::info!("Loading local Neoforged manifest ...");
         crate::load_file_local(format!(
-            "neoforged/v{}/manifest.json",
+            "neoforge/v{}/manifest.json",
             daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
         ))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
     } else {
         daedalus::modded::fetch_manifest(&format_url(&format!(
-            "neoforged/v{}/manifest.json",
+            "neoforge/v{}/manifest.json",
             daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
         )))
         .await

@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, Semaphore};
 mod fabric;
 mod forge;
 mod minecraft;
-mod neoforged;
+mod neoforge;
 mod quilt;
 
 #[derive(thiserror::Error, Debug)]
@@ -144,7 +144,7 @@ async fn main() {
                 };
             }
             if cfg!(feature = "neoforged") {
-                match neoforged::retrieve_data(
+                match neoforge::retrieve_data(
                     &manifest,
                     &mut uploaded_files,
                     semaphore.clone(),
