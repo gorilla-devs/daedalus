@@ -143,7 +143,7 @@ async fn main() {
                     Err(err) => error!("Quilt error: {:?}", err),
                 };
             }
-            if cfg!(feature = "neoforged") {
+            if cfg!(feature = "neoforge") {
                 match neoforge::retrieve_data(
                     &manifest,
                     &mut uploaded_files,
@@ -152,9 +152,9 @@ async fn main() {
                 .await
                 {
                     Ok(..) => {
-                        info!("Neoforged data retrieved")
+                        info!("Neoforge data retrieved")
                     }
-                    Err(err) => error!("Neoforged error: {:?}", err),
+                    Err(err) => error!("Neoforge error: {:?}", err),
                 };
             }
         }

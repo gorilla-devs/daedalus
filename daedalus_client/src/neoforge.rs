@@ -20,7 +20,7 @@ pub async fn retrieve_data(
 ) -> Result<(), Error> {
     let maven_metadata = fetch_maven_metadata(None, semaphore.clone()).await?;
     let old_manifest = if cfg!(feature = "save_local") {
-        log::info!("Loading local Neoforged manifest ...");
+        log::info!("Loading local Neoforge manifest ...");
         crate::load_file_local(format!(
             "neoforge/v{}/manifest.json",
             daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
@@ -289,7 +289,7 @@ pub async fn retrieve_data(
                                     };
 
                                     let version_path = format!(
-                                        "neoforged/v{}/versions/{}.json",
+                                        "neoforge/v{}/versions/{}.json",
                                         daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
                                         new_profile.id
                                     );

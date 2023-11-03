@@ -29,9 +29,9 @@ walkdir = "2.3.3"
 path-slash = "0.2.1"
 
 [features]
-default = ["forge", "fabric", "quilt", "neoforged"]
+default = ["forge", "fabric", "quilt", "neoforge"]
 save_local = []
 forge = []
 fabric = []
 quilt = []
-neoforged = []
+neoforge = []
