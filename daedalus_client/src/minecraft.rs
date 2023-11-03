@@ -604,8 +604,12 @@ pub async fn retrieve_data(
                     let position = cloned_manifest
                         .versions
                         .iter()
-                        .position(|x| version.id == x.id)
-                        .unwrap();
+                        .position(|x| version.id == x.id);
+
+                    let Some(position) = position else {
+                        panic!("Version {} not found in manifest", version.id);
+                    };
+                    
                     cloned_manifest.versions[position].url =
                         format_url(&version_path);
                     cloned_manifest.versions[position].assets_index_sha1 =
