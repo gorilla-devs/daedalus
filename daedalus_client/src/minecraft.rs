@@ -224,7 +224,7 @@ pub async fn retrieve_data(
         daedalus::minecraft::fetch_version_manifest(None).await?;
 
     let cloned_manifest =
-        Arc::new(Mutex::new(old_manifest.clone().unwrap_or(manifest.clone())));
+        Arc::new(Mutex::new(manifest.clone()));
 
     let patches = get_library_patches().await?;
     let cloned_patches = Arc::new(&patches);
