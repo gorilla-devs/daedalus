@@ -399,7 +399,7 @@ pub async fn retrieve_data(
 
         upload_file_to_bucket(
             format!(
-                "neoforged/v{}/manifest.json",
+                "neoforge/v{}/manifest.json",
                 daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
             ),
             serde_json::to_vec(&Manifest {
