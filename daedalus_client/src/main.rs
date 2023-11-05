@@ -56,6 +56,15 @@ async fn main() {
         return;
     }
 
+    #[cfg(feature = "sentry")]
+    let _guard = sentry::init((
+        dotenvy::var("SENTRY_DSN").unwrap(),
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            ..Default::default()
+        },
+    ));
+
     Branding::set_branding(Branding::new(
         dotenvy::var("BRAND_NAME").unwrap(),
         dotenvy::var("SUPPORT_EMAIL").unwrap(),

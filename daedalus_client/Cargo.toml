@@ -27,10 +27,12 @@ rust-s3 = "0.32.3"
 lenient_semver = "0.4.2"
 walkdir = "2.3.3"
 path-slash = "0.2.1"
+sentry = "0.31.7"
 
 [features]
-default = ["forge", "fabric", "quilt", "neoforge"]
+default = ["sentry", "forge", "fabric", "quilt", "neoforge"]
 save_local = []
+sentry = []
 forge = []
 fabric = []
 quilt = []

@@ -93,7 +93,7 @@ fn process_single_lwjgl_variant(
             daedalus::minecraft::CURRENT_FORMAT_VERSION,
             lwjgl_version
         )
-    } else if lwjgl_version.starts_with("3") {
+    } else if lwjgl_version.starts_with('3') {
         lwjgl.id = "LWJGL 3".to_string();
         lwjgl.uid = "org.lwjgl3".to_string();
         lwjgl.conflicts = Some(vec![Dependency {
@@ -272,7 +272,7 @@ pub async fn retrieve_data(
 
         let variants = version_variants
             .entry(version.clone())
-            .or_insert_with(|| Vec::new());
+            .or_insert_with(Vec::new);
         for variant in variants.iter_mut() {
             if entry.sha1 == variant.sha1 {
                 found = true;
@@ -748,13 +748,26 @@ pub async fn retrieve_data(
                     .libraries
                     .iter()
                     .filter_map(|lib| {
-                        if let Some(natives) = &lib.natives {
-                            Some(natives.keys().cloned().collect::<Vec<_>>())
-                        } else {
-                            None
-                        }
+                        lib.natives.as_ref().map(|natives| natives.keys().cloned().collect::<Vec<_>>())
                     })
                     .collect::<Vec<_>>();
+
+                #[cfg(feature = "sentry")]
+                sentry::capture_message(
+                    &format!(
+                        "Unmarked LWJGL variant {}, #{} ({}) natives: {:?} Split: {}",
+                        variant.sha1,
+                        lwjgl_version_variant,
+                        variant.group.release_time,
+                        natives,
+                        variant
+                            .group
+                            .has_split_natives
+                            .map_or("unknown".to_string(), |b| b.to_string()),
+                    ),
+                    sentry::Level::Warning,
+                );
+                
                 warn!(
                     "Unmarked LWJGL variant {}, #{} ({}) natives: {:?} Split: {}",
                     variant.sha1,
@@ -795,6 +808,14 @@ pub async fn retrieve_data(
                         info!("Skipped LWJGL {}", &decided_variant.expect("Unwrap to be safe inside is_some").group.version);
                     }
                 } else {
+                    #[cfg(feature = "sentry")]
+                    sentry::capture_message(
+                        &format!(
+                            "No variant decided for version {} of out {} possible and {} unknown",
+                            lwjgl_version_variant, accepted_variants, unknown_variants
+                        ),
+                        sentry::Level::Warning,
+                    );
                     error!("No variant decided for version {} of out {} possible and {} unknown", lwjgl_version_variant, accepted_variants, unknown_variants);
                 }
 

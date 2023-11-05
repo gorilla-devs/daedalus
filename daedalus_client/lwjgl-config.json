@@ -42,7 +42,7 @@
     },
     {
       "match": "97c512a2043cac92b33adc9da93f502fa25cdc43",
-      "_comment": "#3.3.2 (2023-09-18 12:34:57 UTC) natives: [[Osx, Windows, Linux] ] Split: false"
+      "_comment": "#3.3.2 (2023-09-18 12:34:57 UTC) natives: [] Split: true"
     }
   ],
   "reject": [
