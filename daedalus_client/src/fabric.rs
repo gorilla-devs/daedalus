@@ -13,7 +13,7 @@ pub async fn retrieve_data(
 ) -> Result<(), Error> {
     log::info!("Retrieving Fabric data ...");
 
-    let mut list = fetch_fabric_versions(None, semaphore.clone()).await?;
+    let list = fetch_fabric_versions(None, semaphore.clone()).await?;
 
     let old_manifest = if cfg!(feature = "save_local") {
         log::info!("Loading local Fabric manifest ...");
@@ -65,9 +65,6 @@ pub async fn retrieve_data(
                 ))
             }
         }
-
-        list.loader
-            .retain(|x| loaders.iter().any(|val| val.1 == x.version))
     }
 
     const DUMMY_GAME_VERSION: &str = "1.19.4-rc2";
@@ -300,17 +297,18 @@ pub async fn retrieve_data(
 
     for version in &mut versions {
         version.loaders.sort_by(|x, y| {
-            list.loader
+            let x_pos = list
+                .loader
                 .iter()
                 .position(|z| x.id == *z.version)
-                .unwrap_or_default()
-                .cmp(
-                    &list
-                        .loader
-                        .iter()
-                        .position(|z| y.id == z.version)
-                        .unwrap_or_default(),
-                )
+                .unwrap_or_default();
+            let y_pos = &list
+                .loader
+                .iter()
+                .position(|z| y.id == z.version)
+                .unwrap_or_default();
+
+            x_pos.cmp(y_pos)
         })
     }
 

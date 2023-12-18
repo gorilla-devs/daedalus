@@ -223,8 +223,7 @@ pub async fn retrieve_data(
     let mut manifest =
         daedalus::minecraft::fetch_version_manifest(None).await?;
 
-    let cloned_manifest =
-        Arc::new(Mutex::new(manifest.clone()));
+    let cloned_manifest = Arc::new(Mutex::new(manifest.clone()));
 
     let patches = get_library_patches().await?;
     let cloned_patches = Arc::new(&patches);
@@ -601,28 +600,48 @@ pub async fn retrieve_data(
                     let mut cloned_manifest =
                         cloned_manifest_mutex.lock().await;
 
-                    let position = cloned_manifest
+                    if let Some(position) = cloned_manifest
                         .versions
                         .iter()
-                        .position(|x| version.id == x.id);
-
-                    let Some(position) = position else {
-                        panic!("Version {} not found in manifest", version.id);
-                    };
-                    
-                    cloned_manifest.versions[position].url =
-                        format_url(&version_path);
-                    cloned_manifest.versions[position].assets_index_sha1 =
-                        Some(version_info.asset_index.sha1.clone());
-                    cloned_manifest.versions[position].assets_index_url =
-                        Some(format_url(&assets_path));
-                    cloned_manifest.versions[position].java_profile =
-                        version_info.java_version.as_ref().map(|x| {
-                            MinecraftJavaProfile::try_from(&*x.component)
-                                .expect("Safe to unwrap since we ensure it's valid in version_json already")
-                        });
-
-                    cloned_manifest.versions[position].sha1 = version_info_hash;
+                        .position(|x| version.id == x.id)
+                    {
+                        cloned_manifest.versions[position].url =
+                            format_url(&version_path);
+                        cloned_manifest.versions[position].assets_index_sha1 =
+                            Some(version_info.asset_index.sha1.clone());
+                        cloned_manifest.versions[position].assets_index_url =
+                            Some(format_url(&assets_path));
+                        cloned_manifest.versions[position].java_profile =
+                            version_info.java_version.as_ref().map(|x| {
+                                MinecraftJavaProfile::try_from(&*x.component)
+                                    .expect("Safe to unwrap since we ensure it's valid in version_json already")
+                            });
+                        cloned_manifest.versions[position].sha1 =
+                            version_info_hash;
+                    } else {
+                        cloned_manifest.versions.insert(
+                            0,
+                            daedalus::minecraft::Version {
+                                id: version_info.id.clone(),
+                                type_: version_info.type_.clone(),
+                                url: format_url(&version_path),
+                                time: version_info.time,
+                                release_time: version_info.release_time,
+                                sha1: version_info_hash,
+                                java_profile: version_info.java_version.as_ref().map(|x| {
+                                    MinecraftJavaProfile::try_from(&*x.component)
+                                        .expect("Safe to unwrap since we ensure it's valid in version_json already")
+                                }),
+                                compliance_level: 1,
+                                assets_index_url: Some(
+                                    version_info.asset_index.sha1.clone(),
+                                ),
+                                assets_index_sha1: Some(
+                                    version_info.asset_index.sha1.clone(),
+                                ),
+                            },
+                        )
+                    }
                 }
 
                 let mut download_assets = false;
@@ -748,7 +767,9 @@ pub async fn retrieve_data(
                     .libraries
                     .iter()
                     .filter_map(|lib| {
-                        lib.natives.as_ref().map(|natives| natives.keys().cloned().collect::<Vec<_>>())
+                        lib.natives.as_ref().map(|natives| {
+                            natives.keys().cloned().collect::<Vec<_>>()
+                        })
                     })
                     .collect::<Vec<_>>();
 
@@ -767,7 +788,7 @@ pub async fn retrieve_data(
                     ),
                     sentry::Level::Warning,
                 );
-                
+
                 warn!(
                     "Unmarked LWJGL variant {}, #{} ({}) natives: {:?} Split: {}",
                     variant.sha1,

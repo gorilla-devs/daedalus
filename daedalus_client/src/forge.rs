@@ -124,11 +124,9 @@ pub fn should_ignore_artifact(
             && ver.artifact == name.artifact
             && ver.identifier == name.identifier
     }) {
-        if ver.version == name.version {
-            // everything matches
-            true
-        } else if lenient_semver::parse(&ver.version)
-            > lenient_semver::parse(&name.version)
+        if ver.version == name.version
+            || lenient_semver::parse(&ver.version)
+                > lenient_semver::parse(&name.version)
         {
             // new version is lower
             true

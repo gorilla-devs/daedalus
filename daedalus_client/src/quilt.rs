@@ -13,7 +13,7 @@ pub async fn retrieve_data(
 ) -> Result<(), Error> {
     log::info!("Retrieving Quilt data ...");
 
-    let mut list = fetch_quilt_versions(None, semaphore.clone()).await?;
+    let list = fetch_quilt_versions(None, semaphore.clone()).await?;
 
     let old_manifest = if cfg!(feature = "save_local") {
         log::info!("Loading local Quilt manifest ...");
@@ -64,9 +64,6 @@ pub async fn retrieve_data(
                 ))
             }
         }
-
-        list.loader
-            .retain(|x| loaders.iter().any(|val| val.1 == x.version))
     }
 
     const DUMMY_GAME_VERSION: &str = "1.19.4-rc2";

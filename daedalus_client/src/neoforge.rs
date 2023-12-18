@@ -18,7 +18,7 @@ pub async fn retrieve_data(
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), Error> {
-    let maven_metadata = fetch_maven_metadata(None, semaphore.clone()).await?;
+    let maven_metadata = fetch_maven_metadata(semaphore.clone()).await?;
     let old_manifest = if cfg!(feature = "save_local") {
         log::info!("Loading local Neoforge manifest ...");
         crate::load_file_local(format!(
@@ -53,10 +53,10 @@ pub async fn retrieve_data(
     for (minecraft_version, loader_versions) in maven_metadata.clone() {
         let mut loaders = Vec::new();
 
-        for (full, loader_version) in loader_versions {
+        for (full, loader_version, new_forge) in loader_versions {
             let version = Version::parse(&loader_version)?;
 
-            loaders.push((full, version))
+            loaders.push((full, version, new_forge.to_string()))
         }
 
         if !loaders.is_empty() {
@@ -64,7 +64,7 @@ pub async fn retrieve_data(
                 let mut loaders_versions = Vec::new();
 
                 {
-                    let loaders_futures = loaders.into_iter().map(|(loader_version_full, _)| async {
+                    let loaders_futures = loaders.into_iter().map(|(loader_version_full, _, new_forge)| async {
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets_mutex);
                         let uploaded_files_mutex = Arc::clone(&uploaded_files_mutex);
@@ -83,230 +83,229 @@ pub async fn retrieve_data(
                             }
 
                             info!("Neoforge - Installer Start {}", loader_version_full.clone());
-                            let bytes = download_file(&format!("https://maven.neoforged.net/net/neoforged/forge/{0}/forge-{0}-installer.jar", loader_version_full), None, semaphore.clone()).await?;
-
+                            let bytes = download_file(&format!("https://maven.neoforged.net/net/neoforged/{1}/{0}/{1}-{0}-installer.jar", loader_version_full, if &*new_forge == "true" { "neoforge" } else { "forge" }), None, semaphore.clone()).await?;
                             let reader = std::io::Cursor::new(bytes);
 
                             if let Ok(archive) = zip::ZipArchive::new(reader) {
-                                    let mut archive_clone = archive.clone();
-                                    let mut profile = tokio::task::spawn_blocking(move || {
-                                        let mut install_profile = archive_clone.by_name("install_profile.json")?;
+                                let mut archive_clone = archive.clone();
+                                let mut profile = tokio::task::spawn_blocking(move || {
+                                    let mut install_profile = archive_clone.by_name("install_profile.json")?;
 
-                                        let mut contents = String::new();
-                                        install_profile.read_to_string(&mut contents)?;
+                                    let mut contents = String::new();
+                                    install_profile.read_to_string(&mut contents)?;
 
-                                        Ok::<ForgeInstallerProfileV2, Error>(serde_json::from_str::<ForgeInstallerProfileV2>(&contents)?)
-                                    }).await??;
+                                    Ok::<ForgeInstallerProfileV2, Error>(serde_json::from_str::<ForgeInstallerProfileV2>(&contents)?)
+                                }).await??;
 
-                                    let mut archive_clone = archive.clone();
-                                    let version_info = tokio::task::spawn_blocking(move || {
-                                        let mut install_profile = archive_clone.by_name("version.json")?;
+                                let mut archive_clone = archive.clone();
+                                let version_info = tokio::task::spawn_blocking(move || {
+                                    let mut install_profile = archive_clone.by_name("version.json")?;
 
-                                        let mut contents = String::new();
-                                        install_profile.read_to_string(&mut contents)?;
+                                    let mut contents = String::new();
+                                    install_profile.read_to_string(&mut contents)?;
 
-                                        Ok::<PartialVersionInfo, Error>(serde_json::from_str::<PartialVersionInfo>(&contents)?)
-                                    }).await??;
+                                    Ok::<PartialVersionInfo, Error>(serde_json::from_str::<PartialVersionInfo>(&contents)?)
+                                }).await??;
 
 
-                                    let mut libs : Vec<Library> = version_info.libraries.into_iter().chain(profile.libraries.into_iter().map(|x| Library {
-                                        downloads: x.downloads,
-                                        extract: x.extract,
-                                        name: x.name,
-                                        url: x.url,
-                                        natives: x.natives,
-                                        rules: x.rules,
-                                        checksums: x.checksums,
-                                        include_in_classpath: false,
-                                        patched: false,
-                                    })).filter(|lib| !lib.name.is_log4j() ).collect();
+                                let mut libs : Vec<Library> = version_info.libraries.into_iter().chain(profile.libraries.into_iter().map(|x| Library {
+                                    downloads: x.downloads,
+                                    extract: x.extract,
+                                    name: x.name,
+                                    url: x.url,
+                                    natives: x.natives,
+                                    rules: x.rules,
+                                    checksums: x.checksums,
+                                    include_in_classpath: false,
+                                    patched: false,
+                                })).filter(|lib| !lib.name.is_log4j() ).collect();
 
-                                    let mut local_libs : HashMap<String, bytes::Bytes> = HashMap::new();
+                                let mut local_libs : HashMap<String, bytes::Bytes> = HashMap::new();
 
-                                    for lib in &libs {
-                                        if lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().map(|x| x.url.is_empty())).unwrap_or(false) {
-                                            let mut archive_clone = archive.clone();
-                                            let lib_name_clone = lib.name.clone();
+                                for lib in &libs {
+                                    if lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().map(|x| x.url.is_empty())).unwrap_or(false) {
+                                        let mut archive_clone = archive.clone();
+                                        let lib_name_clone = lib.name.clone();
 
-                                            let lib_bytes = tokio::task::spawn_blocking(move || {
-                                                let mut lib_file = archive_clone.by_name(&format!("maven/{}", &lib_name_clone.path()))?;
-                                                let mut lib_bytes =  Vec::new();
-                                                lib_file.read_to_end(&mut lib_bytes)?;
+                                        let lib_bytes = tokio::task::spawn_blocking(move || {
+                                            let mut lib_file = archive_clone.by_name(&format!("maven/{}", &lib_name_clone.path()))?;
+                                            let mut lib_bytes =  Vec::new();
+                                            lib_file.read_to_end(&mut lib_bytes)?;
 
-                                                Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
-                                            }).await??;
+                                            Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
+                                        }).await??;
 
-                                            local_libs.insert(lib.name.to_string(), lib_bytes);
-                                        }
+                                        local_libs.insert(lib.name.to_string(), lib_bytes);
                                     }
+                                }
 
-                                    let path = profile.path.clone();
-                                    let version = profile.version.clone();
+                                let path = profile.path.clone();
+                                let version = profile.version.clone();
 
-                                    for entry in profile.data.values_mut() {
-                                        if entry.client.starts_with('/') || entry.server.starts_with('/') {
-                                            macro_rules! read_data {
-                                        ($value:expr) => {
-                                            let mut archive_clone = archive.clone();
-                                            let value_clone = $value.clone();
-                                            let lib_bytes = tokio::task::spawn_blocking(move || {
-                                                let mut lib_file = archive_clone.by_name(&value_clone[1..value_clone.len()])?;
-                                                let mut lib_bytes =  Vec::new();
-                                                lib_file.read_to_end(&mut lib_bytes)?;
+                                for entry in profile.data.values_mut() {
+                                    if entry.client.starts_with('/') || entry.server.starts_with('/') {
+                                        macro_rules! read_data {
+                                    ($value:expr) => {
+                                        let mut archive_clone = archive.clone();
+                                        let value_clone = $value.clone();
+                                        let lib_bytes = tokio::task::spawn_blocking(move || {
+                                            let mut lib_file = archive_clone.by_name(&value_clone[1..value_clone.len()])?;
+                                            let mut lib_bytes =  Vec::new();
+                                            lib_file.read_to_end(&mut lib_bytes)?;
 
-                                                Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
-                                            }).await??;
+                                            Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
+                                        }).await??;
 
-                                            let split = $value.split('/').last();
+                                        let split = $value.split('/').last();
 
-                                            if let Some(last) = split {
-                                                let mut file = last.split('.');
+                                        if let Some(last) = split {
+                                            let mut file = last.split('.');
 
-                                                if let Some(file_name) = file.next() {
-                                                    if let Some(ext) = file.next() {
-                                                        let path = format!("{}:{}@{}", path.as_deref().unwrap_or(&*format!("net.minecraftforge:forge:{}", version)), file_name, ext);
-                                                        $value = format!("[{}]", &path);
-                                                        local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
+                                            if let Some(file_name) = file.next() {
+                                                if let Some(ext) = file.next() {
+                                                    let path = format!("{}:{}@{}", path.as_deref().unwrap_or(&*format!("net.minecraftforge:forge:{}", version)), file_name, ext);
+                                                    $value = format!("[{}]", &path);
+                                                    local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
 
-                                                        libs.push(Library {
-                                                            downloads: None,
-                                                            extract: None,
-                                                            name: path.as_str().try_into()?,
-                                                            url: Some("".to_string()),
-                                                            natives: None,
-                                                            rules: None,
-                                                            checksums: None,
-                                                            include_in_classpath: false,
-                                                            patched: false,
-                                                        });
-                                                    }
+                                                    libs.push(Library {
+                                                        downloads: None,
+                                                        extract: None,
+                                                        name: path.as_str().try_into()?,
+                                                        url: Some("".to_string()),
+                                                        natives: None,
+                                                        rules: None,
+                                                        checksums: None,
+                                                        include_in_classpath: false,
+                                                        patched: false,
+                                                    });
                                                 }
                                             }
                                         }
                                     }
+                                }
 
-                                            if entry.client.starts_with('/') {
-                                                read_data!(entry.client);
-                                            }
+                                        if entry.client.starts_with('/') {
+                                            read_data!(entry.client);
+                                        }
 
-                                            if entry.server.starts_with('/') {
-                                                read_data!(entry.server);
-                                            }
+                                        if entry.server.starts_with('/') {
+                                            read_data!(entry.server);
                                         }
                                     }
+                                }
 
-                                    let now = Instant::now();
+                                let now = Instant::now();
 
 
-                                    let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| async {
-                                        let artifact_path = &lib.name.path();
+                                let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| async {
+                                    let artifact_path = &lib.name.path();
 
-                                        {
-                                            let mut visited_assets = visited_assets.lock().await;
+                                    {
+                                        let mut visited_assets = visited_assets.lock().await;
 
-                                            if visited_assets.contains(&lib.name) {
-                                                if let Some(ref mut downloads) = lib.downloads {
-                                                    if let Some(ref mut artifact) = downloads.artifact {
-                                                        artifact.url = format_url(&format!("maven/{}", artifact_path));
-                                                    }
-                                                } else if lib.url.is_some() {
-                                                    lib.url = Some(format_url("maven/"));
-                                                }
-
-                                                return Ok::<Library, Error>(lib);
-                                            } else {
-                                                visited_assets.push(lib.name.clone())
-                                            }
-                                        }
-
-                                        let artifact_bytes = if let Some(ref mut downloads) = lib.downloads {
-                                            if let Some(ref mut artifact) = downloads.artifact {
-                                                let res = if artifact.url.is_empty() {
-                                                    local_libs.get(&lib.name.to_string()).cloned()
-                                                } else {
-                                                    Some(download_file(
-                                                        &artifact.url,
-                                                        Some(&*artifact.sha1),
-                                                        semaphore.clone(),
-                                                    )
-                                                        .await?)
-                                                };
-
-                                                if res.is_some() {
+                                        if visited_assets.contains(&lib.name) {
+                                            if let Some(ref mut downloads) = lib.downloads {
+                                                if let Some(ref mut artifact) = downloads.artifact {
                                                     artifact.url = format_url(&format!("maven/{}", artifact_path));
                                                 }
+                                            } else if lib.url.is_some() {
+                                                lib.url = Some(format_url("maven/"));
+                                            }
 
-                                                res
-                                            } else { None }
-                                        } else if let Some(ref mut url) = lib.url {
-                                            let res = if url.is_empty() {
+                                            return Ok::<Library, Error>(lib);
+                                        } else {
+                                            visited_assets.push(lib.name.clone())
+                                        }
+                                    }
+
+                                    let artifact_bytes = if let Some(ref mut downloads) = lib.downloads {
+                                        if let Some(ref mut artifact) = downloads.artifact {
+                                            let res = if artifact.url.is_empty() {
                                                 local_libs.get(&lib.name.to_string()).cloned()
                                             } else {
                                                 Some(download_file(
-                                                    url,
-                                                    None,
+                                                    &artifact.url,
+                                                    Some(&*artifact.sha1),
                                                     semaphore.clone(),
                                                 )
                                                     .await?)
                                             };
 
                                             if res.is_some() {
-                                                lib.url = Some(format_url("maven/"));
+                                                artifact.url = format_url(&format!("maven/{}", artifact_path));
                                             }
 
                                             res
-                                        } else { None };
-
-                                        if let Some(bytes) = artifact_bytes {
-                                            upload_file_to_bucket(
-                                                format!("{}/{}", "maven", artifact_path),
-                                                bytes.to_vec(),
-                                                Some("application/java-archive".to_string()),
-                                                uploaded_files_mutex.as_ref(),
+                                        } else { None }
+                                    } else if let Some(ref mut url) = lib.url {
+                                        let res = if url.is_empty() {
+                                            local_libs.get(&lib.name.to_string()).cloned()
+                                        } else {
+                                            Some(download_file(
+                                                url,
+                                                None,
                                                 semaphore.clone(),
-                                            ).await?;
+                                            )
+                                                .await?)
+                                        };
+
+                                        if res.is_some() {
+                                            lib.url = Some(format_url("maven/"));
                                         }
 
-                                        Ok::<Library, Error>(lib)
-                                    })).await?;
+                                        res
+                                    } else { None };
 
-                                    let elapsed = now.elapsed();
-                                    info!("Elapsed lib DL: {:.2?}", elapsed);
+                                    if let Some(bytes) = artifact_bytes {
+                                        upload_file_to_bucket(
+                                            format!("{}/{}", "maven", artifact_path),
+                                            bytes.to_vec(),
+                                            Some("application/java-archive".to_string()),
+                                            uploaded_files_mutex.as_ref(),
+                                            semaphore.clone(),
+                                        ).await?;
+                                    }
 
-                                    let new_profile = PartialVersionInfo {
-                                        id: version_info.id,
-                                        inherits_from: version_info.inherits_from,
-                                        release_time: version_info.release_time,
-                                        time: version_info.time,
-                                        main_class: version_info.main_class,
-                                        minecraft_arguments: version_info.minecraft_arguments,
-                                        arguments: version_info.arguments,
-                                        libraries: libs,
-                                        type_: version_info.type_,
-                                        data: Some(profile.data),
-                                        processors: Some(profile.processors),
-                                        logging: None
-                                    };
+                                    Ok::<Library, Error>(lib)
+                                })).await?;
 
-                                    let version_path = format!(
-                                        "neoforge/v{}/versions/{}.json",
-                                        daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
-                                        new_profile.id
-                                    );
+                                let elapsed = now.elapsed();
+                                info!("Elapsed lib DL: {:.2?}", elapsed);
 
-                                    upload_file_to_bucket(
-                                        version_path.clone(),
-                                        serde_json::to_vec(&new_profile)?,
-                                        Some("application/json".to_string()),
-                                        uploaded_files_mutex.as_ref(),
-                                        semaphore.clone(),
-                                    ).await?;
+                                let new_profile = PartialVersionInfo {
+                                    id: version_info.id,
+                                    inherits_from: version_info.inherits_from,
+                                    release_time: version_info.release_time,
+                                    time: version_info.time,
+                                    main_class: version_info.main_class,
+                                    minecraft_arguments: version_info.minecraft_arguments,
+                                    arguments: version_info.arguments,
+                                    libraries: libs,
+                                    type_: version_info.type_,
+                                    data: Some(profile.data),
+                                    processors: Some(profile.processors),
+                                    logging: None
+                                };
 
-                                    return Ok(Some(LoaderVersion {
-                                        id: loader_version_full,
-                                        url: format_url(&version_path),
-                                        stable: false
-                                    }));
+                                let version_path = format!(
+                                    "neoforge/v{}/versions/{}.json",
+                                    daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
+                                    new_profile.id
+                                );
+
+                                upload_file_to_bucket(
+                                    version_path.clone(),
+                                    serde_json::to_vec(&new_profile)?,
+                                    Some("application/json".to_string()),
+                                    uploaded_files_mutex.as_ref(),
+                                    semaphore.clone(),
+                                ).await?;
+
+                                return Ok(Some(LoaderVersion {
+                                    id: loader_version_full,
+                                    url: format_url(&version_path),
+                                    stable: false
+                                }));
                             }
 
                             Ok(None)
@@ -419,8 +418,10 @@ pub async fn retrieve_data(
     Ok(())
 }
 
-const DEFAULT_MAVEN_METADATA_URL: &str =
+const DEFAULT_MAVEN_METADATA_URL_1: &str =
     "https://maven.neoforged.net/net/neoforged/forge/maven-metadata.xml";
+const DEFAULT_MAVEN_METADATA_URL_2: &str =
+    "https://maven.neoforged.net/net/neoforged/neoforge/maven-metadata.xml";
 
 #[derive(Debug, Deserialize)]
 struct Metadata {
@@ -438,32 +439,55 @@ struct Versions {
 }
 
 pub async fn fetch_maven_metadata(
-    url: Option<&str>,
     semaphore: Arc<Semaphore>,
-) -> Result<HashMap<String, Vec<(String, String)>>, Error> {
-    let values = serde_xml_rs::from_str::<Metadata>(
-        &String::from_utf8(
-            download_file(
-                url.unwrap_or(DEFAULT_MAVEN_METADATA_URL),
-                None,
-                semaphore,
+) -> Result<HashMap<String, Vec<(String, String, bool)>>, Error> {
+    async fn fetch_values(
+        url: &str,
+        semaphore: Arc<Semaphore>,
+    ) -> Result<Metadata, Error> {
+        Ok(serde_xml_rs::from_str(
+            &String::from_utf8(
+                download_file(url, None, semaphore).await?.to_vec(),
             )
-            .await?
-            .to_vec(),
-        )
-        .unwrap_or_default(),
-    )?;
+            .unwrap_or_default(),
+        )?)
+    }
 
-    let mut map: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let forge_values =
+        fetch_values(DEFAULT_MAVEN_METADATA_URL_1, semaphore.clone()).await?;
+    let neo_values =
+        fetch_values(DEFAULT_MAVEN_METADATA_URL_2, semaphore).await?;
 
-    for value in values.versioning.versions.version {
+    let mut map: HashMap<String, Vec<(String, String, bool)>> = HashMap::new();
+
+    for value in forge_values.versioning.versions.version {
         let original = value.clone();
 
         let parts: Vec<&str> = value.split('-').collect();
         if parts.len() == 2 {
-            map.entry(parts[0].to_string())
-                .or_insert(Vec::new())
-                .push((original, parts[1].to_string()));
+            map.entry(parts[0].to_string()).or_default().push((
+                original,
+                parts[1].to_string(),
+                false,
+            ));
+        }
+    }
+
+    for value in neo_values.versioning.versions.version {
+        let original = value.clone();
+
+        let mut parts = value.split('.');
+
+        if let Some(major) = parts.next() {
+            if let Some(minor) = parts.next() {
+                let game_version = format!("1.{}.{}", major, minor);
+
+                map.entry(game_version.clone()).or_default().push((
+                    original.clone(),
+                    format!("{}-{}", game_version, original),
+                    true,
+                ));
+            }
         }
     }
 
