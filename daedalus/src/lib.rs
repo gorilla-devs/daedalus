@@ -228,7 +228,12 @@ impl FromStr for GradleSpecifier {
             })?
             .to_string();
 
-        let identifier = name_items.next().map(|ident| ident.to_string());
+        let remaining_parts = name_items.collect::<Vec<&str>>();
+        let identifier = if remaining_parts.is_empty() {
+            None
+        } else {
+            Some(remaining_parts.join("-"))
+        };
 
         Ok(GradleSpecifier {
             package,

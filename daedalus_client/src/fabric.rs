@@ -1,4 +1,4 @@
-use crate::{download_file, format_url, upload_file_to_bucket, Error};
+use crate::{download_file, format_url, upload_file_to_bucket};
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, Manifest, PartialVersionInfo, Version};
 use daedalus::{Branding, BRANDING};
@@ -10,27 +10,17 @@ pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
-) -> Result<(), Error> {
+) -> Result<(), anyhow::Error> {
     log::info!("Retrieving Fabric data ...");
 
     let list = fetch_fabric_versions(None, semaphore.clone()).await?;
 
-    let old_manifest = if cfg!(feature = "save_local") {
-        log::info!("Loading local Fabric manifest ...");
-        crate::load_file_local(format!(
-            "fabric/v{}/manifest.json",
-            daedalus::modded::CURRENT_FABRIC_FORMAT_VERSION,
-        ))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-    } else {
-        daedalus::modded::fetch_manifest(&format_url(&format!(
-            "fabric/v{}/manifest.json",
-            daedalus::modded::CURRENT_FABRIC_FORMAT_VERSION,
-        )))
-        .await
-        .ok()
-    };
+    let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
+        "fabric/v{}/manifest.json",
+        daedalus::modded::CURRENT_FABRIC_FORMAT_VERSION,
+    )))
+    .await
+    .ok();
 
     let mut versions = if let Some(old_manifest) = old_manifest {
         old_manifest.game_versions
@@ -84,7 +74,7 @@ pub async fn retrieve_data(
 
                 Ok::<
                     Option<(Box<bool>, String, PartialVersionInfo, Box<bool>)>,
-                    Error,
+                    anyhow::Error,
                 >(Some((stable, loader, version, skip_upload)))
             },
         ),
@@ -152,10 +142,10 @@ pub async fn retrieve_data(
                                 )
                                     .await?;
 
-                                Ok::<(), Error>(())
+                                Ok::<(), anyhow::Error>(())
                             }.await?;
 
-                            Ok::<(), Error>(())
+                            Ok::<(), anyhow::Error>(())
                         })).await?;
                         lib.url = Some(format_url("maven/"));
 
@@ -188,7 +178,7 @@ pub async fn retrieve_data(
                     )
                     .await?;
 
-                    Ok::<Library, Error>(lib)
+                    Ok::<Library, anyhow::Error>(lib)
                 }),
             )
             .await?;
@@ -196,7 +186,7 @@ pub async fn retrieve_data(
             if async move {
                 *skip_upload
             }.await {
-                return Ok::<(), Error>(())
+                return Ok::<(), anyhow::Error>(())
             }
 
             let version_path = format!(
@@ -247,7 +237,7 @@ pub async fn retrieve_data(
                 .await;
             }
 
-            Ok::<(), Error>(())
+            Ok::<(), anyhow::Error>(())
         },
     ))
     .await?;
@@ -339,7 +329,7 @@ async fn fetch_fabric_version(
     version_number: &str,
     loader_version: &str,
     semaphore: Arc<Semaphore>,
-) -> Result<PartialVersionInfo, Error> {
+) -> Result<PartialVersionInfo, anyhow::Error> {
     Ok(serde_json::from_slice(
         &download_file(
             &format!(
@@ -389,7 +379,7 @@ struct FabricLoaderVersion {
 async fn fetch_fabric_versions(
     url: Option<&str>,
     semaphore: Arc<Semaphore>,
-) -> Result<FabricVersions, Error> {
+) -> Result<FabricVersions, anyhow::Error> {
     Ok(serde_json::from_slice(
         &download_file(
             url.unwrap_or(&*format!("{}/versions", FABRIC_META_URL)),

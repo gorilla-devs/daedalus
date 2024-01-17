@@ -1,6 +1,5 @@
 use crate::{
     download_file, download_file_mirrors, format_url, upload_file_to_bucket,
-    Error,
 };
 use chrono::{DateTime, Utc};
 use daedalus::minecraft::{
@@ -15,7 +14,7 @@ use log::info;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::convert::TryInto;
+use std::convert::{TryInto, TryFrom};
 use std::io::Read;
 use std::sync::Arc;
 use std::time::Instant;
@@ -34,7 +33,7 @@ lazy_static! {
 
 pub async fn fetch_generated_version_info(
     version_id: &str,
-) -> Result<daedalus::minecraft::VersionInfo, Error> {
+) -> Result<daedalus::minecraft::VersionInfo, anyhow::Error> {
     let path = format!(
         "minecraft/v{}/versions/{}.json",
         daedalus::minecraft::CURRENT_FORMAT_VERSION,
@@ -69,7 +68,7 @@ impl MinecraftVersionLibraryCache {
     pub async fn load_minecraft_version_libs(
         &mut self,
         version_id: &str,
-    ) -> Result<&HashSet<GradleSpecifier>, Error> {
+    ) -> Result<&HashSet<GradleSpecifier>, anyhow::Error> {
         let index = self.versions.iter().position(|ver| ver.id == version_id);
 
         if let Some(index) = index {
@@ -77,19 +76,8 @@ impl MinecraftVersionLibraryCache {
             let entry = self.versions.remove(index);
             self.versions.insert(0, entry);
         } else {
-            let generated_version = if cfg!(feature = "save_local") {
-                let path = format!(
-                    "minecraft/v{}/versions/{}.json",
-                    daedalus::minecraft::CURRENT_FORMAT_VERSION,
-                    version_id
-                );
-
-                crate::load_file_local(path).and_then(|bytes| {
-                    serde_json::from_slice(&bytes).map_err(Into::into)
-                })
-            } else {
-                fetch_generated_version_info(version_id).await
-            }?;
+            let generated_version =
+                fetch_generated_version_info(version_id).await?;
 
             let libraries: HashSet<GradleSpecifier> = generated_version
                 .libraries
@@ -144,27 +132,17 @@ pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
-) -> Result<(), Error> {
+) -> Result<(), anyhow::Error> {
     log::info!("Retrieving Forge data ...");
 
     let maven_metadata = fetch_maven_metadata(None, semaphore.clone()).await?;
 
-    let old_manifest = if cfg!(feature = "save_local") {
-        log::info!("Loading local Forge manifest ...");
-        crate::load_file_local(format!(
-            "forge/v{}/manifest.json",
-            daedalus::modded::CURRENT_FORGE_FORMAT_VERSION,
-        ))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-    } else {
-        daedalus::modded::fetch_manifest(&format_url(&format!(
-            "forge/v{}/manifest.json",
-            daedalus::modded::CURRENT_FORGE_FORMAT_VERSION,
-        )))
-        .await
-        .ok()
-    };
+    let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
+        "forge/v{}/manifest.json",
+        daedalus::modded::CURRENT_FORGE_FORMAT_VERSION,
+    )))
+    .await
+    .ok();
 
     let old_versions =
         Arc::new(Mutex::new(if let Some(old_manifest) = old_manifest {
@@ -255,7 +233,7 @@ pub async fn retrieve_data(
 
                                 if let Some(version) = version {
                                     info!("Already have Forge {}", loader_version_full.clone());
-                                    return Ok::<Option<LoaderVersion>, Error>(Some(version.clone()));
+                                    return Ok::<Option<LoaderVersion>, anyhow::Error>(Some(version.clone()));
                                 }
                             }
 
@@ -273,7 +251,7 @@ pub async fn retrieve_data(
                                         let mut contents = String::new();
                                         install_profile.read_to_string(&mut contents)?;
 
-                                        Ok::<ForgeInstallerProfileV1, Error>(serde_json::from_str::<ForgeInstallerProfileV1>(&contents)?)
+                                        Ok::<ForgeInstallerProfileV1, anyhow::Error>(serde_json::from_str::<ForgeInstallerProfileV1>(&contents)?)
                                     }).await??;
 
                                     let mut archive_clone = archive.clone();
@@ -284,7 +262,7 @@ pub async fn retrieve_data(
                                         forge_universal_file.read_to_end(&mut forge_universal)?;
 
 
-                                        Ok::<bytes::Bytes, Error>(bytes::Bytes::from(forge_universal))
+                                        Ok::<bytes::Bytes, anyhow::Error>(bytes::Bytes::from(forge_universal))
                                     }).await??;
                                     let forge_universal_path = profile.install.path.clone();
 
@@ -297,7 +275,7 @@ pub async fn retrieve_data(
                                     let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| async {
 
                                         if lib.name.is_lwjgl() || lib.name.is_log4j() || should_ignore_artifact(&minecraft_libs_filter, &lib.name) {
-                                            return Ok::<Option<Library>, Error>(None);
+                                            return Ok::<Option<Library>, anyhow::Error>(None);
                                         }
 
                                         // let mut repo_url
@@ -308,7 +286,7 @@ pub async fn retrieve_data(
                                                 if visited_assets.contains(&lib.name) {
                                                     lib.url = Some(format_url("maven/"));
 
-                                                    return Ok::<Option<Library>, Error>(Some(lib));
+                                                    return Ok::<Option<Library>, anyhow::Error>(Some(lib));
                                                 } else {
                                                     visited_assets.push(lib.name.clone())
                                                 }
@@ -344,7 +322,7 @@ pub async fn retrieve_data(
                                         }
 
 
-                                        Ok::<Option<Library>, Error>(Some(lib))
+                                        Ok::<Option<Library>, anyhow::Error>(Some(lib))
                                     })).await?;
 
                                     let elapsed = now.elapsed();
@@ -392,7 +370,7 @@ pub async fn retrieve_data(
                                         let mut contents = String::new();
                                         install_profile.read_to_string(&mut contents)?;
 
-                                        Ok::<ForgeInstallerProfileV2, Error>(serde_json::from_str::<ForgeInstallerProfileV2>(&contents)?)
+                                        Ok::<ForgeInstallerProfileV2, anyhow::Error>(serde_json::from_str::<ForgeInstallerProfileV2>(&contents)?)
                                     }).await??;
 
                                     let mut archive_clone = archive.clone();
@@ -402,7 +380,7 @@ pub async fn retrieve_data(
                                         let mut contents = String::new();
                                         install_profile.read_to_string(&mut contents)?;
 
-                                        Ok::<PartialVersionInfo, Error>(serde_json::from_str::<PartialVersionInfo>(&contents)?)
+                                        Ok::<PartialVersionInfo, anyhow::Error>(serde_json::from_str::<PartialVersionInfo>(&contents)?)
                                     }).await??;
 
 
@@ -427,21 +405,51 @@ pub async fn retrieve_data(
 
                                     let mut local_libs : HashMap<String, bytes::Bytes> = HashMap::new();
 
-                                    for lib in &libs {
-                                        if lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().map(|x| x.url.is_empty())).unwrap_or(false) {
+                                    fn is_local_lib(lib: &Library) -> bool {
+                                        lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().map(|x| x.url.is_empty())).unwrap_or(false) || lib.url.is_some()
+                                    }
+
+                                    let mut i = 0;
+                                    loop {
+                                        let Some(lib) = &libs.get(i) else {
+                                            break;
+                                        };
+                                        
+                                        if is_local_lib(lib) {
                                             let mut archive_clone = archive.clone();
                                             let lib_name_clone = lib.name.clone();
 
                                             let lib_bytes = tokio::task::spawn_blocking(move || {
-                                                let mut lib_file = archive_clone.by_name(&format!("maven/{}", lib_name_clone.path()))?;
+                                                let entry_name = format!("maven/{}", lib_name_clone.path());
+                                                let lib_file = archive_clone.by_name(&entry_name).map_err(|err| {
+                                                    anyhow::anyhow!("Failed to find entry {} in installer jar: {}", entry_name, err)
+                                                });
+
+                                                // Thank you forge for always making it hard to parse your data
+                                                // 1.20.4+ has a local lib that doesn't exist in the installer jar
+                                                // Not sure what it does, but it doesn't seem to be needed
+                                                if lib_file.is_err() && &*lib_name_clone.artifact == "forge" {
+                                                    return Ok::<_, anyhow::Error>(None);
+                                                }
+
+                                                let mut lib_file = lib_file?;
+
                                                 let mut lib_bytes =  Vec::new();
                                                 lib_file.read_to_end(&mut lib_bytes)?;
 
-                                                Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
+                                                let result = Some(bytes::Bytes::from(lib_bytes));
+
+                                                Ok::<_, anyhow::Error>(result)
                                             }).await??;
 
-                                            local_libs.insert(lib.name.to_string(), lib_bytes);
+                                            if let Some(lib_bytes) = lib_bytes {
+                                                local_libs.insert(lib.name.to_string(), lib_bytes);
+                                            } else {
+                                                libs.remove(i);
+                                            }
                                         }
+
+                                        i += 1;
                                     }
 
                                     let path = profile.path.clone();
@@ -458,7 +466,7 @@ pub async fn retrieve_data(
                                                         let mut lib_bytes =  Vec::new();
                                                         lib_file.read_to_end(&mut lib_bytes)?;
 
-                                                        Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
+                                                        Ok::<bytes::Bytes, anyhow::Error>(bytes::Bytes::from(lib_bytes))
                                                     }).await??;
 
                                                     let split = $value.split('/').last();
@@ -468,7 +476,12 @@ pub async fn retrieve_data(
 
                                                         if let Some(file_name) = file.next() {
                                                             if let Some(ext) = file.next() {
-                                                                let path = format!("{}:{}@{}", path.as_deref().unwrap_or(&*format!("net.minecraftforge:forge:{}", version)), file_name, ext);
+                                                                // We need to append tne entry to the forge path
+                                                                // Since new versions (1.20.4?) forge started filling the `path` key with a valid maven path (was previously empty)
+                                                                // To avoid having multiple classifiers (invalid maven path) we parse it as a GradleSpecifier
+                                                                // which will consider multiple classifiers as a single classifier replacing the `:` with a `-`
+                                                                let unsanitized_path = format!("{}:{}@{}", path.as_deref().unwrap_or(&*format!("net.minecraftforge:forge:{}", version)), file_name, ext);
+                                                                let path = GradleSpecifier::try_from(&*unsanitized_path)?.to_string();
                                                                 $value = format!("[{}]", &path);
                                                                 local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
 
@@ -503,7 +516,6 @@ pub async fn retrieve_data(
 
 
                                     let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| async {
-
                                         let artifact_path = lib.name.path();
 
                                         {
@@ -518,7 +530,7 @@ pub async fn retrieve_data(
                                                     lib.url = Some(format_url("maven/"));
                                                 }
 
-                                                return Ok::<Option<Library>, Error>(Some(lib));
+                                                return Ok::<Option<Library>, anyhow::Error>(Some(lib));
                                             } else {
                                                 visited_assets.push(lib.name.clone())
                                             }
@@ -578,7 +590,7 @@ pub async fn retrieve_data(
                                             ).await?;
                                         }
 
-                                        Ok::<Option<Library>, Error>(Some(lib))
+                                        Ok::<Option<Library>, anyhow::Error>(Some(lib))
                                     })).await?;
 
                                     let elapsed = now.elapsed();
@@ -651,7 +663,7 @@ pub async fn retrieve_data(
                     loaders: loaders_versions
                 });
 
-                Ok::<(), Error>(())
+                Ok::<(), anyhow::Error>(())
             });
         }
     }
@@ -746,7 +758,7 @@ const DEFAULT_MAVEN_METADATA_URL: &str =
 pub async fn fetch_maven_metadata(
     url: Option<&str>,
     semaphore: Arc<Semaphore>,
-) -> Result<HashMap<String, Vec<String>>, Error> {
+) -> Result<HashMap<String, Vec<String>>, anyhow::Error> {
     Ok(serde_json::from_slice(
         &download_file(
             url.unwrap_or(DEFAULT_MAVEN_METADATA_URL),

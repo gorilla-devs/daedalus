@@ -1,4 +1,4 @@
-use crate::{download_file, format_url, upload_file_to_bucket, Error};
+use crate::{download_file, format_url, upload_file_to_bucket};
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{
     LoaderVersion, Manifest, PartialVersionInfo, Processor, SidedDataEntry,
@@ -17,24 +17,14 @@ pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
-) -> Result<(), Error> {
+) -> Result<(), anyhow::Error> {
     let maven_metadata = fetch_maven_metadata(semaphore.clone()).await?;
-    let old_manifest = if cfg!(feature = "save_local") {
-        log::info!("Loading local Neoforge manifest ...");
-        crate::load_file_local(format!(
-            "neoforge/v{}/manifest.json",
-            daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
-        ))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-    } else {
-        daedalus::modded::fetch_manifest(&format_url(&format!(
-            "neoforge/v{}/manifest.json",
-            daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
-        )))
-        .await
-        .ok()
-    };
+    let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
+        "neoforge/v{}/manifest.json",
+        daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
+    )))
+    .await
+    .ok();
 
     let old_versions =
         Arc::new(Mutex::new(if let Some(old_manifest) = old_manifest {
@@ -78,7 +68,7 @@ pub async fn retrieve_data(
                                     x.id == minecraft_version).and_then(|x| x.loaders.iter().find(|x| x.id == loader_version_full));
 
                                 if let Some(version) = version {
-                                    return Ok::<Option<LoaderVersion>, Error>(Some(version.clone()));
+                                    return Ok::<Option<LoaderVersion>, anyhow::Error>(Some(version.clone()));
                                 }
                             }
 
@@ -94,7 +84,7 @@ pub async fn retrieve_data(
                                     let mut contents = String::new();
                                     install_profile.read_to_string(&mut contents)?;
 
-                                    Ok::<ForgeInstallerProfileV2, Error>(serde_json::from_str::<ForgeInstallerProfileV2>(&contents)?)
+                                    Ok::<ForgeInstallerProfileV2, anyhow::Error>(serde_json::from_str::<ForgeInstallerProfileV2>(&contents)?)
                                 }).await??;
 
                                 let mut archive_clone = archive.clone();
@@ -104,7 +94,7 @@ pub async fn retrieve_data(
                                     let mut contents = String::new();
                                     install_profile.read_to_string(&mut contents)?;
 
-                                    Ok::<PartialVersionInfo, Error>(serde_json::from_str::<PartialVersionInfo>(&contents)?)
+                                    Ok::<PartialVersionInfo, anyhow::Error>(serde_json::from_str::<PartialVersionInfo>(&contents)?)
                                 }).await??;
 
 
@@ -132,7 +122,7 @@ pub async fn retrieve_data(
                                             let mut lib_bytes =  Vec::new();
                                             lib_file.read_to_end(&mut lib_bytes)?;
 
-                                            Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
+                                            Ok::<bytes::Bytes, anyhow::Error>(bytes::Bytes::from(lib_bytes))
                                         }).await??;
 
                                         local_libs.insert(lib.name.to_string(), lib_bytes);
@@ -153,7 +143,7 @@ pub async fn retrieve_data(
                                             let mut lib_bytes =  Vec::new();
                                             lib_file.read_to_end(&mut lib_bytes)?;
 
-                                            Ok::<bytes::Bytes, Error>(bytes::Bytes::from(lib_bytes))
+                                            Ok::<bytes::Bytes, anyhow::Error>(bytes::Bytes::from(lib_bytes))
                                         }).await??;
 
                                         let split = $value.split('/').last();
@@ -212,7 +202,7 @@ pub async fn retrieve_data(
                                                 lib.url = Some(format_url("maven/"));
                                             }
 
-                                            return Ok::<Library, Error>(lib);
+                                            return Ok::<Library, anyhow::Error>(lib);
                                         } else {
                                             visited_assets.push(lib.name.clone())
                                         }
@@ -266,7 +256,7 @@ pub async fn retrieve_data(
                                         ).await?;
                                     }
 
-                                    Ok::<Library, Error>(lib)
+                                    Ok::<Library, anyhow::Error>(lib)
                                 })).await?;
 
                                 let elapsed = now.elapsed();
@@ -337,7 +327,7 @@ pub async fn retrieve_data(
                     loaders: loaders_versions
                 });
 
-                Ok::<(), Error>(())
+                Ok::<(), anyhow::Error>(())
             });
         }
     }
@@ -440,11 +430,11 @@ struct Versions {
 
 pub async fn fetch_maven_metadata(
     semaphore: Arc<Semaphore>,
-) -> Result<HashMap<String, Vec<(String, String, bool)>>, Error> {
+) -> Result<HashMap<String, Vec<(String, String, bool)>>, anyhow::Error> {
     async fn fetch_values(
         url: &str,
         semaphore: Arc<Semaphore>,
-    ) -> Result<Metadata, Error> {
+    ) -> Result<Metadata, anyhow::Error> {
         Ok(serde_xml_rs::from_str(
             &String::from_utf8(
                 download_file(url, None, semaphore).await?.to_vec(),

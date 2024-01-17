@@ -1,12 +1,15 @@
+use anyhow::bail;
 use daedalus::Branding;
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use s3::creds::Credentials;
-use s3::error::S3Error;
 use s3::{Bucket, Region};
 use std::ffi::OsStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 mod fabric;
 mod forge;
@@ -14,46 +17,33 @@ mod minecraft;
 mod neoforge;
 mod quilt;
 
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("{0}")]
-    DaedalusError(#[from] daedalus::Error),
-    #[error("Error while deserializing JSON")]
-    SerdeError(#[from] serde_json::Error),
-    #[error("Error while deserializing XML")]
-    XMLError(#[from] serde_xml_rs::Error),
-    #[error("Unable to fetch {item}")]
-    FetchError { inner: reqwest::Error, item: String },
-    #[error("Error while managing asynchronous tasks")]
-    TaskError(#[from] tokio::task::JoinError),
-    #[error("Error while uploading file to S3")]
-    S3Error { inner: S3Error, file: String },
-    #[error("Error while parsing version as semver: {0}")]
-    SemVerError(#[from] semver::Error),
-    #[error("Error while reading zip file: {0}")]
-    ZipError(#[from] zip::result::ZipError),
-    #[error("Error while reading zip file: {0}")]
-    IoError(#[from] std::io::Error),
-    #[error("Error while obtaining strong reference to Arc")]
-    ArcError,
-    #[error("Error acquiring semaphore: {0}")]
-    AcquireError(#[from] tokio::sync::AcquireError),
-    #[error("Error parsing libraries: {0}")]
-    LibraryError(String),
-    #[error("Error uploading file: {0}")]
-    WalkDirError(#[from] walkdir::Error),
-    #[error("Error uploading file: {0}")]
-    StaticUploadPathError(String),
-}
-
 #[tokio::main]
-async fn main() {
-    env_logger::init();
+async fn main() -> Result<(), anyhow::Error> {
+    let printer = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_ansi(true)
+        .pretty()
+        .with_thread_names(true);
+
+    let filter = EnvFilter::builder();
+
+    let filter = if std::env::var("RUST_LOG").is_ok() {
+        println!("loaded logger directives from `RUST_LOG` env");
+
+        filter.from_env().expect("logger directives are invalid")
+    } else {
+        filter
+            .parse("info")
+            .expect("default logger directives are invalid")
+    };
+
+    tracing_subscriber::registry()
+        .with(printer)
+        .with(filter)
+        .init();
 
     if check_env_vars() {
-        error!("Some environment variables are missing!");
-
-        return;
+        bail!("Some environment variables are missing!");
     }
 
     #[cfg(feature = "sentry")]
@@ -111,60 +101,36 @@ async fn main() {
 
         if let Some(manifest) = versions {
             if cfg!(feature = "fabric") {
-                match fabric::retrieve_data(
+                fabric::retrieve_data(
                     &manifest,
                     &mut uploaded_files,
                     semaphore.clone(),
                 )
-                .await
-                {
-                    Ok(..) => {
-                        info!("Fabric data retrieved")
-                    }
-                    Err(err) => error!("Fabric error: {:?}", err),
-                };
+                .await?;
             }
             if cfg!(feature = "forge") {
-                match forge::retrieve_data(
+                forge::retrieve_data(
                     &manifest,
                     &mut uploaded_files,
                     semaphore.clone(),
                 )
-                .await
-                {
-                    Ok(..) => {
-                        info!("Forge data retrieved")
-                    }
-                    Err(err) => error!("Forge error: {:?}", err),
-                };
+                .await?;
             }
             if cfg!(feature = "quilt") {
-                match quilt::retrieve_data(
+                quilt::retrieve_data(
                     &manifest,
                     &mut uploaded_files,
                     semaphore.clone(),
                 )
-                .await
-                {
-                    Ok(..) => {
-                        info!("Quilt data retrieved")
-                    }
-                    Err(err) => error!("Quilt error: {:?}", err),
-                };
+                .await?;
             }
             if cfg!(feature = "neoforge") {
-                match neoforge::retrieve_data(
+                neoforge::retrieve_data(
                     &manifest,
                     &mut uploaded_files,
                     semaphore.clone(),
                 )
-                .await
-                {
-                    Ok(..) => {
-                        info!("Neoforge data retrieved")
-                    }
-                    Err(err) => error!("Neoforge error: {:?}", err),
-                };
+                .await?;
             }
         }
     }
@@ -205,26 +171,30 @@ fn check_env_vars() -> bool {
 }
 
 lazy_static::lazy_static! {
-    static ref CLIENT : Bucket = Bucket::new(
-        &dotenvy::var("S3_BUCKET_NAME").unwrap(),
-        if &*dotenvy::var("S3_REGION").unwrap() == "r2" {
-            Region::R2 {
-                account_id: dotenvy::var("S3_URL").unwrap(),
-            }
-        } else {
-            Region::Custom {
-                region: dotenvy::var("S3_REGION").unwrap(),
-                endpoint: dotenvy::var("S3_URL").unwrap(),
-            }
-        },
-        Credentials::new(
-            Some(&*dotenvy::var("S3_ACCESS_TOKEN").unwrap()),
-            Some(&*dotenvy::var("S3_SECRET").unwrap()),
-            None,
-            None,
-            None,
-        ).unwrap(),
-    ).unwrap();
+    static ref CLIENT : Bucket = {
+        let bucket = Bucket::new(
+            &dotenvy::var("S3_BUCKET_NAME").unwrap(),
+            if &*dotenvy::var("S3_REGION").unwrap() == "r2" {
+                Region::R2 {
+                    account_id: dotenvy::var("S3_URL").unwrap(),
+                }
+            } else {
+                Region::Custom {
+                    region: dotenvy::var("S3_REGION").unwrap(),
+                    endpoint: dotenvy::var("S3_URL").unwrap(),
+                }
+            },
+            Credentials::new(
+                Some(&*dotenvy::var("S3_ACCESS_TOKEN").unwrap()),
+                Some(&*dotenvy::var("S3_SECRET").unwrap()),
+                None,
+                None,
+                None,
+            ).unwrap(),
+        ).unwrap();
+
+        bucket.with_path_style()
+    };
 }
 
 pub async fn upload_file_to_bucket(
@@ -233,12 +203,8 @@ pub async fn upload_file_to_bucket(
     content_type: Option<String>,
     uploaded_files: &tokio::sync::Mutex<Vec<String>>,
     semaphore: Arc<Semaphore>,
-) -> Result<(), Error> {
+) -> Result<(), anyhow::Error> {
     let _permit = semaphore.acquire().await?;
-
-    if cfg!(feature = "save_local") {
-        return save_file_local(path, bytes, uploaded_files).await;
-    }
 
     info!("{} started uploading", path);
     let key = path.clone();
@@ -251,9 +217,9 @@ pub async fn upload_file_to_bucket(
         } else {
             CLIENT.put_object(key.clone(), &bytes).await
         }
-        .map_err(|err| Error::S3Error {
-            inner: err,
-            file: path.clone(),
+        .map_err(|err| {
+            error!("{} failed to upload: {:?}", path, err);
+            err
         });
 
         match result {
@@ -275,45 +241,8 @@ pub async fn upload_file_to_bucket(
     unreachable!()
 }
 
-pub const LOCAL_SAVE_PATH: &str = "./bucket/";
-
-/// mainly for testing
-pub async fn save_file_local(
-    path: String,
-    bytes: Vec<u8>,
-    uploaded_files: &tokio::sync::Mutex<Vec<String>>,
-) -> Result<(), Error> {
-    info!("{} saving locally", path);
-
-    let local_save_dir = std::path::Path::new(&LOCAL_SAVE_PATH);
-    let save_path = local_save_dir.join(&path);
-
-    std::fs::create_dir_all(
-        save_path.parent().expect("save path not to be a root path"),
-    )
-    .map_err(|err| Error::IoError(err))?;
-
-    std::fs::write(&save_path, bytes).map_err(|err| Error::IoError(err))?;
-    let mut uploaded_files = uploaded_files.lock().await;
-    uploaded_files.push(path.clone());
-
-    Ok(())
-}
-
-/// Load a local file
-/// mainly for testing
-pub fn load_file_local(path: String) -> Result<Vec<u8>, Error> {
-    info!("{} saving locally", path);
-
-    let local_save_dir = std::path::Path::new(&LOCAL_SAVE_PATH);
-    let load_path = local_save_dir.join(&path);
-
-    let bytes = std::fs::read(&load_path).map_err(|err| Error::IoError(err))?;
-
-    Ok(bytes)
-}
-
 pub fn format_url(path: &str) -> String {
+    info!("{}/{}", &*dotenvy::var("BASE_URL").unwrap(), path);
     format!("{}/{}", &*dotenvy::var("BASE_URL").unwrap(), path)
 }
 
@@ -321,7 +250,7 @@ pub async fn download_file(
     url: &str,
     sha1: Option<&str>,
     semaphore: Arc<Semaphore>,
-) -> Result<bytes::Bytes, Error> {
+) -> Result<bytes::Bytes, anyhow::Error> {
     let _permit = semaphore.acquire().await?;
     info!("{} started downloading", url);
     let val = daedalus::download_file(url, sha1).await?;
@@ -334,7 +263,7 @@ pub async fn download_file_mirrors(
     mirrors: &[&str],
     sha1: Option<&str>,
     semaphore: Arc<Semaphore>,
-) -> Result<bytes::Bytes, Error> {
+) -> Result<bytes::Bytes, anyhow::Error> {
     let _permit = semaphore.acquire().await?;
     info!("{} started downloading", base);
     let val = daedalus::download_file_mirrors(base, mirrors, sha1).await?;
@@ -346,7 +275,7 @@ pub async fn download_file_mirrors(
 pub async fn upload_static_files(
     uploaded_files: &tokio::sync::Mutex<Vec<String>>,
     semaphore: Arc<Semaphore>,
-) -> Result<(), Error> {
+) -> Result<(), anyhow::Error> {
     use path_slash::PathExt as _;
     let cdn_upload_dir =
         dotenvy::var("CDN_UPLOAD_DIR").unwrap_or("./upload_cdn".to_string());
@@ -358,8 +287,9 @@ pub async fn upload_static_files(
                 .expect("Unwrap to be safe because we are striping the prefix to the directory walked")
                  .to_slash()
                 .ok_or_else(|| {
-                    Error::StaticUploadPathError(
-                        format!("Path {} contains non unicode characters", entry.path().display())
+                    anyhow::anyhow!(
+                        "Failed to convert path to utf8 string {}",
+                        entry.path().display()
                     )
                 })?;
             info!(

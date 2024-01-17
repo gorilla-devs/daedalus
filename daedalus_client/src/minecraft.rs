@@ -1,5 +1,6 @@
 use crate::download_file;
-use crate::{format_url, upload_file_to_bucket, Error};
+use crate::{format_url, upload_file_to_bucket};
+use anyhow::bail;
 use daedalus::minecraft::{
     merge_partial_library, Dependency, DependencyRule, JavaVersion, LWJGLEntry,
     Library, LibraryDownload, LibraryDownloads, LibraryGroup,
@@ -67,7 +68,7 @@ fn patch_library(
 fn process_single_lwjgl_variant(
     variant: &LibraryGroup,
     patches: &Vec<LibraryPatch>,
-) -> Result<Option<(String, LibraryGroup)>, Error> {
+) -> Result<Option<(String, LibraryGroup)>, anyhow::Error> {
     let lwjgl_version = variant.version.clone();
     let mut lwjgl = variant.clone();
 
@@ -119,10 +120,7 @@ fn process_single_lwjgl_variant(
             lwjgl_version
         )
     } else {
-        return Err(Error::LibraryError(format!(
-            "LWJGL version not recognized: {}",
-            lwjgl.version
-        )));
+        bail!("Unknown LWJGL version {}", lwjgl_version);
     };
 
     let mut good = true;
@@ -175,7 +173,7 @@ fn process_single_lwjgl_variant(
 /// Patch CVE-2021-44228, CVE-2021-44832, CVE-2021-45046
 fn map_log4j_artifact(
     version: &str,
-) -> Result<Option<(String, String)>, Error> {
+) -> Result<Option<(String, String)>, anyhow::Error> {
     debug!("log4j version: {}", version);
     let x = lenient_semver::parse(version);
     if x <= lenient_semver::parse("2.0") {
@@ -198,27 +196,17 @@ fn map_log4j_artifact(
 pub async fn retrieve_data(
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
-) -> Result<VersionManifest, Error> {
+) -> Result<VersionManifest, anyhow::Error> {
     log::info!("Retrieving Minecraft data ...");
 
-    let old_manifest = if cfg!(feature = "save_local") {
-        log::info!("Loading local Minecraft manifest ...");
-        crate::load_file_local(format!(
+    let old_manifest = daedalus::minecraft::fetch_version_manifest(Some(
+        &format_url(&format!(
             "minecraft/v{}/manifest.json",
             daedalus::minecraft::CURRENT_FORMAT_VERSION
-        ))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-    } else {
-        daedalus::minecraft::fetch_version_manifest(Some(&format_url(
-            &format!(
-                "minecraft/v{}/manifest.json",
-                daedalus::minecraft::CURRENT_FORMAT_VERSION
-            ),
-        )))
-        .await
-        .ok()
-    };
+        )),
+    ))
+    .await
+    .ok();
 
     let mut manifest =
         daedalus::minecraft::fetch_version_manifest(None).await?;
@@ -434,7 +422,7 @@ pub async fn retrieve_data(
                                             Ok(("677991ea2d7426f76309a73739cecf609679492c", 677588))
                                         }
                                         _ => {
-                                            Err(Error::LibraryError(format!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override )))
+                                            Err(anyhow::anyhow!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override))
                                         }
                                     }
                                 }
@@ -450,12 +438,12 @@ pub async fn retrieve_data(
                                             Ok(("ca499d751f4ddd8afb016ef698c30be0da1d09f7", 21268))
                                         }
                                         _ => {
-                                            Err(Error::LibraryError(format!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override )))
+                                            Err(anyhow::anyhow!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override))
                                         }
                                     }
                                 }
                                 _ => {
-                                    Err(Error::LibraryError(format!("Unhandled overridden log4j version: {}", version_override)))
+                                    Err(anyhow::anyhow!("Unhandled log4j version {}", version_override))
                                 }
                             }?;
                             let artifact = LibraryDownload {
@@ -527,7 +515,7 @@ pub async fn retrieve_data(
                         info!("Found broken 3.1.6/3.2.1 LWJGL combo in version {} , forcing LWJGL. 3.2.1", &version_info.id);
                         Ok("3.2.1".to_string())
                     } else {
-                        Err(Error::LibraryError(format!("Can not determine a single suggested LWJGL version in version {} from among {:?}", &version_info.id, our_versions)))
+                        Err(anyhow::anyhow!("Can not determine a single suggested LWJGL version in version {} from among {:?}", &version_info.id, our_versions))
                     }
 
                 }?;
@@ -696,11 +684,11 @@ pub async fn retrieve_data(
 
                 futures::future::try_join_all(upload_futures).await?;
 
-                Ok::<(), Error>(())
+                Ok::<(), anyhow::Error>(())
             }
             .await?;
 
-            Ok::<(), Error>(())
+            Ok::<(), anyhow::Error>(())
         })
     }
 
@@ -840,7 +828,7 @@ pub async fn retrieve_data(
                     error!("No variant decided for version {} of out {} possible and {} unknown", lwjgl_version_variant, accepted_variants, unknown_variants);
                 }
 
-                Ok::<(), Error>(())
+                Ok::<(), anyhow::Error>(())
             }
             .await?
         }
@@ -866,7 +854,12 @@ pub async fn retrieve_data(
     info!("Elapsed: {:.2?}", elapsed);
 
     Ok(Arc::try_unwrap(cloned_manifest)
-        .map_err(|_| Error::ArcError)?
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Failed to unwrap Arc<Mutex<VersionManifest>>: {:?}",
+                err
+            )
+        })?
         .into_inner())
 }
 
@@ -887,7 +880,7 @@ struct LibraryPatch {
 }
 
 /// Fetches the list of library patches
-async fn get_library_patches() -> Result<Vec<LibraryPatch>, Error> {
+async fn get_library_patches() -> Result<Vec<LibraryPatch>, anyhow::Error> {
     let patches = include_bytes!("../library-patches.json");
     let unprocessed_patches: Vec<LibraryPatch> =
         serde_json::from_slice(patches)?;
@@ -947,7 +940,7 @@ pub struct LWJGLVariantConfig {
 }
 
 /// Fetches
-async fn get_lwjgl_config() -> Result<LWJGLVariantConfig, Error> {
+async fn get_lwjgl_config() -> Result<LWJGLVariantConfig, anyhow::Error> {
     let config = include_bytes!("../lwjgl-config.json");
     Ok(serde_json::from_slice(config)?)
 }

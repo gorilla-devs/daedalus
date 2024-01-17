@@ -41,8 +41,8 @@
       "_comment": "#3.3.1 (2023-06-09 14:15:49 UTC) natives: [] Split: true (allow all) (WoA natives)"
     },
     {
-      "match": "97c512a2043cac92b33adc9da93f502fa25cdc43",
-      "_comment": "#3.3.2 (2023-09-18 12:34:57 UTC) natives: [] Split: true"
+      "match": "a6538e0561b5c27406957f93e6b6cc78e34e6f0b",
+      "_comment": "#3.3.2 (2024-01-17 13:19:20 UTC) natives: [] Split: true"
     }
   ],
   "reject": [
@@ -100,6 +100,11 @@
       "match": "6f8a659552367d8babc900c0267dd2656f439004",
       "_comment": "#3.3.1 (2022-05-12 15:36:11 UTC) natives: [[Osx, Windows, Linux]x7 ] Split: true",
       "reason": "newer variant available"
+    },
+    {
+      "match": "97c512a2043cac92b33adc9da93f502fa25cdc43",
+      "_comment": "#3.3.2 (2023-09-18 12:34:57 UTC) natives: [] Split: true",
+      "reason": "does not have lwjgl-freetype"
     }
   ]
 }
