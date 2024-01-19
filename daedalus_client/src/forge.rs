@@ -403,10 +403,10 @@ pub async fn retrieve_data(
                                         .filter(|lib| !lib.name.is_log4j() )
                                         .collect();
 
-                                    let mut local_libs : HashMap<String, bytes::Bytes> = HashMap::new();
+                                    let mut local_libs : HashMap<String, Option<bytes::Bytes>> = HashMap::new();
 
                                     fn is_local_lib(lib: &Library) -> bool {
-                                        lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().map(|x| x.url.is_empty())).unwrap_or(false) || lib.url.is_some()
+                                        lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().and_then(|x| x.url.as_ref().map(|lib| lib.is_empty()))).unwrap_or(false) || lib.url.is_some()
                                     }
 
                                     let mut i = 0;
@@ -442,11 +442,8 @@ pub async fn retrieve_data(
                                                 Ok::<_, anyhow::Error>(result)
                                             }).await??;
 
-                                            if let Some(lib_bytes) = lib_bytes {
-                                                local_libs.insert(lib.name.to_string(), lib_bytes);
-                                            } else {
-                                                libs.remove(i);
-                                            }
+                                            local_libs.insert(lib.name.to_string(), lib_bytes);
+                                            
                                         }
 
                                         i += 1;
@@ -483,7 +480,7 @@ pub async fn retrieve_data(
                                                                 let unsanitized_path = format!("{}:{}@{}", path.as_deref().unwrap_or(&*format!("net.minecraftforge:forge:{}", version)), file_name, ext);
                                                                 let path = GradleSpecifier::try_from(&*unsanitized_path)?.to_string();
                                                                 $value = format!("[{}]", &path);
-                                                                local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
+                                                                local_libs.insert(path.clone(), Some(bytes::Bytes::from(lib_bytes)));
 
                                                                 libs.push(Library {
                                                                     downloads: None,
@@ -524,7 +521,7 @@ pub async fn retrieve_data(
                                             if visited_assets.contains(&lib.name) {
                                                 if let Some(ref mut downloads) = lib.downloads {
                                                     if let Some(ref mut artifact) = downloads.artifact {
-                                                        artifact.url = format_url(&format!("maven/{}", artifact_path));
+                                                        artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
                                                     }
                                                 } else if lib.url.is_some() {
                                                     lib.url = Some(format_url("maven/"));
@@ -538,25 +535,27 @@ pub async fn retrieve_data(
 
                                         let artifact_bytes = if let Some(ref mut downloads) = lib.downloads {
                                             if let Some(ref mut artifact) = downloads.artifact {
-                                                let res = if artifact.url.is_empty() {
-                                                    local_libs.get(&lib.name.to_string()).cloned()
-                                                } else {
+                                                let res = if let Some(url) = artifact.url.as_ref().filter(|x| !x.is_empty()) {
                                                     Some(download_file(
-                                                        &artifact.url,
+                                                        url,
                                                         Some(&*artifact.sha1),
                                                         semaphore.clone(),
                                                     ).await?)
+                                                } else {
+                                                    local_libs.get(&lib.name.to_string()).cloned().flatten()
                                                 };
 
                                                 if res.is_some() {
-                                                    artifact.url = format_url(&format!("maven/{}", artifact_path));
+                                                    artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
+                                                } else {
+                                                    artifact.url = None;
                                                 }
 
                                                 res
                                             } else { None }
                                         } else if let Some(ref mut url) = lib.url {
                                             let res = if url.is_empty() {
-                                                local_libs.get(&lib.name.to_string()).cloned()
+                                                local_libs.get(&lib.name.to_string()).cloned().flatten()
                                             } else {
                                                 let lib_url = format!("{}/{}", url, lib.name.path());
                                                 Some(download_file(
@@ -568,6 +567,8 @@ pub async fn retrieve_data(
 
                                             if res.is_some() {
                                                 lib.url = Some(format_url("maven/"));
+                                            } else {
+                                                lib.url = None;
                                             }
 
                                             res

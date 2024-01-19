@@ -450,7 +450,7 @@ pub async fn retrieve_data(
                                 path: replacement_name.path(),
                                 sha1: sha1.to_string(),
                                 size,
-                                url: format!("{}{}", maven_override, replacement_name.path()),
+                                url: Some(format!("{}{}", maven_override, replacement_name.path())),
 
                             };
                             new_libraries.push(
@@ -894,11 +894,15 @@ fn pre_process_patch(patch: &LibraryPatch) -> LibraryPatch {
 
     fn patch_downloads(downloads: &mut LibraryDownloads) {
         if let Some(artifact) = downloads.artifact.as_mut() {
-            patch_url(&mut artifact.url);
+            if let Some(url) = artifact.url.as_mut() {
+                patch_url(url);
+            }
         }
         if let Some(classifiers) = downloads.classifiers.as_mut() {
             for (_, artifact) in classifiers.iter_mut() {
-                patch_url(&mut artifact.url);
+                if let Some(url) = artifact.url.as_mut() {
+                    patch_url(url);
+                }
             }
         }
     }

@@ -216,7 +216,7 @@ pub struct LibraryDownload {
     /// The size of the library
     pub size: u32,
     /// The URL where the library can be downloaded
-    pub url: String,
+    pub url: Option<String>,
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]

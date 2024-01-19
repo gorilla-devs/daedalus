@@ -113,7 +113,7 @@ pub async fn retrieve_data(
                                 let mut local_libs : HashMap<String, bytes::Bytes> = HashMap::new();
 
                                 for lib in &libs {
-                                    if lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().map(|x| x.url.is_empty())).unwrap_or(false) {
+                                    if lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().and_then(|x| x.url.as_ref().map(|url| url.is_empty()))).unwrap_or(false) {
                                         let mut archive_clone = archive.clone();
                                         let lib_name_clone = lib.name.clone();
 
@@ -196,7 +196,7 @@ pub async fn retrieve_data(
                                         if visited_assets.contains(&lib.name) {
                                             if let Some(ref mut downloads) = lib.downloads {
                                                 if let Some(ref mut artifact) = downloads.artifact {
-                                                    artifact.url = format_url(&format!("maven/{}", artifact_path));
+                                                    artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
                                                 }
                                             } else if lib.url.is_some() {
                                                 lib.url = Some(format_url("maven/"));
@@ -210,19 +210,19 @@ pub async fn retrieve_data(
 
                                     let artifact_bytes = if let Some(ref mut downloads) = lib.downloads {
                                         if let Some(ref mut artifact) = downloads.artifact {
-                                            let res = if artifact.url.is_empty() {
-                                                local_libs.get(&lib.name.to_string()).cloned()
-                                            } else {
+                                            let res = if let Some(ref mut url) = artifact.url.as_ref().and_then(|x| if x.is_empty() { None } else { Some(x) }) {
                                                 Some(download_file(
-                                                    &artifact.url,
+                                                    url,
                                                     Some(&*artifact.sha1),
                                                     semaphore.clone(),
                                                 )
-                                                    .await?)
+                                                .await?)
+                                            } else {
+                                                local_libs.get(&lib.name.to_string()).cloned()
                                             };
 
                                             if res.is_some() {
-                                                artifact.url = format_url(&format!("maven/{}", artifact_path));
+                                                artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
                                             }
 
                                             res
