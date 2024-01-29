@@ -9,7 +9,7 @@ use std::convert::TryFrom;
 use bincode::{Decode, Encode};
 
 /// The latest version of the format the model structs deserialize to
-pub const CURRENT_FORMAT_VERSION: usize = 0;
+pub const CURRENT_FORMAT_VERSION: usize = 1;
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]

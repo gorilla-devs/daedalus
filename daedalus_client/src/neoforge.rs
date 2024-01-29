@@ -280,7 +280,7 @@ pub async fn retrieve_data(
                                 let version_path = format!(
                                     "neoforge/v{}/versions/{}.json",
                                     daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
-                                    new_profile.id
+                                    loader_version_full
                                 );
 
                                 upload_file_to_bucket(

@@ -346,7 +346,7 @@ pub async fn retrieve_data(
                                     let version_path = format!(
                                         "forge/v{}/versions/{}.json",
                                         daedalus::modded::CURRENT_FORGE_FORMAT_VERSION,
-                                        new_profile.id
+                                        loader_version_full
                                     );
 
                                     upload_file_to_bucket(
@@ -615,7 +615,7 @@ pub async fn retrieve_data(
                                     let version_path = format!(
                                         "forge/v{}/versions/{}.json",
                                         daedalus::modded::CURRENT_FORGE_FORMAT_VERSION,
-                                        new_profile.id
+                                        loader_version_full
                                     );
 
                                     upload_file_to_bucket(
