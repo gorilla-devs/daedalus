@@ -2,7 +2,7 @@ name: Rust building
 
 on:
   push:
-    branches: [ master ]
+    branches: [master]
   pull_request:
 env:
   CARGO_TERM_COLOR: always
@@ -14,7 +14,8 @@ jobs:
       - name: Install toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.75.0
+
         env:
           SQLX_OFFLINE: true
       - uses: actions-rs/cargo@v1
