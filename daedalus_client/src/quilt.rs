@@ -64,17 +64,6 @@ pub async fn retrieve_data(
     let loader_versions = futures::future::try_join_all(
         loaders_mutex.read().await.clone().into_iter().map(
             |(stable, loader, skip_upload)| async {
-                {
-                    if versions.iter().any(|x| {
-                        x.id == BRANDING
-                            .get_or_init(Branding::default)
-                            .dummy_replace_string
-                            && x.loaders.iter().any(|x| x.id == loader)
-                    }) {
-                        return Ok(None);
-                    }
-                }
-
                 let version = fetch_quilt_version(
                     DUMMY_GAME_VERSION,
                     &loader,
@@ -83,9 +72,9 @@ pub async fn retrieve_data(
                 .await?;
 
                 Ok::<
-                    Option<(Box<bool>, String, PartialVersionInfo, Box<bool>)>,
+                    (Box<bool>, String, PartialVersionInfo, Box<bool>),
                     anyhow::Error,
-                >(Some((stable, loader, version, skip_upload)))
+                >((stable, loader, version, skip_upload))
             },
         ),
     )
@@ -93,7 +82,7 @@ pub async fn retrieve_data(
 
     let visited_artifacts_mutex = Arc::new(Mutex::new(Vec::new()));
     futures::future::try_join_all(loader_versions.into_iter()
-        .flatten().map(
+        .map(
         |(stable, loader, version, skip_upload)| async {
             let libs = futures::future::try_join_all(
                 version.libraries.into_iter().map(|mut lib| async {
@@ -297,17 +286,18 @@ pub async fn retrieve_data(
 
     for version in &mut versions {
         version.loaders.sort_by(|x, y| {
-            list.loader
+            let x_pos = list
+                .loader
+                .iter()
+                .position(|z| x.id == *z.version)
+                .unwrap_or_default();
+            let y_pos = &list
+                .loader
                 .iter()
                 .position(|z| y.id == z.version)
-                .unwrap_or_default()
-                .cmp(
-                    &list
-                        .loader
-                        .iter()
-                        .position(|z| y.id == z.version)
-                        .unwrap_or_default(),
-                )
+                .unwrap_or_default();
+
+            x_pos.cmp(y_pos)
         })
     }
 

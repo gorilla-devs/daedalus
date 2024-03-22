@@ -73,9 +73,9 @@ pub async fn retrieve_data(
                 .await?;
 
                 Ok::<
-                    Option<(Box<bool>, String, PartialVersionInfo, Box<bool>)>,
+                    (Box<bool>, String, PartialVersionInfo, Box<bool>),
                     anyhow::Error,
-                >(Some((stable, loader, version, skip_upload)))
+                >((stable, loader, version, skip_upload))
             },
         ),
     )
@@ -83,7 +83,7 @@ pub async fn retrieve_data(
 
     let visited_artifacts_mutex = Arc::new(Mutex::new(Vec::new()));
     futures::future::try_join_all(loader_versions.into_iter()
-        .flatten().map(
+        .map(
         |(stable, loader, version, skip_upload)| async {
             let libs = futures::future::try_join_all(
                 version.libraries.into_iter().map(|mut lib| async {

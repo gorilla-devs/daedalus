@@ -4,8 +4,11 @@
 
 #![warn(missing_docs, unused_import_braces, missing_debug_implementations)]
 
-use std::{convert::TryFrom, fmt::Display, path::PathBuf, str::FromStr};
+use std::{
+    convert::TryFrom, fmt::Display, path::PathBuf, str::FromStr, time::Duration,
+};
 
+use backon::{ExponentialBuilder, Retryable};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 
@@ -60,15 +63,13 @@ impl Default for Branding {
 #[derive(thiserror::Error, Debug)]
 /// An error type representing possible errors when fetching metadata
 pub enum Error {
-    #[error("Failed to validate file checksum at url {url} with hash {hash} after {tries} tries")]
+    #[error("Failed to validate file checksum at url {url} with hash {hash}")]
     /// A checksum was failed to validate for a file
     ChecksumFailure {
         /// The checksum's hash
         hash: String,
         /// The URL of the file attempted to be downloaded
         url: String,
-        /// The amount of tries that the file was downloaded until failure
-        tries: u32,
     },
     /// There was an error while deserializing metadata
     #[error("Error while deserializing JSON")]
@@ -93,6 +94,9 @@ pub enum Error {
     /// Invalid Minecraft Java Profile
     #[error("Invalid Minecraft Java Profile")]
     InvalidMinecraftJavaProfile(String),
+    #[error("Mirrors failed to download")]
+    /// Mirrors failed to download
+    MirrorsFailed(String),
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
@@ -325,7 +329,7 @@ pub async fn download_file_mirrors(
         }
     }
 
-    unreachable!()
+    return Err(Error::MirrorsFailed("No mirrors succeeded!".to_string()));
 }
 
 /// Downloads a file with retry and checksum functionality
@@ -349,49 +353,44 @@ pub async fn download_file(
             item: url.to_string(),
         })?;
 
-    for attempt in 1..=4 {
+    (|| async {
         let result = client.get(url).send().await;
 
         match result {
             Ok(x) => {
                 let bytes = x.bytes().await;
 
-                if let Ok(bytes) = bytes {
-                    if let Some(sha1) = sha1 {
-                        if &*get_hash(bytes.clone()).await? != sha1 {
-                            if attempt <= 3 {
-                                continue;
-                            } else {
+                match bytes {
+                    Ok(bytes) => {
+                        if let Some(sha1) = sha1 {
+                            if &*get_hash(bytes.clone()).await? != sha1 {
                                 return Err(Error::ChecksumFailure {
                                     hash: sha1.to_string(),
                                     url: url.to_string(),
-                                    tries: attempt,
                                 });
                             }
                         }
-                    }
 
-                    return Ok(bytes);
-                } else if attempt <= 3 {
-                    continue;
-                } else if let Err(err) = bytes {
-                    return Err(Error::FetchError {
+                        Ok(bytes)
+                    }
+                    Err(err) => Err(Error::FetchError {
                         inner: err,
                         item: url.to_string(),
-                    });
+                    }),
                 }
             }
-            Err(_) if attempt <= 3 => continue,
-            Err(err) => {
-                return Err(Error::FetchError {
-                    inner: err,
-                    item: url.to_string(),
-                })
-            }
+            Err(err) => Err(Error::FetchError {
+                inner: err,
+                item: url.to_string(),
+            }),
         }
-    }
-
-    unreachable!()
+    })
+    .retry(
+        &ExponentialBuilder::default()
+            .with_max_times(10)
+            .with_max_delay(Duration::from_secs(300)),
+    )
+    .await
 }
 
 /// Computes a checksum of the input bytes

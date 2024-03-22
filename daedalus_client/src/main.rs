@@ -1,4 +1,5 @@
 use anyhow::bail;
+use backon::{ExponentialBuilder, Retryable};
 use daedalus::Branding;
 use log::{error, info, trace, warn};
 use s3::creds::Credentials;
@@ -207,9 +208,10 @@ pub async fn upload_file_to_bucket(
     let _permit = semaphore.acquire().await?;
 
     info!("{} started uploading", path);
-    let key = path.clone();
 
-    for attempt in 1..=4 {
+    (|| async {
+        let key = path.clone();
+
         let result = if let Some(ref content_type) = content_type {
             CLIENT
                 .put_object_with_content_type(key.clone(), &bytes, content_type)
@@ -232,13 +234,18 @@ pub async fn upload_file_to_bucket(
 
                 return Ok(());
             }
-            Err(_) if attempt <= 3 => continue,
-            Err(_) => {
-                result?;
+            Err(err) => {
+                error!("{} failed to upload: {:?}", path, err);
+                return Err(err.into());
             }
         }
-    }
-    unreachable!()
+    })
+    .retry(
+        &ExponentialBuilder::default()
+            .with_max_times(10)
+            .with_max_delay(Duration::from_secs(300)),
+    )
+    .await
 }
 
 pub fn format_url(path: &str) -> String {
