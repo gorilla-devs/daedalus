@@ -18,35 +18,7 @@ mod minecraft;
 mod neoforge;
 mod quilt;
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    let printer = tracing_subscriber::fmt::layer()
-        .with_target(true)
-        .with_ansi(true)
-        .pretty()
-        .with_thread_names(true);
-
-    let filter = EnvFilter::builder();
-
-    let filter = if std::env::var("RUST_LOG").is_ok() {
-        println!("loaded logger directives from `RUST_LOG` env");
-
-        filter.from_env().expect("logger directives are invalid")
-    } else {
-        filter
-            .parse("info")
-            .expect("default logger directives are invalid")
-    };
-
-    tracing_subscriber::registry()
-        .with(printer)
-        .with(filter)
-        .init();
-
-    if check_env_vars() {
-        bail!("Some environment variables are missing!");
-    }
-
+fn main() -> Result<(), anyhow::Error> {
     #[cfg(feature = "sentry")]
     let _guard = sentry::init((
         dotenvy::var("SENTRY_DSN").unwrap(),
@@ -56,85 +28,120 @@ async fn main() -> Result<(), anyhow::Error> {
         },
     ));
 
-    Branding::set_branding(Branding::new(
-        dotenvy::var("BRAND_NAME").unwrap(),
-        dotenvy::var("SUPPORT_EMAIL").unwrap(),
-    ))
-    .unwrap();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let printer = tracing_subscriber::fmt::layer()
+                .with_target(true)
+                .with_ansi(true)
+                .pretty()
+                .with_thread_names(true);
 
-    let mut timer = tokio::time::interval(Duration::from_secs(60 * 60));
-    let semaphore = Arc::new(Semaphore::new(10));
+            let filter = EnvFilter::builder();
 
-    {
-        let uploaded_files = Arc::new(Mutex::new(Vec::new()));
+            let filter = if std::env::var("RUST_LOG").is_ok() {
+                println!("loaded logger directives from `RUST_LOG` env");
 
-        match upload_static_files(&uploaded_files, semaphore.clone()).await {
-            Ok(()) => {}
-            Err(err) => {
-                error!("{:?}", err);
+                filter.from_env().expect("logger directives are invalid")
+            } else {
+                filter
+                    .parse("info")
+                    .expect("default logger directives are invalid")
+            };
+
+            tracing_subscriber::registry()
+                .with(printer)
+                .with(filter)
+                .init();
+
+            if check_env_vars() {
+                bail!("Some environment variables are missing!");
             }
-        }
-    }
 
-    loop {
-        info!("Waiting for next update timer");
-        timer.tick().await;
+            Branding::set_branding(Branding::new(
+                dotenvy::var("BRAND_NAME").unwrap(),
+                dotenvy::var("SUPPORT_EMAIL").unwrap(),
+            ))
+            .unwrap();
 
-        let mut uploaded_files = Vec::new();
+            let mut timer = tokio::time::interval(Duration::from_secs(60 * 60));
+            let semaphore = Arc::new(Semaphore::new(10));
 
-        let versions = match minecraft::retrieve_data(
-            &mut uploaded_files,
-            semaphore.clone(),
-        )
-        .await
-        {
-            Ok(res) => {
-                info!("Minecraft data retrieved");
+            {
+                let uploaded_files = Arc::new(Mutex::new(Vec::new()));
 
-                Some(res)
+                match upload_static_files(&uploaded_files, semaphore.clone())
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(err) => {
+                        error!("{:?}", err);
+                    }
+                }
             }
-            Err(err) => {
-                error!("MC Error: {:?}", err);
 
-                None
-            }
-        };
+            loop {
+                info!("Waiting for next update timer");
+                timer.tick().await;
 
-        if let Some(manifest) = versions {
-            if cfg!(feature = "fabric") {
-                fabric::retrieve_data(
-                    &manifest,
+                let mut uploaded_files = Vec::new();
+
+                let versions = match minecraft::retrieve_data(
                     &mut uploaded_files,
                     semaphore.clone(),
                 )
-                .await?;
+                .await
+                {
+                    Ok(res) => {
+                        info!("Minecraft data retrieved");
+
+                        Some(res)
+                    }
+                    Err(err) => {
+                        error!("MC Error: {:?}", err);
+
+                        None
+                    }
+                };
+
+                if let Some(manifest) = versions {
+                    if cfg!(feature = "fabric") {
+                        fabric::retrieve_data(
+                            &manifest,
+                            &mut uploaded_files,
+                            semaphore.clone(),
+                        )
+                        .await?;
+                    }
+                    if cfg!(feature = "forge") {
+                        forge::retrieve_data(
+                            &manifest,
+                            &mut uploaded_files,
+                            semaphore.clone(),
+                        )
+                        .await?;
+                    }
+                    if cfg!(feature = "quilt") {
+                        quilt::retrieve_data(
+                            &manifest,
+                            &mut uploaded_files,
+                            semaphore.clone(),
+                        )
+                        .await?;
+                    }
+                    if cfg!(feature = "neoforge") {
+                        neoforge::retrieve_data(
+                            &manifest,
+                            &mut uploaded_files,
+                            semaphore.clone(),
+                        )
+                        .await?;
+                    }
+                }
             }
-            if cfg!(feature = "forge") {
-                forge::retrieve_data(
-                    &manifest,
-                    &mut uploaded_files,
-                    semaphore.clone(),
-                )
-                .await?;
-            }
-            if cfg!(feature = "quilt") {
-                quilt::retrieve_data(
-                    &manifest,
-                    &mut uploaded_files,
-                    semaphore.clone(),
-                )
-                .await?;
-            }
-            if cfg!(feature = "neoforge") {
-                neoforge::retrieve_data(
-                    &manifest,
-                    &mut uploaded_files,
-                    semaphore.clone(),
-                )
-                .await?;
-            }
-        }
-    }
+        })
 }
 
 fn check_env_vars() -> bool {
