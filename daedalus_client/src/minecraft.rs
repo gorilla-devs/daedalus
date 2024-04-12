@@ -550,6 +550,14 @@ pub async fn retrieve_data(
                                 major_version: 0,
                             }),
                             Err(err) => {
+                                #[cfg(feature = "sentry")]
+                                sentry::capture_message(
+                                    &format!(
+                                        "Unknown java version \"{}\": {}",
+                                        java_version.component, err
+                                    ),
+                                    sentry::Level::Warning,
+                                );
                                 println!(
                                     "Unknown java version \"{}\": {}",
                                     java_version.component, err

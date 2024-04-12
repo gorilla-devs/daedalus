@@ -344,7 +344,7 @@ async fn fetch_quilt_version(
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// Versions of quilt components
-struct QuiltVersions {
+pub struct QuiltVersions {
     /// Versions of Minecraft that quilt supports
     pub game: Vec<QuiltGameVersion>,
     /// Available versions of the quilt loader
@@ -362,7 +362,7 @@ struct QuiltGameVersion {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A version of the quilt loader
-struct QuiltLoaderVersion {
+pub struct QuiltLoaderVersion {
     /// The separator to get the build number
     pub separator: String,
     /// The build number
