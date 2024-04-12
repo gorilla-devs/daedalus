@@ -1,7 +1,7 @@
 use anyhow::bail;
 use backon::{ExponentialBuilder, Retryable};
 use daedalus::Branding;
-use log::{error, info, trace, warn};
+use log::{error, info, warn};
 use s3::creds::Credentials;
 use s3::{Bucket, Region};
 use std::ffi::OsStr;
