@@ -90,8 +90,8 @@ pub enum MinecraftJavaProfile {
     JavaRuntimeGammaSnapshot,
     /// Java 14
     MinecraftJavaExe,
-    // /// Java 21
-    // JavaRuntimeDelta,
+    /// Java 21
+    JavaRuntimeDelta,
     #[serde(untagged)]
     /// Unknown
     Unknown(String),
@@ -108,7 +108,7 @@ impl MinecraftJavaProfile {
             MinecraftJavaProfile::JavaRuntimeGammaSnapshot => {
                 Ok("java-runtime-gamma-snapshot")
             }
-            // MinecraftJavaProfile::JavaRuntimeDelta => Ok("java-runtime-delta"),
+            MinecraftJavaProfile::JavaRuntimeDelta => Ok("java-runtime-delta"),
             MinecraftJavaProfile::MinecraftJavaExe => Ok("minecraft-java-exe"),
             MinecraftJavaProfile::Unknown(value) => {
                 Err(Error::InvalidMinecraftJavaProfile(value.to_string()))
@@ -129,7 +129,7 @@ impl TryFrom<&str> for MinecraftJavaProfile {
             "java-runtime-gamma-snapshot" => {
                 Ok(MinecraftJavaProfile::JavaRuntimeGammaSnapshot)
             }
-            // "java-runtime-delta" => Ok(MinecraftJavaProfile::JavaRuntimeDelta),
+            "java-runtime-delta" => Ok(MinecraftJavaProfile::JavaRuntimeDelta),
             "minecraft-java-exe" => Ok(MinecraftJavaProfile::MinecraftJavaExe),
             _ => Err(Error::InvalidMinecraftJavaProfile(value.to_string())),
         }
