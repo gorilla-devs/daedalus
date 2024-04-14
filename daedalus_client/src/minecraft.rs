@@ -546,7 +546,7 @@ pub async fn retrieve_data(
                             &*java_version.component,
                         ) {
                             Ok(java_version) => Some(JavaVersion {
-                                component: java_version.as_str().to_string(),
+                                component: java_version.as_str().expect("MinecraftJavaProfile::try_from is not handling unknown variant as error").to_string(),
                                 major_version: 0,
                             }),
                             Err(err) => {
@@ -569,6 +569,7 @@ pub async fn retrieve_data(
                         Some(JavaVersion {
                             component: MinecraftJavaProfile::JreLegacy
                                 .as_str()
+                                .unwrap()
                                 .to_string(),
                             major_version: 0,
                         })

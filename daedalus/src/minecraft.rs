@@ -92,21 +92,27 @@ pub enum MinecraftJavaProfile {
     MinecraftJavaExe,
     /// Java 21
     JavaRuntimeDelta,
+    #[serde(untagged)]
+    /// Unknown
+    Unknown(String),
 }
 
 impl MinecraftJavaProfile {
     /// Converts the version type to a string
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> Result<&'static str, Error> {
         match self {
-            MinecraftJavaProfile::JreLegacy => "jre-legacy",
-            MinecraftJavaProfile::JavaRuntimeAlpha => "java-runtime-alpha",
-            MinecraftJavaProfile::JavaRuntimeBeta => "java-runtime-beta",
-            MinecraftJavaProfile::JavaRuntimeGamma => "java-runtime-gamma",
+            MinecraftJavaProfile::JreLegacy => Ok("jre-legacy"),
+            MinecraftJavaProfile::JavaRuntimeAlpha => Ok("java-runtime-alpha"),
+            MinecraftJavaProfile::JavaRuntimeBeta => Ok("java-runtime-beta"),
+            MinecraftJavaProfile::JavaRuntimeGamma => Ok("java-runtime-gamma"),
             MinecraftJavaProfile::JavaRuntimeGammaSnapshot => {
-                "java-runtime-gamma-snapshot"
+                Ok("java-runtime-gamma-snapshot")
             }
-            MinecraftJavaProfile::JavaRuntimeDelta => "java-runtime-delta",
-            MinecraftJavaProfile::MinecraftJavaExe => "minecraft-java-exe",
+            MinecraftJavaProfile::JavaRuntimeDelta => Ok("java-runtime-delta"),
+            MinecraftJavaProfile::MinecraftJavaExe => Ok("minecraft-java-exe"),
+            MinecraftJavaProfile::Unknown(value) => {
+                Err(Error::InvalidMinecraftJavaProfile(value.to_string()))
+            }
         }
     }
 }
