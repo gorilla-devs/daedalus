@@ -4,8 +4,8 @@ use anyhow::bail;
 use daedalus::minecraft::{
     merge_partial_library, Dependency, DependencyRule, JavaVersion, LWJGLEntry,
     Library, LibraryDownload, LibraryDownloads, LibraryGroup,
-    ListMergeStrategy, MinecraftJavaProfile, Os, PartialLibrary, Rule,
-    RuleAction, VersionInfo, VersionManifest, VersionType,
+    MinecraftJavaProfile, Os, PartialLibrary, Rule, RuleAction, VersionInfo,
+    VersionManifest, VersionType,
 };
 use daedalus::{get_hash, GradleSpecifier};
 use log::{debug, error, info, warn};
@@ -35,11 +35,7 @@ fn patch_library(
             );
 
             if let Some(override_) = &patch.override_ {
-                library = merge_partial_library(
-                    override_.clone(),
-                    library,
-                    &patch.list_merge_strategy,
-                );
+                library = merge_partial_library(override_.clone(), library);
             }
 
             if let Some(additional_libraries) = &patch.additional_libraries {
@@ -884,8 +880,6 @@ struct LibraryPatch {
     #[serde(rename = "override")]
     pub override_: Option<PartialLibrary>,
     pub patch_additional_libraries: Option<bool>,
-    #[serde(default)]
-    pub list_merge_strategy: ListMergeStrategy,
 }
 
 /// Fetches the list of library patches

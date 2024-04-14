@@ -9,7 +9,7 @@ use std::convert::TryFrom;
 use bincode::{Decode, Encode};
 
 /// The latest version of the format the model structs deserialize to
-pub const CURRENT_FORMAT_VERSION: usize = 1;
+pub const CURRENT_FORMAT_VERSION: usize = 2;
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -428,27 +428,10 @@ pub struct Dependency {
     pub rule: Option<DependencyRule>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "lowercase")]
-/// Strategy for merging lists of elements
-pub enum ListMergeStrategy {
-    /// Overwrite the entire list
-    Overwrite,
-    /// Append the contents of the list
-    Append,
-}
-
-impl Default for ListMergeStrategy {
-    fn default() -> Self {
-        ListMergeStrategy::Append
-    }
-}
-
 /// Merges a partial library to make a complete library
 pub fn merge_partial_library(
     partial: PartialLibrary,
     mut merge: Library,
-    list_merge_strat: &ListMergeStrategy,
 ) -> Library {
     if let Some(downloads) = partial.downloads {
         if let Some(merge_downloads) = &mut merge.downloads {
@@ -490,10 +473,6 @@ pub fn merge_partial_library(
     }
     if let Some(rules) = partial.rules {
         if let Some(merge_rules) = &mut merge.rules {
-            match list_merge_strat {
-                ListMergeStrategy::Overwrite => merge_rules.clear(),
-                ListMergeStrategy::Append => {}
-            }
             for rule in rules {
                 merge_rules.push(rule);
             }
