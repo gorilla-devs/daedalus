@@ -884,7 +884,7 @@ struct LibraryPatch {
 
 /// Fetches the list of library patches
 async fn get_library_patches() -> Result<Vec<LibraryPatch>, anyhow::Error> {
-    let patches = include_bytes!("../library-patches.json");
+    let patches = include_bytes!("../patched-library-patches.json");
     let unprocessed_patches: Vec<LibraryPatch> =
         serde_json::from_slice(patches)?;
     Ok(unprocessed_patches.iter().map(pre_process_patch).collect())

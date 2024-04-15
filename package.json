@@ -1,0 +1,15 @@
+{
+  "name": "daedalus",
+  "version": "1.0.0",
+  "description": "Daedalus is a powerful tool which queries and generates metadata for the Minecraft.",
+  "main": "patch_library_patches.js",
+  "type": "module",
+  "scripts": {
+    "patch_library_patches": "node patch_library_patches.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
