@@ -1,4 +1,4 @@
-FROM rust:1.77.2 as build
+FROM 1.77.2-slim-bullseye as build
 ENV PKG_CONFIG_ALLOW_CROSS=1
 
 WORKDIR /usr/src/daedalus
