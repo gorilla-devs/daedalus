@@ -1,4 +1,4 @@
-FROM 1.77.2-slim-bullseye as build
+FROM rust:1.77.2 as build
 ENV PKG_CONFIG_ALLOW_CROSS=1
 
 WORKDIR /usr/src/daedalus
@@ -6,7 +6,7 @@ COPY . .
 RUN cargo build --release
 
 
-FROM debian:bullseye-slim
+FROM rust:1.77.2-slim-bullseye
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
