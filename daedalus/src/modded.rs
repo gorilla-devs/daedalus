@@ -12,13 +12,13 @@ use std::collections::HashMap;
 use bincode::{Decode, Encode};
 
 /// The latest version of the format the fabric model structs deserialize to
-pub const CURRENT_FABRIC_FORMAT_VERSION: usize = 1;
+pub const CURRENT_FABRIC_FORMAT_VERSION: usize = 2;
 /// The latest version of the format the fabric model structs deserialize to
-pub const CURRENT_FORGE_FORMAT_VERSION: usize = 1;
+pub const CURRENT_FORGE_FORMAT_VERSION: usize = 2;
 /// The latest version of the format the quilt model structs deserialize to
-pub const CURRENT_QUILT_FORMAT_VERSION: usize = 1;
+pub const CURRENT_QUILT_FORMAT_VERSION: usize = 2;
 /// The latest version of the format the neoforge model structs deserialize to
-pub const CURRENT_NEOFORGE_FORMAT_VERSION: usize = 1;
+pub const CURRENT_NEOFORGE_FORMAT_VERSION: usize = 2;
 
 /// A data variable entry that depends on the side of the installation
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
