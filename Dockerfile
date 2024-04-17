@@ -9,4 +9,6 @@ RUN update-ca-certificates
 
 WORKDIR /usr/src/daedalus
 COPY . .
-RUN cargo run --release
+RUN cargo build --release
+
+CMD ["cargo", "run", "--release"]
