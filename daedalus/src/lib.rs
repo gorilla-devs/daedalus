@@ -388,7 +388,7 @@ pub async fn download_file(
     .retry(
         &ExponentialBuilder::default()
             .with_max_times(10)
-            .with_max_delay(Duration::from_secs(300)),
+            .with_max_delay(Duration::from_secs(1800)),
     )
     .await
 }

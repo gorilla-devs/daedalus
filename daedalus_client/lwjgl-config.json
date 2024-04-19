@@ -1,114 +1,121 @@
 {
   "accept": [
     {
-      "match": "e110c423a81ba3db9d2afc0c36762306fc2aa058",
-      "_comment": "#2.9.0 (2013-10-11 15:09:17 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
+      "match": "ca23e095136a624d43d992f8c1fbf64b58fa8ddd",
+      "_comment": "#3.3.3 (2024-04-18 11:45:40 UTC) natives: [] Split: true",
+      "equals": "8a9b08f11271eb4de3b50e5d069949500b2c7bc1 / # 3.3.3 (2024-04-03 11:49:39+00:00)"
     },
     {
-      "match": "e946455c851e979395d59590e70b2886c4cc6094",
-      "_comment": "#2.9.1 (2015-01-16 14:19:59 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
+      "match": "edf84455ebc424de91d9c740033301801cd3ff93",
+      "_comment": "#3.3.2 (2024-04-01 11:07:19 UTC) natives: [] Split: true",
+      "equals": "765b4ab443051d286bdbb1c19cd7dc86b0792dce / # 3.3.2 (2024-01-17 13:19:20+00:00)"
     },
     {
-      "match": "78b7c6bde1a9e1cdc916679cd723c2ad3c5d5a50",
-      "_comment": "#2.9.1-nightly-20131120 (2013-12-09 12:28:10 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
-    },
-    {
-      "match": "5c37090bdf5af642a2d275f650f5964a09d7335f",
-      "_comment": "#2.9.3 (2015-01-30 11:58:24 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
-    },
-    {
-      "match": "d9edd972ff8bdb19c889232409f3438a1be28627",
-      "_comment": "#2.9.4-nightly-20150209 (2017-09-18 08:39:46 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false"
-    },
-    {
-      "match": "1c0813dd0f1e3a65ada7e58aeb0122499d7e8258",
-      "_comment": "#3.1.2 (2018-06-21 12:57:11 UTC) natives: [[Osx, Windows, Linux]x6 ] Split: false"
-    },
-    {
-      "match": "b41a756fdccd3a804c9e5485ababde79ca956beb",
-      "_comment": "#3.1.6 (2019-01-30 15:16:49 UTC) natives: [[Osx, Windows, Linux]x6 ] Split: False"
-    },
-    {
-      "match": "84ced01dbaa11d56ec304cd615ea346538f8107b",
-      "_comment": "#3.2.1 (2019-06-03 14:34:20 UTC) natives: [[Osx, Windows, Linux]x6 ] Split: false"
+      "match": "454646b137b4de147e253040d0fbaaad1001b69b",
+      "_comment": "#3.3.1 (2022-12-05 13:21:34 UTC) natives: [] Split: true",
+      "equals": "??"
     },
     {
       "match": "5b89cf6b701884ebd2e4880d98a86bbf647cc8f2",
-      "_comment": "#3.2.2 (2019-07-11 10:52:33 UTC) natives: [[Osx, Windows, Linux]x6 ] Split false"
+      "_comment": "#3.2.2 (2019-07-11 10:52:33 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "ea4973ebc9eadf059f30f0958c89f330898bff51 / # 3.2.2 (2019-07-04 14:41:05+00:00) will be patched, missing tinyfd"
     },
     {
-      "match": "476c360f7de8ac4d91b4a7712f90c828ea5f7136",
-      "_comment": "#3.3.1 (2023-06-09 14:15:49 UTC) natives: [] Split: true (allow all) (WoA natives)"
+      "match": "84ced01dbaa11d56ec304cd615ea346538f8107b",
+      "_comment": "#3.2.1 (2019-06-03 14:34:20 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "235fc413bc4c76b269c207f7bca6464f1e1f1d80 / # 3.2.1 (2019-02-13 16:12:08+00:00)"
     },
     {
-      "match": "a6538e0561b5c27406957f93e6b6cc78e34e6f0b",
-      "_comment": "#3.3.2 (2024-01-17 13:19:20 UTC) natives: [] Split: true"
+      "match": "b41a756fdccd3a804c9e5485ababde79ca956beb",
+      "_comment": "#3.1.6 (2018-07-16 14:17:42 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "deb1a436d806413207350735a00e04b54d113916 / # 3.1.6 (2018-10-18 14:46:12+00:00)"
     },
     {
-      "match": "bc5f0bcf4c2caa46a0d12de759736ae1199f84b0",
-      "_comment": "#3.3.3 (2024-04-10 12:44:25 UTC) natives: [] Split: true"
+      "match": "1c0813dd0f1e3a65ada7e58aeb0122499d7e8258",
+      "_comment": "#3.1.2 (2018-06-21 12:57:11 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "3e47f0f742fb759401754769fa59c508fd8fda75 / # 3.1.2 (2018-06-21 12:57:11+00:00)"
+    },
+    {
+      "match": "68d9ced1347c06a731a0ada3ca7d5624364f6074",
+      "_comment": "#2.9.4-nightly-20150209 (2015-06-05 10:10:44 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "a3f254df5a63a0a1635755733022029e8cfae1b3 / # 2.9.4-nightly-20150209 (2016-12-20 14:05:34+00:00)"
+    },
+    {
+      "match": "ffeec04297e8ab99b43d3bc8dc145e9d402adc52",
+      "_comment": "#2.9.3 (2015-01-30 11:58:24 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "879be09c0bd0d4bafc2ea4ea3d2ab8607a0d976c / # 2.9.3 (2015-01-30 11:58:24+00:00)"
+    },
+    {
+      "match": "b6d0206457b37b8663f3d2f24dfa9ace2099a247",
+      "_comment": "#2.9.1 (2015-01-16 14:19:59 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "8d4951d00253dfaa36a0faf1c8be541431861c30 / # 2.9.1 (2014-05-22 14:44:33+00:00)"
+    },
+    {
+      "match": "78b7c6bde1a9e1cdc916679cd723c2ad3c5d5a50",
+      "_comment": "#2.9.1-nightly-20131120 (2013-12-09 12:28:10 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "cf58c9f92fed06cb041a7244c6b4b667e6d544cc / # 2.9.1-nightly-20131120 (2013-12-06 13:55:34+00:00)"
+    },
+    {
+      "match": "006718e3459b13572cc23d91dc7b25718fde46ba",
+      "_comment": "#2.9.0 (2013-10-11 15:09:17 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "27dcadcba29a1a7127880ca1a77efa9ece866f24 / # 2.9.0 (2013-09-06 12:31:58+00:00)"
     }
   ],
   "reject": [
     {
-      "match": "1964f870fbb884d090b1984cdab9859d8611bba5",
-      "_comment": "#2.9.0 (2013-10-25 13:00:00 UTC) natives: [[Osx, Windows, Linux], [Windows, Linux]] Split: false",
-      "reason": "only for windows, linux"
+      "match": "16f25339f4dd208a77f968c7399e41cda4abea4a",
+      "_comment": "#3.3.2 (2023-12-18 15:39:14 UTC) natives: [] Split: true",
+      "equals": "79bde9e46e9ad9accebda11e8293ed08d80dbdc3 / # 3.3.2 (2023-08-30 11:24:35+00:00) does not have lwjgl-freetype"
     },
     {
-      "match": "ab1a6fabc73c2b83bdd9bc896217fe1611b1e303",
-      "_comment": "#2.9.0 (2013-04-25 15:45:00 UTC) natives: [[Osx, Windows, Linux]x3 ] Split: false",
-      "reason": "newer variant available"
+      "match": "4320441f17a1c53bbab32e31b530651d972d998a",
+      "_comment": "#3.3.1 (2023-08-17 11:39:08 UTC) natives: [] Split: true",
+      "equals": "??"
     },
     {
-      "match": "b6d0206457b37b8663f3d2f24dfa9ace2099a247",
-      "_comment": "#2.9.1 (2014-08-25 14:52:18 UTC) natives: [[Osx, Windows, Linux]x2 ] Split: false",
-      "reason": "newer variant available"
-    },
-    {
-      "match": "039c2d17b4907d2b4b96ffcfa8724196ef15641d",
-      "_comment": "#3.1.6 (2019-04-18 11:05:19 UTC) natives: [[Linux]x6 ] Split: false",
-      "reason": "only for linux"
-    },
-    {
-      "match": "b92b26c14478e8ba7c5dabd04fabe9137cd10c92",
-      "_comment": "#3.2.1 (2019-04-18 11:05:19 UTC) natives: [[Osx, Windows]x6 ] Split: false",
-      "reason": "only for osx, windows"
-    },
-    {
-      "match": "ad452a1d136f216f072ab502797cfb12535829c3",
-      "_comment": "#3.2.2 (2022-04-13 15:41:17 UTC) natives: [[Windows, Linux]x7 ] Split: false",
-      "reason": "only for windows, linux"
-    },
-    {
-      "match": "b682169778ded4dea7fcf69bb7d0ce9374f82fc1",
-      "_comment": "#3.2.2 (2021-10-13 15:23:23 UTC) natives: [[Windows, Linux]x7 ] Split: false",
-      "reason": "only for windows, linux"
-    },
-    {
-      "match": "e2278a46f643e1850dee0bcec9daaff8823243d7",
-      "_comment": "#3.2.2 (2019-11-08 12:42:44 UTC) natives: [[Windows, Linux]x6 ] Split: false",
-      "reason": "only for windows, linux"
-    },
-    {
-      "match": "0e79338a06a8706b809e45045950e4273758d0ad",
-      "_comment": "#3.3.1 (2022-12-05 13:21:34 UTC) natives: [] Split: true",
-      "reason": "newer variant available"
+      "match": "7719b93913cd34c1055d34824f4aa44159ad60a7",
+      "_comment": "#3.3.1 (2022-05-12 15:36:11 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: true",
+      "equals": "??"
     },
     {
       "match": "8572ad80f0a5755aa645cecf66b8be3012fd32f0",
-      "_comment": "#3.3.1 (2022-04-27 15:54:15 UTC) natives: [[Osx, Windows, Linux]x7 ] Split: false",
-      "reason": "doesn't use split natives, newer variant available"
+      "_comment": "#3.3.1 (2022-04-27 15:54:15 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "??"
     },
     {
-      "match": "6f8a659552367d8babc900c0267dd2656f439004",
-      "_comment": "#3.3.1 (2022-05-12 15:36:11 UTC) natives: [[Osx, Windows, Linux]x7 ] Split: true",
-      "reason": "newer variant available"
+      "match": "236a22a6deafe4747e1066fadd4bc83faf6d557a",
+      "_comment": "#3.2.2 (2022-04-13 15:41:17 UTC) natives: [[Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux]] Split: false",
+      "equals": "??"
     },
     {
-      "match": "97c512a2043cac92b33adc9da93f502fa25cdc43",
-      "_comment": "#3.3.2 (2023-09-18 12:34:57 UTC) natives: [] Split: true",
-      "reason": "does not have lwjgl-freetype"
+      "match": "c09f4588dd082778cae54ea93f4168498d26299a",
+      "_comment": "#3.2.2 (2019-11-08 12:42:44 UTC) natives: [[Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux]] Split: false",
+      "equals": "??"
+    },
+    {
+      "match": "d454d79d4cba8009196d8ccef4f51aca56047f13",
+      "_comment": "#3.2.2 (2021-10-13 15:23:23 UTC) natives: [[Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux]] Split: false",
+      "equals": "??"
+    },
+    {
+      "match": "cc6675018d4c9f2bef861ea94e539b7418d108ad",
+      "_comment": "#3.2.1 (2019-04-18 11:05:19 UTC) natives: [[Osx, Windows], [Osx, Windows], [Osx, Windows], [Osx, Windows], [Osx, Windows], [Osx, Windows]] Split: false",
+      "equals": "854649a5bd1455b89117593ae82ff90c8132cacf / # 3.2.1 (2019-04-18 11:05:19+00:00) only osx, windows"
+    },
+    {
+      "match": "4b9626be3dfe53f8008235c9d995b572bee5a8fd",
+      "_comment": "#3.1.6 (2019-04-17 15:31:12 UTC) natives: [[Linux], [Linux], [Linux], [Linux], [Linux], [Linux]] Split: false",
+      "equals": "89fcb489261b05f622e8052fe0b588b0cfe49c24 / # 3.1.6 (2019-04-18 11:05:19+00:00) only linux"
+    },
+    {
+      "match": "1c0cd87ba39e60b16fbe379b19a709beb35ce08e",
+      "_comment": "#2.9.0 (2013-10-25 13:00:00 UTC) natives: [[Osx, Windows, Linux], [Windows, Linux]] Split: false",
+      "equals": "f04052162b50fa1433f67e1a90bc79466c4ab776 / # 2.9.0 (2013-10-21 16:34:47+00:00) only linux, windows"
+    },
+    {
+      "match": "7c776ed8420502f4839717fd1cfecab062f1f9b2",
+      "_comment": "#2.9.0 (2013-04-25 15:45:00 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
+      "equals": "6442fc475f501fbd0fc4244fd1c38c02d9ebaf7e / # 2.9.0 (2011-03-30 22:00:00+00:00) fine but newer variant available"
     }
   ]
 }

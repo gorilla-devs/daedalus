@@ -30,7 +30,7 @@ fn patch_library(
     if !actual_patches.is_empty() {
         for patch in actual_patches {
             info!(
-                "processing {} with library patch {}",
+                "patching {} with library patch {}",
                 library.name, patch._comment
             );
 
@@ -66,6 +66,9 @@ fn process_single_lwjgl_variant(
     patches: &Vec<LibraryPatch>,
 ) -> Result<Option<(String, LibraryGroup)>, anyhow::Error> {
     let lwjgl_version = variant.version.clone();
+
+    info!("Processing LWJGL variant {}", lwjgl_version);
+
     let mut lwjgl = variant.clone();
 
     let mut new_libraries = Vec::new();
@@ -192,17 +195,25 @@ fn map_log4j_artifact(
 pub async fn retrieve_data(
     uploaded_files: &mut Vec<String>,
     semaphore: Arc<Semaphore>,
+    is_first_run: bool,
 ) -> Result<VersionManifest, anyhow::Error> {
-    log::info!("Retrieving Minecraft data ...");
 
-    let old_manifest = daedalus::minecraft::fetch_version_manifest(Some(
-        &format_url(&format!(
-            "minecraft/v{}/manifest.json",
-            daedalus::minecraft::CURRENT_FORMAT_VERSION
-        )),
-    ))
-    .await
-    .ok();
+
+    log::info!("Retrieving Minecraft data ... IS_FIRST_TIME: {}", is_first_run);
+
+    // TODO: Old manifest doesn't take LWJGL meta into account
+    let old_manifest = if is_first_run {
+        None
+    } else {
+        daedalus::minecraft::fetch_version_manifest(Some(
+            &format_url(&format!(
+                "minecraft/v{}/manifest.json",
+                daedalus::minecraft::CURRENT_FORMAT_VERSION
+            )),
+        ))
+        .await
+        .ok()
+    };
 
     let mut manifest =
         daedalus::minecraft::fetch_version_manifest(None).await?;
@@ -244,7 +255,7 @@ pub async fn retrieve_data(
         lwjgl: &LibraryGroup,
     ) {
         let mut lwjgl_copy = lwjgl.clone();
-        lwjgl_copy.libraries.sort_by_key(|lib| lib.name.clone());
+        lwjgl_copy.libraries.sort_by(|x, y| x.name.cmp(&y.name));
 
         let entry = LWJGLEntry::from_group(lwjgl_copy);
         let current_sha1 = entry.sha1.clone();
@@ -280,7 +291,7 @@ pub async fn retrieve_data(
 
     let mut version_futures = Vec::new();
 
-    for version in manifest.versions.iter_mut() {
+    for version in manifest.versions.iter_mut().rev() {
         version_futures.push(async {
             let old_version = if let Some(old_manifest) = &old_manifest {
                 old_manifest.versions.iter().find(|x| x.id == version.id)
@@ -312,7 +323,7 @@ pub async fn retrieve_data(
                     daedalus::minecraft::fetch_version_info(version).await?;
 
                 fn lib_is_split_natives(lib: &Library) -> bool {
-                    lib.name.identifier.clone().is_some_and(|data| data.starts_with("natives-"))
+                    lib.name.identifier.as_ref().is_some_and(|data| data.starts_with("natives-"))
                 }
 
                 fn version_has_split_natives(ver: &VersionInfo) -> bool {
@@ -345,8 +356,17 @@ pub async fn retrieve_data(
 
                 let mut new_libraries = Vec::new();
                 info!("Processing libraries for version {}", version_info.id);
-                for mut library in version_info.libraries.clone() {
+                for library in version_info.libraries.iter_mut() {
+                    
+                    if lib_is_split_natives(library) {
+                        if let Some(identifier) = &library.name.identifier {
+                            info!("Splitting library {} into artifact {}", library.name, identifier);
+                            library.name.artifact = format!("{}-{}", library.name.artifact, identifier);
+                            library.name.identifier = None;
+                        }
+                     }
                     let spec = &mut library.name;
+
                     if spec.is_lwjgl() {
 
                         let mut rules = None;
@@ -358,6 +378,7 @@ pub async fn retrieve_data(
                         } else {
                             debug!("lwlgl library {} is not split, package: {} artifact:{} version: {}", spec, spec.package, spec.artifact, spec.version);
                             rules = library.rules.clone();
+                            library.rules = None;
                             if is_macos_only(&rules) {
                                 info!("Candidate library {} is only for macOS and is therefore ignored", spec);
                                 continue;
@@ -374,13 +395,16 @@ pub async fn retrieve_data(
                         };
                         debug!("lwjgl library {} is setting version {:?}", spec, set_version);
 
+                        let version_id = &version_info.id;
+                        let version_release_time = version_info.release_time;
+
+                        info!("Setting lwjgl bucket {:?} for {} with release {}", &rules, version_id, version_release_time);
                         let bucket = lwjgl_buckets.entry(rules.clone()).or_insert_with(|| {
-                            debug!("Creating lwjgl bucket {:?} for {}", &rules, version_info.id);
                             LibraryGroup {
                                 id: "LWJGL".to_string(),
                                 version: "undetermined".to_string(),
                                 uid: "org.lwjgl".to_string(),
-                                release_time: version_info.release_time,
+                                release_time: version_release_time,
                                 libraries: Vec::new(),
                                 requires: None,
                                 conflicts: None,
@@ -394,11 +418,10 @@ pub async fn retrieve_data(
                             debug!("Setting bucket version {} for {}", version, version_info.id);
                             bucket.version = version;
                         }
-                        bucket.libraries.push(library);
+                        bucket.libraries.push(library.clone());
                         if version_info.release_time > bucket.release_time {
                             bucket.release_time = version_info.release_time;
                         }
-
                     } else if spec.is_log4j() {
                         if let Some((version_override, maven_override)) = map_log4j_artifact(&spec.version)? {
                             let replacement_name = GradleSpecifier {
@@ -463,11 +486,11 @@ pub async fn retrieve_data(
                                 }
                             );
                         } else {
-                            new_libraries.push(library)
+                            new_libraries.push(library.clone())
                         }
                     } else {
                         let mut libs =
-                            patch_library(&patches, library);
+                            patch_library(&patches, library.clone());
                         new_libraries.append(&mut libs)
                     }
                 }
@@ -687,6 +710,8 @@ pub async fn retrieve_data(
                     ));
                 }
 
+                info!("Buckets: {:#?}", lwjgl_buckets);
+
                 futures::future::try_join_all(upload_futures).await?;
 
                 Ok::<(), anyhow::Error>(())
@@ -718,6 +743,10 @@ pub async fn retrieve_data(
         debug!("waiting for lock on lwjgl version mutex");
         let lwjgl_version_variants = lwjgl_version_variants_mutex.lock().await;
 
+        // info!(
+        //     "Processing LWJGL variants ... {:#?}",
+        //     lwjgl_version_variants
+        // );
         info!("Processing LWJGL variants");
         for (lwjgl_version_variant, lwjgl_variant_entries) in
             lwjgl_version_variants.iter()

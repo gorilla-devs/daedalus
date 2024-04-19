@@ -82,6 +82,8 @@ fn main() -> Result<(), anyhow::Error> {
                 }
             }
 
+            let mut is_first_run = true;
+
             loop {
                 info!("Waiting for next update timer");
                 timer.tick().await;
@@ -91,6 +93,7 @@ fn main() -> Result<(), anyhow::Error> {
                 let versions = match minecraft::retrieve_data(
                     &mut uploaded_files,
                     semaphore.clone(),
+                    is_first_run,
                 )
                 .await
                 {
@@ -140,6 +143,8 @@ fn main() -> Result<(), anyhow::Error> {
                         .await?;
                     }
                 }
+
+                is_first_run = false;
             }
         })
 }
@@ -250,7 +255,7 @@ pub async fn upload_file_to_bucket(
     .retry(
         &ExponentialBuilder::default()
             .with_max_times(10)
-            .with_max_delay(Duration::from_secs(300)),
+            .with_max_delay(Duration::from_secs(1800)),
     )
     .await
 }
