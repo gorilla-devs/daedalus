@@ -10,5 +10,6 @@ RUN update-ca-certificates
 WORKDIR /usr/src/daedalus
 COPY . .
 RUN cargo build --release
+COPY ./target/release/daedalus /usr/src/daedalus/daedalus
 
-CMD ["cargo", "run", "--release"]
+CMD ["./daedalus"]

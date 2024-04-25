@@ -298,6 +298,13 @@ pub async fn upload_static_files(
     use path_slash::PathExt as _;
     let cdn_upload_dir =
         dotenvy::var("CDN_UPLOAD_DIR").unwrap_or("./upload_cdn".to_string());
+
+    info!("uploading static files from {}", cdn_upload_dir);
+
+    if !std::path::Path::new(&cdn_upload_dir).exists() {
+        panic!("CDN_UPLOAD_DIR does not exist");
+    }
+
     for entry in walkdir::WalkDir::new(&cdn_upload_dir) {
         let entry = entry?;
         if entry.path().is_file() {
@@ -312,7 +319,7 @@ pub async fn upload_static_files(
                     )
                 })?;
             info!(
-                "uploading {} to cnd at path {}",
+                "uploading {} to cdn at path {}",
                 entry.path().display(),
                 upload_path
             );
