@@ -63,9 +63,7 @@
   },
   {
     "_comment": "Add missing tinyfd to the broken LWJGL 3.2.2 variant",
-    "match": [
-      "org.lwjgl:lwjgl:3.2.2"
-    ],
+    "match": ["org.lwjgl:lwjgl:3.2.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -119,9 +117,7 @@
   },
   {
     "_comment": "Add additional library just for osx-arm64. No override needed",
-    "match": [
-      "ca.weblite:java-objc-bridge:1.0.0"
-    ],
+    "match": ["ca.weblite:java-objc-bridge:1.0.0"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -146,9 +142,7 @@
   },
   {
     "_comment": "Add additional classifiers for jinput-platform",
-    "match": [
-      "net.java.jinput:jinput-platform:2.0.5"
-    ],
+    "match": ["net.java.jinput:jinput-platform:2.0.5"],
     "override": {
       "downloads": {
         "classifiers": {
@@ -1706,9 +1700,7 @@
   },
   {
     "_comment": "Only allow osx-arm64 for existing java-objc-bridge:1.1",
-    "match": [
-      "ca.weblite:java-objc-bridge:1.1"
-    ],
+    "match": ["ca.weblite:java-objc-bridge:1.1"],
     "override": {
       "rules": [
         {
@@ -1744,9 +1736,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-glfw:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-glfw:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -1771,9 +1761,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-jemalloc:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-jemalloc:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -1798,9 +1786,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-openal:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-openal:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -1825,9 +1811,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-opengl:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-opengl:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -1852,9 +1836,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-stb:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-stb:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -1879,9 +1861,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-tinyfd:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-tinyfd:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -1906,9 +1886,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -1933,9 +1911,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-glfw:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-glfw:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -1960,9 +1936,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-jemalloc:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-jemalloc:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -1987,9 +1961,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-openal:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-openal:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2014,9 +1986,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-opengl:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-opengl:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2041,9 +2011,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-stb:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-stb:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2068,9 +2036,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl-tinyfd:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-tinyfd:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2095,9 +2061,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.1",
-    "match": [
-      "org.lwjgl:lwjgl:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl:3.3.1"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2122,9 +2086,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-freetype:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-freetype:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2149,9 +2111,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-glfw:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-glfw:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2176,9 +2136,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-jemalloc:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-jemalloc:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2203,9 +2161,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-openal:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-openal:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2230,9 +2186,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-opengl:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-opengl:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2257,9 +2211,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-stb:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-stb:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2284,9 +2236,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-tinyfd:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-tinyfd:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2311,9 +2261,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2338,9 +2286,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-freetype:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-freetype:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2365,9 +2311,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-glfw:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-glfw:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2392,9 +2336,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-jemalloc:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-jemalloc:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2419,9 +2361,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-openal:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-openal:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2446,9 +2386,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-opengl:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-opengl:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2473,9 +2411,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-stb:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-stb:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2500,9 +2436,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl-tinyfd:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl-tinyfd:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2527,9 +2461,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.2",
-    "match": [
-      "org.lwjgl:lwjgl:3.3.2"
-    ],
+    "match": ["org.lwjgl:lwjgl:3.3.2"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2554,9 +2486,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-freetype:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-freetype:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2581,9 +2511,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-glfw:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-glfw:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2608,9 +2536,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-jemalloc:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-jemalloc:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2635,9 +2561,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-openal:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-openal:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2662,9 +2586,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-opengl:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-opengl:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2689,9 +2611,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-stb:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-stb:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2716,9 +2636,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-tinyfd:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-tinyfd:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2743,9 +2661,7 @@
   },
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2770,9 +2686,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-freetype:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-freetype:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2797,9 +2711,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-glfw:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-glfw:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2824,9 +2736,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-jemalloc:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-jemalloc:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2851,9 +2761,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-openal:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-openal:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2878,9 +2786,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-opengl:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-opengl:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2905,9 +2811,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-stb:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-stb:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2932,9 +2836,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl-tinyfd:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl-tinyfd:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2959,9 +2861,7 @@
   },
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.3.3",
-    "match": [
-      "org.lwjgl:lwjgl:3.3.3"
-    ],
+    "match": ["org.lwjgl:lwjgl:3.3.3"],
     "additionalLibraries": [
       {
         "downloads": {
@@ -2986,9 +2886,7 @@
   },
   {
     "_comment": "Replace glfw from 3.3.1 with version from 3.3.2 to prevent stack smashing",
-    "match": [
-      "org.lwjgl:lwjgl-glfw-natives-linux:3.3.1"
-    ],
+    "match": ["org.lwjgl:lwjgl-glfw-natives-linux:3.3.1"],
     "override": {
       "downloads": {
         "artifact": {
@@ -2999,6 +2897,19 @@
         }
       },
       "name": "org.lwjgl:lwjgl-glfw-natives-linux:3.3.2-lwjgl.1"
+    }
+  },
+  {
+    "match": ["org.lwjgl:lwjgl-freetype-natives-macos-patch:3.3.3"],
+    "override": {
+      "rules": [
+        {
+          "action": "allow",
+          "os": {
+            "name": "osx"
+          }
+        }
+      ]
     }
   }
 ]

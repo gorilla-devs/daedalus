@@ -1,9 +1,9 @@
 {
   "accept": [
     {
-      "match": "ca23e095136a624d43d992f8c1fbf64b58fa8ddd",
-      "_comment": "#3.3.3 (2024-04-18 11:45:40 UTC) natives: [] Split: true",
-      "equals": "8a9b08f11271eb4de3b50e5d069949500b2c7bc1 / # 3.3.3 (2024-04-03 11:49:39+00:00)"
+      "match": "465d40d8db05f5e04055ddf0582ab143d10e0e9f",
+      "_comment": "#3.3.3 (2024-05-29 12:04:43 UTC) natives: [] Split: true",
+      "equals": "6f32ef730d05562ede7db0b845b72ea16dd239d5 / # 3.3.3 (2024-05-29 12:04:43+00:00)"
     },
     {
       "match": "edf84455ebc424de91d9c740033301801cd3ff93",
@@ -62,6 +62,11 @@
     }
   ],
   "reject": [
+    {
+      "match": "ca23e095136a624d43d992f8c1fbf64b58fa8ddd",
+      "_comment": "#3.3.3 (2024-04-18 11:45:40 UTC) natives: [] Split: true",
+      "equals": "8a9b08f11271eb4de3b50e5d069949500b2c7bc1 / # 3.3.3 (2024-04-03 11:49:39+00:00) seems to have a broken libfreetype for macOS x86_64"
+    },
     {
       "match": "16f25339f4dd208a77f968c7399e41cda4abea4a",
       "_comment": "#3.3.2 (2023-12-18 15:39:14 UTC) natives: [] Split: true",
