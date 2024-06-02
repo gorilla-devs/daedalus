@@ -1,5 +1,5 @@
 import fs from "fs";
-import https from "https";
+import followRedirects from "follow-redirects";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -17,8 +17,14 @@ function downloadFile(url, dest) {
     console.log(`Downloading ${url} to ${dest}`);
 
     const file = fs.createWriteStream(dest);
-    https
+
+    followRedirects.https
       .get(url, function (response) {
+        if (response.statusCode !== 200) {
+          console.log(`Error ${response.statusCode} downloading ${url}`);
+          reject(new Error(`Error ${response.statusCode} downloading ${url}`));
+        }
+
         response.pipe(file);
         file.on("finish", function () {
           file.close(() => resolve(true));
