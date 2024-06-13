@@ -1,9 +1,9 @@
 {
   "accept": [
     {
-      "match": "465d40d8db05f5e04055ddf0582ab143d10e0e9f",
-      "_comment": "#3.3.3 (2024-05-29 12:04:43 UTC) natives: [] Split: true",
-      "equals": "6f32ef730d05562ede7db0b845b72ea16dd239d5 / # 3.3.3 (2024-05-29 12:04:43+00:00)"
+      "match": "4abf9e55d73bb6502e84cb9eff5d9ab2e2895a33",
+      "_comment": "#3.3.3 (2024-06-13 08:24:03 UTC) natives: [] Split: true",
+      "equals": "73974b3af2afeb5b272ffbadcd7963014387c84f / # 3.3.3 (2024-05-22 16:25:41+00:00)"
     },
     {
       "match": "edf84455ebc424de91d9c740033301801cd3ff93",
@@ -62,6 +62,11 @@
     }
   ],
   "reject": [
+    {
+      "match": "465d40d8db05f5e04055ddf0582ab143d10e0e9f",
+      "_comment": "#3.3.3 (2024-05-29 12:04:43 UTC) natives: [] Split: true",
+      "equals": "6f32ef730d05562ede7db0b845b72ea16dd239d5 / # 3.3.3 (2024-05-29 12:04:43+00:00) missing os rule for freetype natives-macos-patch"
+    },
     {
       "match": "ca23e095136a624d43d992f8c1fbf64b58fa8ddd",
       "_comment": "#3.3.3 (2024-04-18 11:45:40 UTC) natives: [] Split: true",
