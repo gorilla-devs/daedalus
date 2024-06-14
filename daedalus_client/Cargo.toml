@@ -35,7 +35,7 @@ path-slash = "0.2.1"
 sentry = "0.32.1"
 
 [features]
-default = ["neoforge"]
+default = ["sentry", "forge", "fabric", "quilt", "neoforge"]
 sentry = []
 forge = []
 fabric = []
