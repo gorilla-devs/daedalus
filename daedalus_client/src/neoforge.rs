@@ -468,9 +468,13 @@ pub async fn fetch_maven_metadata(
 
         let mut parts = value.split('.');
 
-        if let Some(major) = parts.next() {
-            if let Some(minor) = parts.next() {
-                let game_version = format!("1.{}.{}", major, minor);
+        if let Some(minor) = parts.next() {
+            if let Some(patch) = parts.next() {
+                let mut game_version = format!("1.{}", minor);
+
+                if patch != "0" {
+                    game_version.push_str(&format!(".{}", patch));
+                }
 
                 map.entry(game_version.clone()).or_default().push((
                     original.clone(),
