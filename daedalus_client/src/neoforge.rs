@@ -43,10 +43,10 @@ pub async fn retrieve_data(
     for (minecraft_version, loader_versions) in maven_metadata.clone() {
         let mut loaders = Vec::new();
 
-        for (full, loader_version, new_forge) in loader_versions {
+        for (loader_version, new_forge) in loader_versions {
             let version = Version::parse(&loader_version)?;
 
-            loaders.push((full, version, new_forge.to_string()))
+            loaders.push((loader_version, version, new_forge.to_string()))
         }
 
         if !loaders.is_empty() {
@@ -73,7 +73,10 @@ pub async fn retrieve_data(
                             }
 
                             info!("Neoforge - Installer Start {}", loader_version_full.clone());
-                            let bytes = download_file(&format!("https://maven.neoforged.net/net/neoforged/{1}/{0}/{1}-{0}-installer.jar", loader_version_full, if &*new_forge == "true" { "neoforge" } else { "forge" }), None, semaphore.clone()).await?;
+
+                            let download_url = format!("https://maven.neoforged.net/net/neoforged/{1}/{0}/{1}-{0}-installer.jar", loader_version_full, if &*new_forge == "true" { "neoforge" } else { "forge" });
+
+                            let bytes = download_file(&download_url, None, semaphore.clone()).await?;
                             let reader = std::io::Cursor::new(bytes);
 
                             if let Ok(archive) = zip::ZipArchive::new(reader) {
@@ -373,12 +376,12 @@ pub async fn retrieve_data(
                 version.loaders.sort_by(|x, y| {
                     loader_versions
                         .iter()
-                        .position(|z| y.id == z.1)
+                        .position(|z| y.id == z.0)
                         .unwrap_or_default()
                         .cmp(
                             &loader_versions
                                 .iter()
-                                .position(|z| x.id == z.1)
+                                .position(|z| x.id == z.0)
                                 .unwrap_or_default(),
                         )
                 });
@@ -430,7 +433,7 @@ struct Versions {
 
 pub async fn fetch_maven_metadata(
     semaphore: Arc<Semaphore>,
-) -> Result<HashMap<String, Vec<(String, String, bool)>>, anyhow::Error> {
+) -> Result<HashMap<String, Vec<(String, bool)>>, anyhow::Error> {
     async fn fetch_values(
         url: &str,
         semaphore: Arc<Semaphore>,
@@ -448,18 +451,16 @@ pub async fn fetch_maven_metadata(
     let neo_values =
         fetch_values(DEFAULT_MAVEN_METADATA_URL_2, semaphore).await?;
 
-    let mut map: HashMap<String, Vec<(String, String, bool)>> = HashMap::new();
+    let mut map: HashMap<String, Vec<(String, bool)>> = HashMap::new();
 
     for value in forge_values.versioning.versions.version {
         let original = value.clone();
 
         let parts: Vec<&str> = value.split('-').collect();
         if parts.len() == 2 {
-            map.entry(parts[0].to_string()).or_default().push((
-                original,
-                parts[1].to_string(),
-                false,
-            ));
+            map.entry(parts[0].to_string())
+                .or_default()
+                .push((original, false));
         }
     }
 
@@ -476,11 +477,9 @@ pub async fn fetch_maven_metadata(
                     game_version.push_str(&format!(".{}", patch));
                 }
 
-                map.entry(game_version.clone()).or_default().push((
-                    original.clone(),
-                    format!("{}-{}", game_version, original),
-                    true,
-                ));
+                map.entry(game_version.clone())
+                    .or_default()
+                    .push((original.clone(), true));
             }
         }
     }
