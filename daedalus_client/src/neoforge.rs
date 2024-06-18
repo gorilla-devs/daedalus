@@ -385,7 +385,6 @@ pub async fn retrieve_data(
                                 .unwrap_or_default(),
                         )
                 });
-                version.loaders.reverse();
             }
         }
 
