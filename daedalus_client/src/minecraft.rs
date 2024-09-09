@@ -710,8 +710,6 @@ pub async fn retrieve_data(
                     ));
                 }
 
-                info!("Buckets: {:#?}", lwjgl_buckets);
-
                 futures::future::try_join_all(upload_futures).await?;
 
                 Ok::<(), anyhow::Error>(())
