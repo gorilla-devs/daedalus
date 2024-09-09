@@ -386,7 +386,7 @@ pub async fn download_file(
         }
     })
     .retry(
-        &ExponentialBuilder::default()
+        ExponentialBuilder::default()
             .with_max_times(10)
             .with_max_delay(Duration::from_secs(1800)),
     )

@@ -253,7 +253,7 @@ pub async fn upload_file_to_bucket(
         }
     })
     .retry(
-        &ExponentialBuilder::default()
+        ExponentialBuilder::default()
             .with_max_times(10)
             .with_max_delay(Duration::from_secs(1800)),
     )
@@ -318,6 +318,11 @@ pub async fn upload_static_files(
                         entry.path().display()
                     )
                 })?;
+
+            if upload_path.ends_with(".DS_Store") {
+                continue;
+            }
+
             info!(
                 "uploading {} to cdn at path {}",
                 entry.path().display(),
