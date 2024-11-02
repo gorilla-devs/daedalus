@@ -5,7 +5,8 @@
 #![warn(missing_docs, unused_import_braces, missing_debug_implementations)]
 
 use std::{
-    convert::TryFrom, fmt::Display, path::PathBuf, str::FromStr, time::Duration,
+    cmp::Ordering, convert::TryFrom, fmt::Display, path::PathBuf, str::FromStr,
+    time::Duration,
 };
 
 use backon::{ExponentialBuilder, Retryable};
@@ -177,6 +178,24 @@ impl GradleSpecifier {
     /// returns if the specifier belongs to a log4j library
     pub fn is_log4j(&self) -> bool {
         self.package.as_str() == "org.apache.logging.log4j"
+    }
+
+    /// Compares two versions
+    /// Returns Ordering::Equal if they are equal
+    /// Returns Ordering::Greater if self is greater than other
+    /// Returns Ordering::Less if self is less than other
+    pub fn compare_versions(&self, other: &Self) -> Result<Ordering, Error> {
+        let x = lenient_semver::parse(self.version.as_str());
+        let y = lenient_semver::parse(other.version.as_str());
+
+        if x.is_err() || y.is_err() {
+            return Err(Error::ParseError(
+                "Unable to parse version".to_string(),
+            ));
+        }
+
+        // safe to unwrap because we already checked for errors
+        Ok(x.unwrap().cmp(&y.unwrap()))
     }
 }
 
