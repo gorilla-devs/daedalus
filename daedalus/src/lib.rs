@@ -180,6 +180,16 @@ impl GradleSpecifier {
         self.package.as_str() == "org.apache.logging.log4j"
     }
 
+    /// Returns if the specifier matches the other specifier
+    pub fn get_computed_name(&self) -> String {
+        format!(
+            "{}:{}:{}",
+            self.package,
+            self.artifact,
+            self.identifier.clone().unwrap_or("".to_string())
+        )
+    }
+
     /// Compares two versions
     /// Returns Ordering::Equal if they are equal
     /// Returns Ordering::Greater if self is greater than other
@@ -670,5 +680,93 @@ mod tests {
                 .join("1.0.0")
                 .join("example-1.0.0-identifier.zip")
         );
+    }
+
+    #[test]
+    fn test_library_compare() {
+        let x = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.4-nightly-20150209".to_string(),
+            extension: "jar".to_string(),
+        };
+        let y = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.4-nightly-20150209".to_string(),
+            extension: "jar".to_string(),
+        };
+
+        assert_eq!(x.compare_versions(&y).unwrap(), Ordering::Equal);
+
+        let x = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.4-nightly-20150209".to_string(),
+            extension: "jar".to_string(),
+        };
+        let y = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.3".to_string(),
+            extension: "jar".to_string(),
+        };
+
+        assert_eq!(x.compare_versions(&y).unwrap(), Ordering::Greater);
+
+        let x = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.3".to_string(),
+            extension: "jar".to_string(),
+        };
+        let y = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.4-nightly-20150209".to_string(),
+            extension: "jar".to_string(),
+        };
+
+        assert_eq!(x.compare_versions(&y).unwrap(), Ordering::Less);
+
+        let x = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.4-nightly-20150209".to_string(),
+            extension: "jar".to_string(),
+        };
+        let y = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.4".to_string(),
+            extension: "jar".to_string(),
+        };
+
+        assert_eq!(x.compare_versions(&y).unwrap(), Ordering::Less);
+
+        let x = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.4-SNAPSHOT".to_string(),
+            extension: "jar".to_string(),
+        };
+        let y = GradleSpecifier {
+            package: "org.lwjgl".to_string(),
+            artifact: "lwjgl".to_string(),
+            identifier: None,
+            version: "2.9.4".to_string(),
+            extension: "jar".to_string(),
+        };
+
+        assert_eq!(x.compare_versions(&y).unwrap(), Ordering::Less);
     }
 }
