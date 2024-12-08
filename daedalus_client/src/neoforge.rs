@@ -489,7 +489,6 @@ pub async fn fetch_maven_metadata(
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ForgeInstallerProfileV2 {
-    pub spec: i32,
     pub profile: String,
     pub version: String,
     pub json: String,

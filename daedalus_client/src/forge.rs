@@ -811,7 +811,6 @@ struct ForgeInstallerProfileV1 {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ForgeInstallerProfileV2 {
-    pub spec: i32,
     pub profile: String,
     pub version: String,
     pub json: String,
