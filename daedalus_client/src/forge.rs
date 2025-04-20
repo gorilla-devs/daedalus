@@ -165,6 +165,18 @@ pub async fn retrieve_data(
         let mut loaders = Vec::new();
 
         for loader_version_full in loader_versions {
+
+            // Check if this is a snapshot version format
+            // Example: "25w14craftmine-47.1.0" or "1.21-pre1-47.1.0"
+            let is_snapshot = minecraft_version.contains('w') || 
+                              minecraft_version.contains("-pre") || 
+                              minecraft_version.contains("-rc");
+
+            if is_snapshot {
+                log::info!("Skipping snapshot version: {}", loader_version_full);
+                continue;
+            }
+
             let loader_version = loader_version_full.split('-').nth(1);
 
             if let Some(loader_version_raw) = loader_version {

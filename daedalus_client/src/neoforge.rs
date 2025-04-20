@@ -453,6 +453,14 @@ pub async fn fetch_maven_metadata(
     let mut map: HashMap<String, Vec<(String, bool)>> = HashMap::new();
 
     for value in forge_values.versioning.versions.version {
+        let is_snapshot = value.contains('w') || 
+                          value.contains("-pre") || 
+                          value.contains("-rc");
+
+        if is_snapshot {
+            log::info!("Skipping snapshot version: {}", value);
+            continue;
+        }
         let original = value.clone();
 
         let parts: Vec<&str> = value.split('-').collect();
@@ -464,6 +472,15 @@ pub async fn fetch_maven_metadata(
     }
 
     for value in neo_values.versioning.versions.version {
+        let is_snapshot = value.contains('w') || 
+                          value.contains("-pre") || 
+                          value.contains("-rc");
+
+        if is_snapshot {
+            log::info!("Skipping snapshot version: {}", value);
+            continue;
+        }
+        
         let original = value.clone();
 
         let mut parts = value.split('.');
