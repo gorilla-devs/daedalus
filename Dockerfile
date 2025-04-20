@@ -1,4 +1,4 @@
-FROM rust:1.77.2
+FROM rust:1.85.1
 
 ENV PKG_CONFIG_ALLOW_CROSS=1
 RUN apt-get update \
