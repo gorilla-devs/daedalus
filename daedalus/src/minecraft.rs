@@ -380,6 +380,72 @@ pub struct Library {
     #[serde(skip)]
     /// if this library was patched or added by a patch
     pub patched: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Game-version-specific hash mapping for libraries that vary by Minecraft version
+    /// Maps minecraft_version → SHA256 hash of the artifact
+    /// e.g., {"1.16.5": "abc123...", "1.17.1": "def456..."}
+    /// When present, clients should look up their game version and construct CAS URL from hash
+    pub version_hashes: Option<HashMap<String, String>>,
+}
+
+impl Library {
+    /// Resolves the URL for this library based on the minecraft version.
+    ///
+    /// For libraries with `version_hashes`, looks up the hash for the given version
+    /// and constructs a CAS URL. Falls back to the library's `url` field if
+    /// `version_hashes` is not present or doesn't contain the version.
+    ///
+    /// # Arguments
+    /// * `minecraft_version` - The Minecraft version to resolve the URL for
+    /// * `base_url` - The base URL for the CAS (e.g., "https://maven.modrinth.com")
+    /// * `cas_version` - The CAS version number (e.g., 0)
+    ///
+    /// # Returns
+    /// * `Some(String)` - The resolved URL, either from CAS or the url field
+    /// * `None` - If neither version_hashes nor url contain a valid URL
+    ///
+    /// # Example
+    /// ```
+    /// # use daedalus::minecraft::Library;
+    /// # use daedalus::GradleSpecifier;
+    /// # use std::collections::HashMap;
+    /// let mut library = Library {
+    ///     name: "net.fabricmc:intermediary:1.16.5".parse().unwrap(),
+    ///     url: None,
+    ///     downloads: None,
+    ///     extract: None,
+    ///     natives: None,
+    ///     rules: None,
+    ///     checksums: None,
+    ///     include_in_classpath: true,
+    ///     patched: false,
+    ///     version_hashes: Some({
+    ///         let mut map = HashMap::new();
+    ///         map.insert("1.16.5".to_string(), "abc123def456".to_string());
+    ///         map
+    ///     }),
+    /// };
+    ///
+    /// let url = library.resolve_url("1.16.5", "https://maven.modrinth.com", 0);
+    /// assert_eq!(url, Some("https://maven.modrinth.com/v0/objects/ab/c123def456".to_string()));
+    /// ```
+    pub fn resolve_url(&self, minecraft_version: &str, base_url: &str, cas_version: u32) -> Option<String> {
+        // First try version_hashes if present
+        if let Some(ref hashes) = self.version_hashes {
+            if let Some(hash) = hashes.get(minecraft_version) {
+                return Some(format!(
+                    "{}/v{}/objects/{}/{}",
+                    base_url,
+                    cas_version,
+                    &hash[..2],
+                    &hash[2..]
+                ));
+            }
+        }
+
+        // Fall back to url field
+        self.url.clone()
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]

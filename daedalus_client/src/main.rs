@@ -291,6 +291,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                         &manifest,
                                         &uploader,
                                         &manifest_builder,
+                                        &CLIENT,
                                         semaphore.clone(),
                                     )
                                     .await
@@ -346,6 +347,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                         &manifest,
                                         &uploader,
                                         &manifest_builder,
+                                        &CLIENT,
                                         semaphore.clone(),
                                     )
                                     .await

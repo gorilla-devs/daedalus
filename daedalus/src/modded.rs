@@ -174,6 +174,7 @@ pub fn merge_partial_version(
                 rules: x.rules,
                 checksums: x.checksums,
                 include_in_classpath: x.include_in_classpath,
+                version_hashes: x.version_hashes,
                 patched: false,
             })
             .collect::<Vec<_>>(),

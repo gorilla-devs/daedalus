@@ -474,6 +474,7 @@ pub async fn retrieve_data(
                                     rules: None,
                                     checksums: None,
                                     include_in_classpath: library.include_in_classpath,
+                                    version_hashes: None,
                                     patched: true,
                                 }
                             );
@@ -826,6 +827,9 @@ pub async fn retrieve_data(
             }
 
             let patches = Arc::clone(&cloned_patches);
+            let semaphore = semaphore.clone();
+            let uploader = uploader;
+            let s3_client = s3_client;
 
             async move {
 

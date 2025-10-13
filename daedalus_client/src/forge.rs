@@ -287,8 +287,16 @@ pub async fn retrieve_data(
                                         let mut mc_library_cache = mc_library_cache_mutex.lock().await;
                                         mc_library_cache.load_minecraft_version_libs(&profile.install.minecraft).await?.clone()
                                     };
-                                    let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| async {
+                                    let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| {
+                                        let semaphore = semaphore.clone();
+                                        let visited_assets = visited_assets.clone();
+                                        let forge_universal_bytes = forge_universal_bytes.clone();
+                                        let forge_universal_path = forge_universal_path.clone();
+                                        let minecraft_libs_filter = minecraft_libs_filter.clone();
+                                        let uploader = uploader;
+                                        let s3_client = s3_client;
 
+                                        async move {
                                         if lib.name.is_lwjgl() || lib.name.is_log4j() || should_ignore_artifact(&minecraft_libs_filter, &lib.name) {
                                             return Ok::<Option<Library>, crate::infrastructure::error::Error>(None);
                                         }
@@ -298,7 +306,12 @@ pub async fn retrieve_data(
                                             // Check if we've already processed this artifact (lock-free)
                                             if !visited_assets.insert(lib.name.clone()) {
                                                 // Already processed, skip download
-                                                lib.url = Some(format_url("maven/"));
+                                                let base_url = dotenvy::var("BASE_URL").unwrap();
+                                                lib.url = Some(format!(
+                                                    "{}/v{}/objects/",
+                                                    base_url,
+                                                    crate::services::cas::CAS_VERSION
+                                                ));
                                                 return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
                                             }
 
@@ -316,20 +329,30 @@ pub async fn retrieve_data(
                                                 .await?
                                             };
 
-                                            lib.url = Some(format_url("maven/"));
-
-                                            upload_queue.enqueue_path(
-                                                format!("{}/{}", "maven", artifact_path),
+                                            // Upload to CAS and get hash
+                                            let hash = uploader.upload_cas(
                                                 artifact.to_vec(),
                                                 Some("application/java-archive".to_string()),
-                                            );
+                                                s3_client,
+                                                semaphore.clone(),
+                                            ).await?;
+
+                                            // Store full CAS URL
+                                            let base_url = dotenvy::var("BASE_URL").unwrap();
+                                            lib.url = Some(format!(
+                                                "{}/v{}/objects/{}/{}",
+                                                base_url,
+                                                crate::services::cas::CAS_VERSION,
+                                                &hash[..2],
+                                                &hash[2..]
+                                            ));
                                         } else if lib.downloads.is_none() {
                                             lib.url = Some(String::from("https://libraries.minecraft.net/"));
                                         }
 
 
                                         Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib))
-                                    })).await?;
+                                    }})).await?;
 
                                     let elapsed = now.elapsed();
                                     info!("Elapsed lib DL: {:.2?}", elapsed);
@@ -378,10 +401,12 @@ pub async fn retrieve_data(
                                     };
 
                                     let version_hash = if should_upload {
-                                        upload_queue.enqueue(
+                                        uploader.upload_cas(
                                             version_bytes.clone(),
                                             Some("application/json".to_string()),
-                                        )
+                                            s3_client,
+                                            semaphore.clone(),
+                                        ).await?
                                     } else {
                                         new_hash.clone()
                                     };
@@ -442,6 +467,7 @@ pub async fn retrieve_data(
                                                 rules: x.rules,
                                                 checksums: x.checksums,
                                                 include_in_classpath: false,
+                                                version_hashes: None,
                                                 patched: false,
                                             })
                                         )
@@ -536,6 +562,7 @@ pub async fn retrieve_data(
                                                                     rules: None,
                                                                     checksums: None,
                                                                     include_in_classpath: false,
+                                                                    version_hashes: None,
                                                                     patched: false,
                                                                 });
                                                             }
@@ -557,7 +584,14 @@ pub async fn retrieve_data(
                                     let now = Instant::now();
 
 
-                                    let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| async {
+                                    let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| {
+                                        let semaphore = semaphore.clone();
+                                        let visited_assets = visited_assets.clone();
+                                        let local_libs = local_libs.clone();
+                                        let uploader = uploader;
+                                        let s3_client = s3_client;
+
+                                        async move {
                                         let artifact_path = lib.name.path();
 
                                         // Check if we've already processed this artifact (lock-free)
@@ -623,15 +657,36 @@ pub async fn retrieve_data(
                                         };
 
                                         if let Some(bytes) = artifact_bytes {
-                                            upload_queue.enqueue_path(
-                                                format!("{}/{}", "maven", artifact_path),
+                                            // Upload to CAS and get hash
+                                            let hash = uploader.upload_cas(
                                                 bytes.to_vec(),
                                                 Some("application/java-archive".to_string()),
+                                                s3_client,
+                                                semaphore.clone(),
+                                            ).await?;
+
+                                            // Store full CAS URL
+                                            let base_url = dotenvy::var("BASE_URL").unwrap();
+                                            let cas_url = format!(
+                                                "{}/v{}/objects/{}/{}",
+                                                base_url,
+                                                crate::services::cas::CAS_VERSION,
+                                                &hash[..2],
+                                                &hash[2..]
                                             );
+
+                                            // Update library URL with CAS URL
+                                            if let Some(ref mut downloads) = lib.downloads {
+                                                if let Some(ref mut artifact) = downloads.artifact {
+                                                    artifact.url = Some(cas_url);
+                                                }
+                                            } else if lib.url.is_some() {
+                                                lib.url = Some(cas_url);
+                                            }
                                         }
 
                                         Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib))
-                                    })).await?;
+                                    }})).await?;
 
                                     let elapsed = now.elapsed();
                                     info!("Elapsed lib DL: {:.2?}", elapsed);
@@ -680,10 +735,12 @@ pub async fn retrieve_data(
                                     };
 
                                     let version_hash = if should_upload {
-                                        upload_queue.enqueue(
+                                        uploader.upload_cas(
                                             version_bytes.clone(),
                                             Some("application/json".to_string()),
-                                        )
+                                            s3_client,
+                                            semaphore.clone(),
+                                        ).await?
                                     } else {
                                         new_hash.clone()
                                     };

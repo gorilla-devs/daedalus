@@ -8,6 +8,7 @@ use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, Version};
 use daedalus::{get_hash, Branding, BRANDING};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tracing::{info, warn};
@@ -382,7 +383,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             async move {
                 // Check if we've already processed this artifact (lock-free)
                 if !visited_artifacts.insert(lib.name.to_string()) {
-                    // Already processed, skip download
+                    // Already processed, skip download but still update name
                     lib.name = lib
                         .name
                         .to_string()
@@ -391,7 +392,10 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                             &BRANDING.get_or_init(Branding::default).dummy_replace_string,
                         )
                         .parse()?;
-                    lib.url = Some(format_url("maven/"));
+
+                    // Note: url and version_hashes remain as-is from the original library entry
+                    // This path should only be hit if the library is referenced multiple times,
+                    // which means url/version_hashes were already set correctly the first time
 
                     return Ok(lib);
                 }
@@ -406,7 +410,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                         )
                         .parse()?;
 
-                    futures::future::try_join_all(list_game.iter().map(|game_version| {
+                    // Collect hashes for all game versions
+                    let version_hash_results = futures::future::try_join_all(list_game.iter().map(|game_version| {
                         let semaphore = semaphore.clone();
                         let lib_name = lib.name.to_string();
                         let lib_url = lib.url.clone();
@@ -436,19 +441,23 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                             .await?;
 
                             // Upload to CAS and get hash
-                            let _hash = uploader.upload_cas(
+                            let hash = uploader.upload_cas(
                                 artifact.to_vec(),
                                 Some("application/java-archive".to_string()),
                                 s3_client,
                                 semaphore.clone(),
                             ).await?;
 
-                            Ok::<(), crate::infrastructure::error::Error>(())
+                            Ok::<(String, String), crate::infrastructure::error::Error>((game_version_str, hash))
                         }
                     }))
                     .await?;
 
-                    lib.url = Some(format_url("maven/"));
+                    // Build version_hashes map from results
+                    let version_hashes: HashMap<String, String> = version_hash_results.into_iter().collect();
+                    lib.version_hashes = Some(version_hashes);
+                    lib.url = None;
+
                     return Ok(lib);
                 }
 
@@ -468,14 +477,22 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                 .await?;
 
                 // Upload to CAS and get hash
-                let _hash = uploader.upload_cas(
+                let hash = uploader.upload_cas(
                     artifact.to_vec(),
                     Some("application/java-archive".to_string()),
                     s3_client,
                     semaphore.clone(),
                 ).await?;
 
-                lib.url = Some(format_url("maven/"));
+                // Store full CAS URL
+                let base_url = dotenvy::var("BASE_URL").unwrap();
+                lib.url = Some(format!(
+                    "{}/v{}/objects/{}/{}",
+                    base_url,
+                    crate::services::cas::CAS_VERSION,
+                    &hash[..2],
+                    &hash[2..]
+                ));
 
                 Ok::<Library, crate::infrastructure::error::Error>(lib)
             }
