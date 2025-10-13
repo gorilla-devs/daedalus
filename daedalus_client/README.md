@@ -80,6 +80,7 @@ cargo build --release
 | `LOG_FORMAT` | Log output format | `text` | `json` or `text` |
 | `RUST_LOG` | Rust log level filter | `info` | `debug`, `info`, `warn`, `error` |
 | `BETTERSTACK_TOKEN` | Betterstack logging token | None | `your-betterstack-token` |
+| `BETTERSTACK_URL` | Betterstack ingestion endpoint | `https://in.logs.betterstack.com` | `https://in.logs.betterstack.com` |
 | `CLOUDFLARE_INTEGRATION` | Enable Cloudflare cache purging | `false` | `true` or `false` |
 | `CLOUDFLARE_TOKEN` | Cloudflare API token (required if integration enabled) | None | `your-cloudflare-token` |
 | `CLOUDFLARE_ZONE_ID` | Cloudflare zone ID (required if integration enabled) | None | `your-zone-id` |

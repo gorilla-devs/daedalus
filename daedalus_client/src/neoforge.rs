@@ -5,6 +5,7 @@ use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{
     LoaderVersion, PartialVersionInfo, Processor, SidedDataEntry,
 };
+use daedalus::get_hash;
 use tracing::{info, warn};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -26,22 +27,24 @@ static NEOFORGE_SKIP_LIST: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     .collect()
 });
 
+fn extract_hash_from_cas_url(url: &str) -> Option<String> {
+    let parts: Vec<&str> = url.rsplitn(3, '/').collect();
+    if parts.len() >= 2 {
+        let hash_suffix = parts[0];
+        let hash_prefix = parts[1];
+        Some(format!("{}{}", hash_prefix, hash_suffix))
+    } else {
+        None
+    }
+}
+
 pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
     upload_queue: &UploadQueue,
     manifest_builder: &crate::services::cas::ManifestBuilder,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), crate::infrastructure::error::Error> {
-    // Check if force reprocess is enabled
-    let force_reprocess = std::env::var("FORCE_REPROCESS")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
-
-    if force_reprocess {
-        info!("🔄 NeoForge - FORCE_REPROCESS enabled, processing all versions");
-    } else {
-        info!("📋 NeoForge - Incremental mode, skipping existing versions");
-    }
+    info!("Retrieving NeoForge data ...");
 
     let maven_metadata = fetch_maven_metadata(semaphore.clone()).await?;
     let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
@@ -58,43 +61,16 @@ pub async fn retrieve_data(
             Vec::new()
         }));
 
-    // Build a set of existing version IDs for fast lookup (minecraft_version/loader_version)
-    let existing_versions: HashSet<String> = if force_reprocess {
-        HashSet::new()
-    } else {
-        let old_versions_guard = old_versions.lock().await;
-        old_versions_guard
-            .iter()
-            .flat_map(|mc_version| {
-                mc_version.loaders.iter().map(move |loader| {
-                    format!("{}/{}", mc_version.id, loader.id)
-                })
-            })
-            .collect()
-    };
-
     let versions = Arc::new(Mutex::new(Vec::new()));
 
     let visited_assets = Arc::new(DashSet::new());
 
     let mut version_futures = Vec::new();
 
-    let mut total_versions = 0;
-    let mut skipped_existing = 0;
-
     for (minecraft_version, loader_versions) in maven_metadata.clone() {
         let mut loaders = Vec::new();
 
         for (loader_version, new_forge) in loader_versions {
-            total_versions += 1;
-
-            // Skip if version already exists (incremental mode)
-            let version_key = format!("{}/{}", minecraft_version, loader_version);
-            if existing_versions.contains(&version_key) {
-                skipped_existing += 1;
-                continue;
-            }
-
             let version = Version::parse(&loader_version)?;
 
             loaders.push((loader_version, version, new_forge.to_string()))
@@ -116,16 +92,6 @@ pub async fn retrieve_data(
                             if NEOFORGE_SKIP_LIST.contains(loader_version_full.as_str()) {
                                 info!("⏭️  NeoForge - Skipping excluded version: {}", loader_version_full);
                                 return Ok::<Option<LoaderVersion>, crate::infrastructure::error::Error>(None);
-                            }
-
-                            {
-                                let versions = versions_mutex.lock().await;
-                                let version = versions.iter().find(|x|
-                                    x.id == minecraft_version).and_then(|x| x.loaders.iter().find(|x| x.id == loader_version_full));
-
-                                if let Some(version) = version {
-                                    return Ok::<Option<LoaderVersion>, crate::infrastructure::error::Error>(Some(version.clone()));
-                                }
                             }
 
                             info!("Neoforge - Installer Start {}", loader_version_full.clone());
@@ -330,12 +296,42 @@ pub async fn retrieve_data(
                                     logging: None
                                 };
 
-                                // Upload version to CAS and track in manifest builder
                                 let version_bytes = serde_json::to_vec(&new_profile)?;
-                                let version_hash = upload_queue.enqueue(
-                                    version_bytes.clone(),
-                                    Some("application/json".to_string()),
-                                );
+                                let new_hash = get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
+
+                                let old_loader_version = {
+                                    let versions = versions_mutex.lock().await;
+                                    versions.iter()
+                                        .find(|v| v.id == minecraft_version)
+                                        .and_then(|v| v.loaders.iter().find(|l| l.id == loader_version_full))
+                                        .cloned()
+                                };
+
+                                let should_upload = if let Some(old_version) = &old_loader_version {
+                                    if let Some(old_hash) = extract_hash_from_cas_url(&old_version.url) {
+                                        if old_hash == new_hash {
+                                            info!("✓ NeoForge {} unchanged (hash: {})", loader_version_full, &new_hash[..8]);
+                                            false
+                                        } else {
+                                            info!("↻ NeoForge {} changed (old: {}, new: {})", loader_version_full, &old_hash[..8], &new_hash[..8]);
+                                            true
+                                        }
+                                    } else {
+                                        true
+                                    }
+                                } else {
+                                    info!("+ NeoForge {} is new", loader_version_full);
+                                    true
+                                };
+
+                                let version_hash = if should_upload {
+                                    upload_queue.enqueue(
+                                        version_bytes.clone(),
+                                        Some("application/json".to_string()),
+                                    )
+                                } else {
+                                    new_hash.clone()
+                                };
 
                                 manifest_builder.add_version(
                                     "neoforge",
@@ -344,7 +340,6 @@ pub async fn retrieve_data(
                                     version_bytes.len() as u64,
                                 );
 
-                                // Build CAS URL for LoaderVersion
                                 let base_url = dotenvy::var("BASE_URL").unwrap();
                                 let cas_url = format!(
                                     "{}/v{}/objects/{}/{}",
@@ -417,9 +412,6 @@ pub async fn retrieve_data(
             });
         }
     }
-
-    info!("📊 NeoForge - Processing {} versions ({} skipped, {} to process)",
-        total_versions, skipped_existing, total_versions - skipped_existing);
 
     {
         let len = version_futures.len();

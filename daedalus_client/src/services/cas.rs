@@ -266,6 +266,51 @@ impl ManifestBuilder {
     pub fn loader_count(&self) -> usize {
         self.versions.len()
     }
+
+    /// Load old manifest data for comparison
+    ///
+    /// This populates the builder with version hashes from an existing manifest,
+    /// allowing us to detect which versions have changed.
+    ///
+    /// # Arguments
+    ///
+    /// * `manifest` - The old loader manifest to load
+    pub fn load_old_manifest(&self, manifest: &LoaderManifest) {
+        let loader_map = self
+            .versions
+            .entry(manifest.loader.clone())
+            .or_default();
+
+        for entry in &manifest.versions {
+            loader_map.insert(entry.id.clone(), (entry.hash.clone(), entry.size));
+        }
+    }
+
+    /// Check if a version's content hash has changed compared to the old manifest
+    ///
+    /// Returns true if:
+    /// - The version doesn't exist in old data (new version)
+    /// - The version exists but hash is different (content changed)
+    ///
+    /// Returns false if:
+    /// - The version exists with the same hash (no changes)
+    ///
+    /// # Arguments
+    ///
+    /// * `loader` - Loader name (e.g., "minecraft", "forge")
+    /// * `version_id` - Version identifier
+    /// * `new_hash` - New content hash to compare
+    pub fn has_version_changed(&self, loader: &str, version_id: &str, new_hash: &str) -> bool {
+        if let Some(loader_map) = self.versions.get(loader) {
+            if let Some(entry) = loader_map.get(version_id) {
+                // Version exists, check if hash changed
+                let (old_hash, _) = entry.value();
+                return old_hash.as_str() != new_hash;
+            }
+        }
+        // Version doesn't exist, so it's new
+        true
+    }
 }
 
 impl Default for ManifestBuilder {

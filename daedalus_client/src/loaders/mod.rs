@@ -6,11 +6,22 @@ use crate::services::upload::UploadQueue;
 use dashmap::DashSet;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, Version};
-use daedalus::{Branding, BRANDING};
+use daedalus::{get_hash, Branding, BRANDING};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tracing::{info, warn};
+
+fn extract_hash_from_cas_url(url: &str) -> Option<String> {
+    let parts: Vec<&str> = url.rsplitn(3, '/').collect();
+    if parts.len() >= 2 {
+        let hash_suffix = parts[0];
+        let hash_prefix = parts[1];
+        Some(format!("{}{}", hash_prefix, hash_suffix))
+    } else {
+        None
+    }
+}
 
 /// Strategy trait for loader-specific behavior
 ///
@@ -110,36 +121,28 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         };
 
         // Prepare list of loaders to process
-        // Format: (stable, version, skip_upload)
+        // Format: (stable, version, old_version_opt)
         let loaders_mutex = RwLock::new(Vec::new());
 
         {
             let mut loaders = loaders_mutex.write().await;
-            for (index, loader) in list.loader().iter().enumerate() {
-                // Check if this loader already exists in the dummy version
-                let already_exists = versions.iter().any(|x| {
-                    x.id == BRANDING
-                        .get_or_init(Branding::default)
-                        .dummy_replace_string
-                        && x.loaders.iter().any(|x| x.id == loader.version())
-                });
+            for loader in list.loader() {
+                // Find old version if it exists in the dummy version
+                let old_loader_version = versions
+                    .iter()
+                    .find(|x| {
+                        x.id == BRANDING
+                            .get_or_init(Branding::default)
+                            .dummy_replace_string
+                    })
+                    .and_then(|x| x.loaders.iter().find(|l| l.id == loader.version()))
+                    .cloned();
 
-                if already_exists {
-                    // Only add the first loader to update it
-                    if index == 0 {
-                        loaders.push((
-                            Box::new(self.strategy.is_stable(loader as &dyn LoaderVersionInfo)),
-                            loader.version().to_string(),
-                            Box::new(true), // skip_upload
-                        ))
-                    }
-                } else {
-                    loaders.push((
-                        Box::new(self.strategy.is_stable(loader as &dyn LoaderVersionInfo)),
-                        loader.version().to_string(),
-                        Box::new(false), // don't skip
-                    ))
-                }
+                loaders.push((
+                    Box::new(self.strategy.is_stable(loader as &dyn LoaderVersionInfo)),
+                    loader.version().to_string(),
+                    old_loader_version,
+                ))
             }
         }
 
@@ -152,13 +155,13 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         let mut fetch_successful = 0;
         let mut fetch_failed = 0;
 
-        for (stable, loader, skip_upload) in loaders_mutex.read().await.clone() {
+        for (stable, loader, old_loader_version) in loaders_mutex.read().await.clone() {
             match self
                 .fetch_loader_version(DUMMY_GAME_VERSION, &loader, semaphore.clone())
                 .await
             {
                 Ok(version) => {
-                    loader_versions.push((stable, loader, version, skip_upload));
+                    loader_versions.push((stable, loader, version, old_loader_version));
                     fetch_successful += 1;
                 }
                 Err(e) => {
@@ -187,14 +190,14 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         let mut process_successful = 0;
         let mut process_failed = 0;
 
-        for (stable, loader, version, skip_upload) in loader_versions {
+        for (stable, loader, version, old_loader_version) in loader_versions {
             let loader_clone = loader.clone();
             let process_result = self
                 .process_loader_version(
                     stable,
                     loader,
                     version,
-                    skip_upload,
+                    old_loader_version,
                     &list,
                     &loader_version_mutex,
                     upload_queue,
@@ -351,7 +354,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         stable: Box<bool>,
         loader: String,
         version: PartialVersionInfo,
-        skip_upload: Box<bool>,
+        old_loader_version: Option<LoaderVersion>,
         list: &V,
         loader_version_mutex: &Mutex<Vec<LoaderVersion>>,
         upload_queue: &UploadQueue,
@@ -468,11 +471,6 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         }))
         .await?;
 
-        // Skip upload if this loader already exists
-        if *skip_upload {
-            return Ok(());
-        }
-
         // Prepare version info with replaced dummy game version
         let version_info = PartialVersionInfo {
             arguments: version.arguments,
@@ -495,12 +493,34 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             data: None,
         };
 
-        // Upload version to CAS and track in manifest builder
         let version_bytes = serde_json::to_vec(&version_info)?;
-        let version_hash = upload_queue.enqueue(
-            version_bytes.clone(),
-            Some("application/json".to_string()),
-        );
+        let new_hash = get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
+
+        let should_upload = if let Some(old_version) = &old_loader_version {
+            if let Some(old_hash) = extract_hash_from_cas_url(&old_version.url) {
+                if old_hash == new_hash {
+                    info!("✓ {} {} unchanged (hash: {})", self.strategy.name(), loader, &new_hash[..8]);
+                    false
+                } else {
+                    info!("↻ {} {} changed (old: {}, new: {})", self.strategy.name(), loader, &old_hash[..8], &new_hash[..8]);
+                    true
+                }
+            } else {
+                true
+            }
+        } else {
+            info!("+ {} {} is new", self.strategy.name(), loader);
+            true
+        };
+
+        let version_hash = if should_upload {
+            upload_queue.enqueue(
+                version_bytes.clone(),
+                Some("application/json".to_string()),
+            )
+        } else {
+            new_hash.clone()
+        };
 
         manifest_builder.add_version(
             self.strategy.manifest_path_prefix(),
@@ -509,7 +529,6 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             version_bytes.len() as u64,
         );
 
-        // Build CAS URL for LoaderVersion
         let base_url = dotenvy::var("BASE_URL").unwrap();
         let cas_url = format!(
             "{}/v{}/objects/{}/{}",
@@ -519,7 +538,6 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             &version_hash[2..]
         );
 
-        // Add to loader version list
         let mut loader_version_map = loader_version_mutex.lock().await;
         loader_version_map.push(LoaderVersion {
             id: loader,

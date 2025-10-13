@@ -48,8 +48,12 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
             let betterstack_token = dotenvy::var("BETTERSTACK_TOKEN").ok();
             let _betterstack_handle = if let Some(ref token) = betterstack_token {
+                let betterstack_url = dotenvy::var("BETTERSTACK_URL")
+                    .unwrap_or_else(|_| "https://in.logs.betterstack.com".to_string());
+
                 let (betterstack_layer, handle) = services::betterstack::BetterstackLayer::new(
                     token.clone(),
+                    betterstack_url,
                     None,
                     None,
                 );

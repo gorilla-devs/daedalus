@@ -10,7 +10,7 @@ use daedalus::minecraft::{
 use daedalus::modded::{
     LoaderVersion, PartialVersionInfo, Processor, SidedDataEntry,
 };
-use daedalus::GradleSpecifier;
+use daedalus::{get_hash, GradleSpecifier};
 use tracing::{info, warn};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,17 @@ static FORGE_MANIFEST_V2_QUERY_P2: LazyLock<VersionReq> = LazyLock::new(|| {
 static FORGE_MANIFEST_V3_QUERY: LazyLock<VersionReq> = LazyLock::new(|| {
     VersionReq::parse(">=37.0.0").unwrap()
 });
+
+fn extract_hash_from_cas_url(url: &str) -> Option<String> {
+    let parts: Vec<&str> = url.rsplitn(3, '/').collect();
+    if parts.len() >= 2 {
+        let hash_suffix = parts[0];
+        let hash_prefix = parts[1];
+        Some(format!("{}{}", hash_prefix, hash_suffix))
+    } else {
+        None
+    }
+}
 
 pub async fn fetch_generated_version_info(
     version_id: &str,
@@ -236,19 +247,9 @@ pub async fn retrieve_data(
 
                             if FORGE_SKIP_LIST.contains(&&*loader_version_full) {
                                 info!("⏭️  Forge - Skipping excluded version: {}", loader_version_full);
-                                return Ok(None);
+                                return Ok::<Option<LoaderVersion>, crate::infrastructure::error::Error>(None);
                             }
 
-                            {
-                                let versions = versions_mutex.lock().await;
-                                let version = versions.iter().find(|x|
-                                    x.id == minecraft_version).and_then(|x| x.loaders.iter().find(|x| x.id == loader_version_full));
-
-                                if let Some(version) = version {
-                                    info!("Already have Forge {}", loader_version_full.clone());
-                                    return Ok::<Option<LoaderVersion>, crate::infrastructure::error::Error>(Some(version.clone()));
-                                }
-                            }
 
                             info!("Forge - Installer Start {}", loader_version_full.clone());
                             let bytes = download_file(&format!("https://maven.minecraftforge.net/net/minecraftforge/forge/{0}/forge-{0}-installer.jar", loader_version_full), None, semaphore.clone()).await?;
@@ -347,12 +348,42 @@ pub async fn retrieve_data(
                                         processors: None
                                     };
 
-                                    // Upload version to CAS and track in manifest builder
                                     let version_bytes = serde_json::to_vec(&new_profile)?;
-                                    let version_hash = upload_queue.enqueue(
-                                        version_bytes.clone(),
-                                        Some("application/json".to_string()),
-                                    );
+                                    let new_hash = get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
+
+                                    let old_loader_version = {
+                                        let versions = versions_mutex.lock().await;
+                                        versions.iter()
+                                            .find(|v| v.id == minecraft_version)
+                                            .and_then(|v| v.loaders.iter().find(|l| l.id == loader_version_full))
+                                            .cloned()
+                                    };
+
+                                    let should_upload = if let Some(old_version) = &old_loader_version {
+                                        if let Some(old_hash) = extract_hash_from_cas_url(&old_version.url) {
+                                            if old_hash == new_hash {
+                                                info!("✓ Forge {} unchanged (hash: {})", loader_version_full, &new_hash[..8]);
+                                                false
+                                            } else {
+                                                info!("↻ Forge {} changed (old: {}, new: {})", loader_version_full, &old_hash[..8], &new_hash[..8]);
+                                                true
+                                            }
+                                        } else {
+                                            true
+                                        }
+                                    } else {
+                                        info!("+ Forge {} is new", loader_version_full);
+                                        true
+                                    };
+
+                                    let version_hash = if should_upload {
+                                        upload_queue.enqueue(
+                                            version_bytes.clone(),
+                                            Some("application/json".to_string()),
+                                        )
+                                    } else {
+                                        new_hash.clone()
+                                    };
 
                                     manifest_builder.add_version(
                                         "forge",
@@ -361,7 +392,6 @@ pub async fn retrieve_data(
                                         version_bytes.len() as u64,
                                     );
 
-                                    // Build CAS URL for LoaderVersion
                                     let base_url = dotenvy::var("BASE_URL").unwrap();
                                     let cas_url = format!(
                                         "{}/v{}/objects/{}/{}",
@@ -620,12 +650,42 @@ pub async fn retrieve_data(
                                         processors: Some(profile.processors),
                                     };
 
-                                    // Upload version to CAS and track in manifest builder
                                     let version_bytes = serde_json::to_vec(&new_profile)?;
-                                    let version_hash = upload_queue.enqueue(
-                                        version_bytes.clone(),
-                                        Some("application/json".to_string()),
-                                    );
+                                    let new_hash = get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
+
+                                    let old_loader_version = {
+                                        let versions = versions_mutex.lock().await;
+                                        versions.iter()
+                                            .find(|v| v.id == minecraft_version)
+                                            .and_then(|v| v.loaders.iter().find(|l| l.id == loader_version_full))
+                                            .cloned()
+                                    };
+
+                                    let should_upload = if let Some(old_version) = &old_loader_version {
+                                        if let Some(old_hash) = extract_hash_from_cas_url(&old_version.url) {
+                                            if old_hash == new_hash {
+                                                info!("✓ Forge {} unchanged (hash: {})", loader_version_full, &new_hash[..8]);
+                                                false
+                                            } else {
+                                                info!("↻ Forge {} changed (old: {}, new: {})", loader_version_full, &old_hash[..8], &new_hash[..8]);
+                                                true
+                                            }
+                                        } else {
+                                            true
+                                        }
+                                    } else {
+                                        info!("+ Forge {} is new", loader_version_full);
+                                        true
+                                    };
+
+                                    let version_hash = if should_upload {
+                                        upload_queue.enqueue(
+                                            version_bytes.clone(),
+                                            Some("application/json".to_string()),
+                                        )
+                                    } else {
+                                        new_hash.clone()
+                                    };
 
                                     manifest_builder.add_version(
                                         "forge",
@@ -634,7 +694,6 @@ pub async fn retrieve_data(
                                         version_bytes.len() as u64,
                                     );
 
-                                    // Build CAS URL for LoaderVersion
                                     let base_url = dotenvy::var("BASE_URL").unwrap();
                                     let cas_url = format!(
                                         "{}/v{}/objects/{}/{}",

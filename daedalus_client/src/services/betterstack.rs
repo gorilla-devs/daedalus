@@ -28,6 +28,7 @@ impl BetterstackLayer {
     ///
     /// # Arguments
     /// * `token` - Betterstack API token
+    /// * `url` - Betterstack ingestion URL
     /// * `batch_size` - Maximum logs to buffer before flushing (default: 100)
     /// * `flush_interval` - Duration between automatic flushes (default: 5 seconds)
     ///
@@ -35,6 +36,7 @@ impl BetterstackLayer {
     /// A tuple of (layer, flush_handle) where the handle can be used to await graceful shutdown
     pub fn new(
         token: String,
+        url: String,
         batch_size: Option<usize>,
         flush_interval: Option<Duration>,
     ) -> (Self, tokio::task::JoinHandle<()>) {
@@ -42,11 +44,10 @@ impl BetterstackLayer {
         let flush_interval = flush_interval.unwrap_or(Duration::from_secs(5));
         let buffer = Arc::new(Mutex::new(Vec::new()));
 
-        // Spawn background flush task
         let flush_handle = {
             let buffer_clone = Arc::clone(&buffer);
             tokio::spawn(async move {
-                flush_loop(buffer_clone, token, flush_interval).await;
+                flush_loop(buffer_clone, token, url, flush_interval).await;
             })
         };
 
@@ -98,14 +99,13 @@ where
 }
 
 /// Background flush loop
-async fn flush_loop(buffer: Arc<Mutex<Vec<Value>>>, token: String, interval: Duration) {
+async fn flush_loop(buffer: Arc<Mutex<Vec<Value>>>, token: String, url: String, interval: Duration) {
     let mut timer = tokio::time::interval(interval);
     let client = reqwest::Client::new();
 
     loop {
         timer.tick().await;
 
-        // Take all pending logs
         let logs = {
             let mut buffer = buffer.lock().await;
             if buffer.is_empty() {
@@ -114,8 +114,7 @@ async fn flush_loop(buffer: Arc<Mutex<Vec<Value>>>, token: String, interval: Dur
             std::mem::take(&mut *buffer)
         };
 
-        // Ship to Betterstack
-        if let Err(e) = ship_logs(&client, &token, &logs).await {
+        if let Err(e) = ship_logs(&client, &token, &url, &logs).await {
             warn!(
                 error = %e,
                 log_count = logs.len(),
@@ -131,6 +130,7 @@ async fn flush_loop(buffer: Arc<Mutex<Vec<Value>>>, token: String, interval: Dur
 async fn ship_logs(
     client: &reqwest::Client,
     token: &str,
+    url: &str,
     logs: &[Value],
 ) -> Result<(), Box<dyn std::error::Error>> {
     if logs.is_empty() {
@@ -138,7 +138,7 @@ async fn ship_logs(
     }
 
     let response = client
-        .post("https://in.logs.betterstack.com/")
+        .post(url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Content-Type", "application/json")
         .json(&logs)
