@@ -1,6 +1,6 @@
 use crate::download_file;
 use crate::format_url;
-use crate::services::upload::UploadQueue;
+use crate::services::upload::BatchUploader;
 use dashmap::DashSet;
 use daedalus::minecraft::{
     merge_partial_library, Dependency, DependencyRule, JavaVersion, LWJGLEntry,
@@ -190,8 +190,9 @@ fn map_log4j_artifact(
 }
 
 pub async fn retrieve_data(
-    upload_queue: &UploadQueue,
+    uploader: &BatchUploader,
     manifest_builder: &crate::services::cas::ManifestBuilder,
+    s3_client: &s3::Bucket,
     semaphore: Arc<Semaphore>,
     is_first_run: bool,
 ) -> Result<VersionManifest, crate::infrastructure::error::Error> {
@@ -671,10 +672,12 @@ pub async fn retrieve_data(
                     .await?;
 
                     let asset_bytes = assets_index.to_vec();
-                    let asset_hash = upload_queue.enqueue(
+                    let asset_hash = uploader.upload_cas(
                         asset_bytes.clone(),
                         Some("application/json".to_string()),
-                    );
+                        s3_client,
+                        semaphore.clone(),
+                    ).await?;
 
                     let base_url = dotenvy::var("BASE_URL").unwrap();
                     version_info.asset_index.url = format!(
@@ -687,10 +690,12 @@ pub async fn retrieve_data(
                 }
 
                 let version_bytes = serde_json::to_vec(&version_info)?;
-                let version_hash = upload_queue.enqueue(
+                let version_hash = uploader.upload_cas(
                     version_bytes.clone(),
                     Some("application/json".to_string()),
-                );
+                    s3_client,
+                    semaphore.clone(),
+                ).await?;
 
                 manifest_builder.add_version(
                     "minecraft",
@@ -832,10 +837,12 @@ pub async fn retrieve_data(
                         debug!("Uploading {}", lwjgl_path);
 
                         let lwjgl_bytes = serde_json::to_vec(&lwjgl)?;
-                        let lwjgl_hash = upload_queue.enqueue(
+                        let lwjgl_hash = uploader.upload_cas(
                             lwjgl_bytes.clone(),
                             Some("application/json".to_string()),
-                        );
+                            s3_client,
+                            semaphore.clone(),
+                        ).await?;
 
                         let loader = if lwjgl.version.starts_with("2") {
                             "minecraft-lwjgl2"

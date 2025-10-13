@@ -2,7 +2,7 @@ pub mod fabric;
 pub mod quilt;
 
 use crate::{download_file, format_url};
-use crate::services::upload::UploadQueue;
+use crate::services::upload::BatchUploader;
 use dashmap::DashSet;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, Version};
@@ -93,8 +93,9 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
     pub async fn retrieve_data<V>(
         &self,
         minecraft_versions: &VersionManifest,
-        upload_queue: &UploadQueue,
+        uploader: &BatchUploader,
         manifest_builder: &crate::services::cas::ManifestBuilder,
+        s3_client: &s3::Bucket,
         semaphore: Arc<Semaphore>,
     ) -> Result<(), crate::infrastructure::error::Error>
     where
@@ -200,8 +201,9 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                     old_loader_version,
                     &list,
                     &loader_version_mutex,
-                    upload_queue,
+                    uploader,
                     manifest_builder,
+                    s3_client,
                     &visited_artifacts,
                     semaphore.clone(),
                 )
@@ -357,8 +359,9 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         old_loader_version: Option<LoaderVersion>,
         list: &V,
         loader_version_mutex: &Mutex<Vec<LoaderVersion>>,
-        upload_queue: &UploadQueue,
+        uploader: &BatchUploader,
         manifest_builder: &crate::services::cas::ManifestBuilder,
+        s3_client: &s3::Bucket,
         visited_artifacts: &Arc<DashSet<String>>,
         semaphore: Arc<Semaphore>,
     ) -> Result<(), crate::infrastructure::error::Error>
@@ -373,6 +376,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             let visited_artifacts = visited_artifacts.clone();
             let list_game = list.game().to_vec();
             let maven_fallback = self.strategy.maven_fallback().to_string();
+            let uploader = uploader;
+            let s3_client = s3_client;
 
             async move {
                 // Check if we've already processed this artifact (lock-free)
@@ -407,6 +412,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                         let lib_url = lib.url.clone();
                         let maven_fallback = maven_fallback.clone();
                         let game_version_str = game_version.version().to_string();
+                        let uploader = uploader;
+                        let s3_client = s3_client;
 
                         async move {
                             let artifact_path = daedalus::get_path_from_artifact(
@@ -428,11 +435,13 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                             )
                             .await?;
 
-                            upload_queue.enqueue_path(
-                                format!("{}/{}", "maven", artifact_path),
+                            // Upload to CAS and get hash
+                            let _hash = uploader.upload_cas(
                                 artifact.to_vec(),
                                 Some("application/java-archive".to_string()),
-                            );
+                                s3_client,
+                                semaphore.clone(),
+                            ).await?;
 
                             Ok::<(), crate::infrastructure::error::Error>(())
                         }
@@ -458,13 +467,15 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                 )
                 .await?;
 
-                lib.url = Some(format_url("maven/"));
-
-                upload_queue.enqueue_path(
-                    format!("{}/{}", "maven", artifact_path),
+                // Upload to CAS and get hash
+                let _hash = uploader.upload_cas(
                     artifact.to_vec(),
                     Some("application/java-archive".to_string()),
-                );
+                    s3_client,
+                    semaphore.clone(),
+                ).await?;
+
+                lib.url = Some(format_url("maven/"));
 
                 Ok::<Library, crate::infrastructure::error::Error>(lib)
             }
@@ -514,10 +525,12 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         };
 
         let version_hash = if should_upload {
-            upload_queue.enqueue(
+            uploader.upload_cas(
                 version_bytes.clone(),
                 Some("application/json".to_string()),
-            )
+                s3_client,
+                semaphore.clone(),
+            ).await?
         } else {
             new_hash.clone()
         };

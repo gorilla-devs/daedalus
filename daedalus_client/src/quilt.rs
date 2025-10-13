@@ -1,6 +1,6 @@
 use crate::loaders::quilt::{QuiltStrategy, QuiltVersions};
 use crate::loaders::LoaderProcessor;
-use crate::services::upload::UploadQueue;
+use crate::services::upload::BatchUploader;
 use daedalus::minecraft::VersionManifest;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -12,12 +12,13 @@ use tokio::sync::Semaphore;
 /// eliminating hundreds of lines of duplicated code.
 pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
-    upload_queue: &UploadQueue,
+    uploader: &BatchUploader,
     manifest_builder: &crate::services::cas::ManifestBuilder,
+    s3_client: &s3::Bucket,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), crate::infrastructure::error::Error> {
     let processor = LoaderProcessor::new(QuiltStrategy);
     processor
-        .retrieve_data::<QuiltVersions>(minecraft_versions, upload_queue, manifest_builder, semaphore)
+        .retrieve_data::<QuiltVersions>(minecraft_versions, uploader, manifest_builder, s3_client, semaphore)
         .await
 }

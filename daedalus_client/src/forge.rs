@@ -1,7 +1,7 @@
 use crate::{
     download_file, download_file_mirrors, format_url,
 };
-use crate::services::upload::UploadQueue;
+use crate::services::upload::BatchUploader;
 use chrono::{DateTime, Utc};
 use dashmap::DashSet;
 use daedalus::minecraft::{
@@ -147,8 +147,9 @@ pub fn should_ignore_artifact(
 
 pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
-    upload_queue: &UploadQueue,
+    uploader: &BatchUploader,
     manifest_builder: &crate::services::cas::ManifestBuilder,
+    s3_client: &s3::Bucket,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), crate::infrastructure::error::Error> {
     info!("Retrieving Forge data ...");

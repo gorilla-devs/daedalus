@@ -1,5 +1,4 @@
 use backon::{ExponentialBuilder, Retryable};
-use dashmap::DashMap;
 use s3::Bucket;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -7,170 +6,104 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{error, info, instrument};
 
-/// Upload queue for atomic batch uploads
+/// Batch uploader for immediate CAS (Content-Addressable Storage) uploads
 ///
-/// This queue collects files to be uploaded and provides an atomic
-/// flush operation that ensures all-or-nothing semantics. This prevents
-/// partial failures from leaving the CDN in an inconsistent state.
+/// This uploader handles immediate uploads of content to S3 using content-addressable storage.
+/// Files are stored by their SHA256 hash at v{CAS_VERSION}/objects/{hash[0..2]}/{hash[2..]}.
 ///
-/// Supports two upload modes:
-/// - CAS (Content-Addressable Storage): Files stored by SHA256 hash at v{CAS_VERSION}/objects/<hash>
-/// - Path-based: Files stored at explicit paths (e.g., maven/ for compatibility)
+/// Benefits:
+/// - **Immediate uploads**: No queuing, files upload as soon as requested
+/// - **Deduplication**: Same content (same hash) = same storage location, uploaded once
+/// - **Immutability**: Content never changes, only manifest pointers
+/// - **Reproducibility**: Hash is deterministic from file content
 ///
 /// # Example
 ///
 /// ```no_run
-/// let queue = UploadQueue::new();
+/// let uploader = BatchUploader::new();
 ///
-/// // CAS upload (returns hash)
-/// let hash = queue.enqueue_cas(vec![1, 2, 3], Some("application/json"));
+/// // Upload content to CAS and get its hash
+/// let hash = uploader.upload_cas(
+///     vec![1, 2, 3],
+///     Some("application/json".to_string()),
+///     &s3_client,
+///     semaphore.clone()
+/// ).await?;
 ///
-/// // Path-based upload (for maven artifacts, etc.)
-/// queue.enqueue_path("maven/lib.jar", vec![4, 5, 6], Some("application/java-archive"));
-///
-/// // Atomic: all files uploaded or none
-/// queue.flush(&s3_client, semaphore).await?;
+/// // Hash can be used in manifests to reference the content
+/// println!("Content stored at hash: {}", hash);
 /// ```
-pub struct UploadQueue {
-    /// Lock-free concurrent map of pending CAS uploads
-    /// Key: content hash (SHA256), Value: (bytes, content_type)
-    cas_queue: DashMap<String, (Vec<u8>, Option<String>)>,
+pub struct BatchUploader;
 
-    /// Lock-free concurrent map of pending path-based uploads
-    /// Key: file path, Value: (bytes, content_type)
-    path_queue: DashMap<String, (Vec<u8>, Option<String>)>,
-}
-
-impl UploadQueue {
-    /// Create a new empty upload queue
+impl BatchUploader {
+    /// Create a new batch uploader
     pub fn new() -> Self {
-        Self {
-            cas_queue: DashMap::new(),
-            path_queue: DashMap::new(),
-        }
+        Self
     }
 
     /// Compute SHA256 hash of content
-    fn compute_hash(content: &[u8]) -> String {
+    ///
+    /// This hash is used as the content-addressable identifier for CAS storage.
+    pub fn compute_hash(content: &[u8]) -> String {
         let mut hasher = Sha256::new();
         hasher.update(content);
         format!("{:x}", hasher.finalize())
     }
 
-    /// Enqueue content for CAS upload (does NOT upload yet)
+    /// Upload content to CAS immediately and return its hash
     ///
-    /// Content is stored by its SHA256 hash and will be uploaded to v{CAS_VERSION}/objects/{hash[0..2]}/{hash[2..]}.
-    /// Returns the hash so callers can reference it in manifests.
+    /// Content is uploaded to v{CAS_VERSION}/objects/{hash[0..2]}/{hash[2..]}.
+    /// The hash is computed from the content's SHA256 and returned immediately.
     ///
-    /// Multiple enqueues of the same content (same hash) will deduplicate automatically.
-    #[instrument(skip(self, content), fields(size = content.len()))]
-    pub fn enqueue(&self, content: Vec<u8>, content_type: Option<String>) -> String {
-        let hash = Self::compute_hash(&content);
-        info!(hash = %hash, "Enqueued for CAS upload");
-        self.cas_queue.insert(hash.clone(), (content, content_type));
-        hash
-    }
-
-    /// Enqueue content for path-based upload (does NOT upload yet)
+    /// The upload happens concurrently (limited by semaphore) and will retry on failure.
     ///
-    /// Content is stored at the specified path (e.g., "maven/lib.jar").
-    /// This is used for files that need predictable paths for compatibility.
+    /// # Arguments
     ///
-    /// Multiple enqueues of the same path will overwrite previous content.
-    #[instrument(skip(self, content), fields(size = content.len()))]
-    pub fn enqueue_path(&self, path: String, content: Vec<u8>, content_type: Option<String>) {
-        info!(path = %path, "Enqueued for path-based upload");
-        self.path_queue.insert(path, (content, content_type));
-    }
-
-    /// Flush all queued uploads atomically to S3
+    /// * `content` - The file content to upload
+    /// * `content_type` - Optional MIME type (e.g., "application/json")
+    /// * `s3_client` - S3 bucket client
+    /// * `semaphore` - Semaphore for concurrent upload limiting
     ///
-    /// Uploads both CAS objects (to v{CAS_VERSION}/objects/{hash[0..2]}/{hash[2..]})
-    /// and path-based files (to their specified paths).
-    /// On error, all uploads are considered failed (no partial state).
+    /// # Returns
+    ///
+    /// The SHA256 hash of the content, which serves as its CAS identifier
     ///
     /// # Errors
     ///
-    /// Returns error if any upload fails after retries.
-    #[instrument(skip(self, s3_client, semaphore), fields(cas_count = self.cas_queue.len(), path_count = self.path_queue.len()))]
-    pub async fn flush(
+    /// Returns error if upload fails after retries
+    #[instrument(skip(self, content, s3_client, semaphore), fields(size = content.len()))]
+    pub async fn upload_cas(
         &self,
+        content: Vec<u8>,
+        content_type: Option<String>,
         s3_client: &Bucket,
         semaphore: Arc<Semaphore>,
-    ) -> Result<(), crate::infrastructure::error::Error> {
-        let cas_size = self.cas_queue.len();
-        let path_size = self.path_queue.len();
-        let total_size = cas_size + path_size;
-
-        if total_size == 0 {
-            info!("Upload queue is empty, nothing to flush");
-            return Ok(());
-        }
-
-        info!(
-            cas_count = cas_size,
-            path_count = path_size,
-            "Starting atomic flush of {} objects ({} CAS, {} path-based)",
-            total_size,
-            cas_size,
-            path_size
+    ) -> Result<String, crate::infrastructure::error::Error> {
+        let hash = Self::compute_hash(&content);
+        let path = format!(
+            "v{}/objects/{}/{}",
+            crate::services::cas::CAS_VERSION,
+            &hash[..2],
+            &hash[2..]
         );
 
-        // Upload CAS objects (content-addressed with 2-char prefix for sharding)
-        for entry in self.cas_queue.iter() {
-            let (hash, (bytes, content_type)) = entry.pair();
-            let path = format!("v{}/objects/{}/{}", crate::services::cas::CAS_VERSION, &hash[..2], &hash[2..]);
+        info!(hash = %hash, path = %path, "Uploading to CAS");
 
-            upload_single_file(
-                &path,
-                bytes,
-                content_type.as_deref(),
-                s3_client,
-                semaphore.clone(),
-            )
-            .await?;
-        }
+        upload_single_file(
+            &path,
+            &content,
+            content_type.as_deref(),
+            s3_client,
+            semaphore,
+        )
+        .await?;
 
-        // Upload path-based files
-        for entry in self.path_queue.iter() {
-            let (path, (bytes, content_type)) = entry.pair();
-
-            upload_single_file(
-                path,
-                bytes,
-                content_type.as_deref(),
-                s3_client,
-                semaphore.clone(),
-            )
-            .await?;
-        }
-
-        // Clear queues only on complete success
-        self.cas_queue.clear();
-        self.path_queue.clear();
-
-        info!(
-            uploaded = total_size,
-            "Successfully flushed {} objects",
-            total_size
-        );
-
-        Ok(())
-    }
-
-    /// Get the total number of queued files (CAS + path-based)
-    pub fn len(&self) -> usize {
-        self.cas_queue.len() + self.path_queue.len()
-    }
-
-    /// Check if queue is empty (both CAS and path-based)
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.cas_queue.is_empty() && self.path_queue.is_empty()
+        info!(hash = %hash, "CAS upload completed");
+        Ok(hash)
     }
 }
 
-impl Default for UploadQueue {
+impl Default for BatchUploader {
     fn default() -> Self {
         Self::new()
     }
@@ -180,6 +113,14 @@ impl Default for UploadQueue {
 ///
 /// Internal helper function that handles the actual S3 upload with
 /// exponential backoff retry on failure.
+///
+/// # Arguments
+///
+/// * `path` - S3 object path
+/// * `bytes` - File content
+/// * `content_type` - Optional MIME type
+/// * `s3_client` - S3 bucket client
+/// * `semaphore` - Semaphore for concurrent upload limiting
 #[instrument(skip(bytes, s3_client, semaphore), fields(size = bytes.len()))]
 async fn upload_single_file(
     path: &str,
@@ -229,60 +170,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_upload_queue_creation() {
-        let queue = UploadQueue::new();
-        assert_eq!(queue.len(), 0);
-        assert!(queue.is_empty());
-    }
-
-    #[test]
-    fn test_enqueue() {
-        let queue = UploadQueue::new();
-
-        let hash = queue.enqueue(vec![1, 2, 3], Some("application/json".to_string()));
-
-        // SHA256 of [1, 2, 3]
-        assert_eq!(
-            hash,
-            "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81"
-        );
-        assert_eq!(queue.len(), 1);
-        assert!(!queue.is_empty());
-    }
-
-    #[test]
-    fn test_deduplication() {
-        let queue = UploadQueue::new();
-
-        // Enqueue same content twice
-        let hash1 = queue.enqueue(vec![1, 2, 3], None);
-        let hash2 = queue.enqueue(vec![1, 2, 3], None);
-
-        // Same content = same hash, deduplicated
-        assert_eq!(hash1, hash2);
-        assert_eq!(queue.len(), 1); // Only stored once
-    }
-
-    #[test]
-    fn test_multiple_objects() {
-        let queue = UploadQueue::new();
-
-        // Different content = different hashes
-        let hash1 = queue.enqueue(vec![1], None);
-        let hash2 = queue.enqueue(vec![2], None);
-        let hash3 = queue.enqueue(vec![3], None);
-
-        // All three should be different
-        assert_ne!(hash1, hash2);
-        assert_ne!(hash2, hash3);
-        assert_ne!(hash1, hash3);
-        assert_eq!(queue.len(), 3);
+    fn test_batch_uploader_creation() {
+        let uploader = BatchUploader::new();
+        // Uploader is stateless, just verify it can be created
+        let _ = uploader;
     }
 
     #[test]
     fn test_compute_hash() {
         let content = b"hello world";
-        let hash = UploadQueue::compute_hash(content);
+        let hash = BatchUploader::compute_hash(content);
 
         // SHA256 of "hello world"
         assert_eq!(
@@ -292,36 +189,35 @@ mod tests {
     }
 
     #[test]
-    fn test_enqueue_path() {
-        let queue = UploadQueue::new();
+    fn test_compute_hash_deterministic() {
+        let content = vec![1, 2, 3];
+        let hash1 = BatchUploader::compute_hash(&content);
+        let hash2 = BatchUploader::compute_hash(&content);
 
-        queue.enqueue_path(
-            "maven/lib.jar".to_string(),
-            vec![1, 2, 3],
-            Some("application/java-archive".to_string()),
+        // Same content should always produce same hash (reproducibility)
+        assert_eq!(hash1, hash2);
+        assert_eq!(
+            hash1,
+            "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81"
         );
-
-        assert_eq!(queue.len(), 1);
-        assert!(!queue.is_empty());
     }
 
     #[test]
-    fn test_mixed_cas_and_path() {
-        let queue = UploadQueue::new();
+    fn test_different_content_different_hash() {
+        let hash1 = BatchUploader::compute_hash(&[1]);
+        let hash2 = BatchUploader::compute_hash(&[2]);
+        let hash3 = BatchUploader::compute_hash(&[3]);
 
-        // Add CAS upload
-        let hash = queue.enqueue(vec![1, 2, 3], Some("application/json".to_string()));
-        assert!(!hash.is_empty());
+        // Different content should produce different hashes
+        assert_ne!(hash1, hash2);
+        assert_ne!(hash2, hash3);
+        assert_ne!(hash1, hash3);
+    }
 
-        // Add path-based upload
-        queue.enqueue_path(
-            "maven/lib.jar".to_string(),
-            vec![4, 5, 6],
-            Some("application/java-archive".to_string()),
-        );
-
-        // Should have 2 total files queued
-        assert_eq!(queue.len(), 2);
-        assert!(!queue.is_empty());
+    #[test]
+    fn test_hash_length() {
+        let hash = BatchUploader::compute_hash(b"test");
+        // SHA256 produces 64 hex characters
+        assert_eq!(hash.len(), 64);
     }
 }

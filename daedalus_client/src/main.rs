@@ -11,6 +11,9 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+#[cfg(unix)]
+use tokio::signal::unix::{signal, SignalKind};
+
 mod fabric;
 mod infrastructure;
 mod forge;
@@ -19,6 +22,35 @@ mod minecraft;
 mod neoforge;
 mod quilt;
 mod services;
+
+/// Create a future that completes when a shutdown signal is received (SIGTERM or Ctrl+C)
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal(SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            info!("Received Ctrl+C signal");
+        }
+        _ = terminate => {
+            info!("Received SIGTERM signal");
+        }
+    }
+}
 
 fn main() -> Result<(), crate::infrastructure::error::Error> {
     #[cfg(feature = "sentry")]
@@ -172,12 +204,21 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
             let mut is_first_run = true;
 
             loop {
+                // Wait for either timer tick or shutdown signal
+                info!("Waiting for next update timer or shutdown signal");
+                tokio::select! {
+                    _ = timer.tick() => {
+                        // Timer ticked - continue with processing cycle
+                    }
+                    _ = shutdown_signal() => {
+                        info!("Shutdown signal received - exiting gracefully");
+                        break;
+                    }
+                }
+
                 let loop_span = tracing::info_span!("processing_cycle", is_first_run);
                 async {
-                    info!("Waiting for next update timer");
-                    timer.tick().await;
-
-                    let upload_queue = services::upload::UploadQueue::new();
+                    let uploader = services::upload::BatchUploader::new();
                     let manifest_builder = services::cas::ManifestBuilder::new();
 
                     let versions = {
@@ -185,8 +226,9 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                         async {
                             match MINECRAFT_BREAKER.call(async {
                                 minecraft::retrieve_data(
-                                    &upload_queue,
+                                    &uploader,
                                     &manifest_builder,
+                                    &CLIENT,
                                     semaphore.clone(),
                                     is_first_run,
                                 )
@@ -219,8 +261,9 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                 match FABRIC_BREAKER.call(async {
                                     fabric::retrieve_data(
                                         &manifest,
-                                        &upload_queue,
+                                        &uploader,
                                         &manifest_builder,
+                                        &CLIENT,
                                         semaphore.clone(),
                                     )
                                     .await
@@ -246,7 +289,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                 match FORGE_BREAKER.call(async {
                                     forge::retrieve_data(
                                         &manifest,
-                                        &upload_queue,
+                                        &uploader,
                                         &manifest_builder,
                                         semaphore.clone(),
                                     )
@@ -273,8 +316,9 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                 match QUILT_BREAKER.call(async {
                                     quilt::retrieve_data(
                                         &manifest,
-                                        &upload_queue,
+                                        &uploader,
                                         &manifest_builder,
+                                        &CLIENT,
                                         semaphore.clone(),
                                     )
                                     .await
@@ -300,7 +344,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                 match NEOFORGE_BREAKER.call(async {
                                     neoforge::retrieve_data(
                                         &manifest,
-                                        &upload_queue,
+                                        &uploader,
                                         &manifest_builder,
                                         semaphore.clone(),
                                     )
@@ -321,12 +365,8 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                             .await;
                         }
 
-                        info!(queued_count = upload_queue.len(), "Flushing CAS objects and path-based files");
-                        let flush_result = upload_queue.flush(&CLIENT, semaphore.clone()).await;
-                        if let Err(e) = flush_result {
-                            error!(error = %e, "Failed to flush upload queue - skipping manifest upload this cycle");
-                        } else {
-                            info!("Upload queue flushed successfully");
+                        // All CAS objects have been uploaded immediately during processing
+                        // Now we upload the loader manifests and root manifest atomically
                         let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
                         let mut loader_references = std::collections::HashMap::new();
                         let mut uploaded_manifest_urls = Vec::new();
@@ -454,13 +494,15 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                             warn!("No loader manifests were built - skipping root manifest upload");
                         }
                     }
-                    }
 
                     is_first_run = false;
                 }
                 .instrument(loop_span)
                 .await;
             }
+
+            info!("Application shutdown complete");
+            Ok(())
         })
 }
 
