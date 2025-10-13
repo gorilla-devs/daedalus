@@ -4,21 +4,12 @@ use crate::minecraft::{
     Argument, ArgumentType, Library, LoggingConfig, LoggingConfigName,
     VersionInfo, VersionType,
 };
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
-
-/// The latest version of the format the fabric model structs deserialize to
-pub const CURRENT_FABRIC_FORMAT_VERSION: usize = 2;
-/// The latest version of the format the fabric model structs deserialize to
-pub const CURRENT_FORGE_FORMAT_VERSION: usize = 2;
-/// The latest version of the format the quilt model structs deserialize to
-pub const CURRENT_QUILT_FORMAT_VERSION: usize = 2;
-/// The latest version of the format the neoforge model structs deserialize to
-pub const CURRENT_NEOFORGE_FORMAT_VERSION: usize = 2;
 
 /// A data variable entry that depends on the side of the installation
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
@@ -37,7 +28,10 @@ where
     let s = String::deserialize(deserializer)?;
 
     serde_json::from_str::<DateTime<Utc>>(&format!("\"{s}\""))
-        .or_else(|_| Utc.datetime_from_str(&s, "%Y-%m-%dT%H:%M:%S%.9f"))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.9f")
+                .map(|dt| dt.and_utc())
+        })
         .map_err(serde::de::Error::custom)
 }
 

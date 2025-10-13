@@ -1,27 +1,52 @@
-use crate::{download_file, format_url, upload_file_to_bucket};
+use crate::{download_file, format_url};
+use crate::services::upload::UploadQueue;
+use dashmap::DashSet;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{
-    LoaderVersion, Manifest, PartialVersionInfo, Processor, SidedDataEntry,
+    LoaderVersion, PartialVersionInfo, Processor, SidedDataEntry,
 };
-use log::info;
+use tracing::{info, warn};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::Read;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
 
+/// Skip list for known broken NeoForge/Forge versions
+/// These versions have permanent issues (missing files, corrupted archives, etc.)
+static NEOFORGE_SKIP_LIST: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    vec![
+        // Add known broken versions here as they're discovered
+        // Example: "21.3.0-beta",  // Missing universal JAR
+    ]
+    .into_iter()
+    .collect()
+});
+
 pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
-    uploaded_files: &mut Vec<String>,
+    upload_queue: &UploadQueue,
+    manifest_builder: &crate::services::cas::ManifestBuilder,
     semaphore: Arc<Semaphore>,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), crate::infrastructure::error::Error> {
+    // Check if force reprocess is enabled
+    let force_reprocess = std::env::var("FORCE_REPROCESS")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    if force_reprocess {
+        info!("🔄 NeoForge - FORCE_REPROCESS enabled, processing all versions");
+    } else {
+        info!("📋 NeoForge - Incremental mode, skipping existing versions");
+    }
+
     let maven_metadata = fetch_maven_metadata(semaphore.clone()).await?;
     let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
         "neoforge/v{}/manifest.json",
-        daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
+        crate::services::cas::CAS_VERSION,
     )))
     .await
     .ok();
@@ -33,17 +58,43 @@ pub async fn retrieve_data(
             Vec::new()
         }));
 
+    // Build a set of existing version IDs for fast lookup (minecraft_version/loader_version)
+    let existing_versions: HashSet<String> = if force_reprocess {
+        HashSet::new()
+    } else {
+        let old_versions_guard = old_versions.lock().await;
+        old_versions_guard
+            .iter()
+            .flat_map(|mc_version| {
+                mc_version.loaders.iter().map(move |loader| {
+                    format!("{}/{}", mc_version.id, loader.id)
+                })
+            })
+            .collect()
+    };
+
     let versions = Arc::new(Mutex::new(Vec::new()));
 
-    let visited_assets_mutex = Arc::new(Mutex::new(Vec::new()));
-    let uploaded_files_mutex = Arc::new(Mutex::new(Vec::new()));
+    let visited_assets = Arc::new(DashSet::new());
 
     let mut version_futures = Vec::new();
+
+    let mut total_versions = 0;
+    let mut skipped_existing = 0;
 
     for (minecraft_version, loader_versions) in maven_metadata.clone() {
         let mut loaders = Vec::new();
 
         for (loader_version, new_forge) in loader_versions {
+            total_versions += 1;
+
+            // Skip if version already exists (incremental mode)
+            let version_key = format!("{}/{}", minecraft_version, loader_version);
+            if existing_versions.contains(&version_key) {
+                skipped_existing += 1;
+                continue;
+            }
+
             let version = Version::parse(&loader_version)?;
 
             loaders.push((loader_version, version, new_forge.to_string()))
@@ -56,19 +107,24 @@ pub async fn retrieve_data(
                 {
                     let loaders_futures = loaders.into_iter().map(|(loader_version_full, _, new_forge)| async {
                         let versions_mutex = Arc::clone(&old_versions);
-                        let visited_assets = Arc::clone(&visited_assets_mutex);
-                        let uploaded_files_mutex = Arc::clone(&uploaded_files_mutex);
+                        let visited_assets = Arc::clone(&visited_assets);
                         let semaphore = Arc::clone(&semaphore);
                         let minecraft_version = minecraft_version.clone();
 
                         async move {
+                            // Check skip list first
+                            if NEOFORGE_SKIP_LIST.contains(loader_version_full.as_str()) {
+                                info!("⏭️  NeoForge - Skipping excluded version: {}", loader_version_full);
+                                return Ok::<Option<LoaderVersion>, crate::infrastructure::error::Error>(None);
+                            }
+
                             {
                                 let versions = versions_mutex.lock().await;
                                 let version = versions.iter().find(|x|
                                     x.id == minecraft_version).and_then(|x| x.loaders.iter().find(|x| x.id == loader_version_full));
 
                                 if let Some(version) = version {
-                                    return Ok::<Option<LoaderVersion>, anyhow::Error>(Some(version.clone()));
+                                    return Ok::<Option<LoaderVersion>, crate::infrastructure::error::Error>(Some(version.clone()));
                                 }
                             }
 
@@ -87,7 +143,7 @@ pub async fn retrieve_data(
                                     let mut contents = String::new();
                                     install_profile.read_to_string(&mut contents)?;
 
-                                    Ok::<ForgeInstallerProfileV2, anyhow::Error>(serde_json::from_str::<ForgeInstallerProfileV2>(&contents)?)
+                                    Ok::<ForgeInstallerProfileV2, crate::infrastructure::error::Error>(serde_json::from_str::<ForgeInstallerProfileV2>(&contents)?)
                                 }).await??;
 
                                 let mut archive_clone = archive.clone();
@@ -97,7 +153,7 @@ pub async fn retrieve_data(
                                     let mut contents = String::new();
                                     install_profile.read_to_string(&mut contents)?;
 
-                                    Ok::<PartialVersionInfo, anyhow::Error>(serde_json::from_str::<PartialVersionInfo>(&contents)?)
+                                    Ok::<PartialVersionInfo, crate::infrastructure::error::Error>(serde_json::from_str::<PartialVersionInfo>(&contents)?)
                                 }).await??;
 
 
@@ -125,7 +181,7 @@ pub async fn retrieve_data(
                                             let mut lib_bytes =  Vec::new();
                                             lib_file.read_to_end(&mut lib_bytes)?;
 
-                                            Ok::<bytes::Bytes, anyhow::Error>(bytes::Bytes::from(lib_bytes))
+                                            Ok::<bytes::Bytes, crate::infrastructure::error::Error>(bytes::Bytes::from(lib_bytes))
                                         }).await??;
 
                                         local_libs.insert(lib.name.to_string(), lib_bytes);
@@ -146,7 +202,7 @@ pub async fn retrieve_data(
                                             let mut lib_bytes =  Vec::new();
                                             lib_file.read_to_end(&mut lib_bytes)?;
 
-                                            Ok::<bytes::Bytes, anyhow::Error>(bytes::Bytes::from(lib_bytes))
+                                            Ok::<bytes::Bytes, crate::infrastructure::error::Error>(bytes::Bytes::from(lib_bytes))
                                         }).await??;
 
                                         let split = $value.split('/').last();
@@ -193,22 +249,18 @@ pub async fn retrieve_data(
                                 let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| async {
                                     let artifact_path = &lib.name.path();
 
-                                    {
-                                        let mut visited_assets = visited_assets.lock().await;
-
-                                        if visited_assets.contains(&lib.name) {
-                                            if let Some(ref mut downloads) = lib.downloads {
-                                                if let Some(ref mut artifact) = downloads.artifact {
-                                                    artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
-                                                }
-                                            } else if lib.url.is_some() {
-                                                lib.url = Some(format_url("maven/"));
+                                    // Check if we've already processed this artifact (lock-free)
+                                    if !visited_assets.insert(lib.name.clone()) {
+                                        // Already processed, skip download
+                                        if let Some(ref mut downloads) = lib.downloads {
+                                            if let Some(ref mut artifact) = downloads.artifact {
+                                                artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
                                             }
-
-                                            return Ok::<Library, anyhow::Error>(lib);
-                                        } else {
-                                            visited_assets.push(lib.name.clone())
+                                        } else if lib.url.is_some() {
+                                            lib.url = Some(format_url("maven/"));
                                         }
+
+                                        return Ok::<Library, crate::infrastructure::error::Error>(lib);
                                     }
 
                                     let artifact_bytes = if let Some(ref mut downloads) = lib.downloads {
@@ -250,16 +302,14 @@ pub async fn retrieve_data(
                                     } else { None };
 
                                     if let Some(bytes) = artifact_bytes {
-                                        upload_file_to_bucket(
+                                        upload_queue.enqueue_path(
                                             format!("{}/{}", "maven", artifact_path),
                                             bytes.to_vec(),
                                             Some("application/java-archive".to_string()),
-                                            uploaded_files_mutex.as_ref(),
-                                            semaphore.clone(),
-                                        ).await?;
+                                        );
                                     }
 
-                                    Ok::<Library, anyhow::Error>(lib)
+                                    Ok::<Library, crate::infrastructure::error::Error>(lib)
                                 })).await?;
 
                                 let elapsed = now.elapsed();
@@ -280,23 +330,33 @@ pub async fn retrieve_data(
                                     logging: None
                                 };
 
-                                let version_path = format!(
-                                    "neoforge/v{}/versions/{}.json",
-                                    daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
-                                    loader_version_full
+                                // Upload version to CAS and track in manifest builder
+                                let version_bytes = serde_json::to_vec(&new_profile)?;
+                                let version_hash = upload_queue.enqueue(
+                                    version_bytes.clone(),
+                                    Some("application/json".to_string()),
                                 );
 
-                                upload_file_to_bucket(
-                                    version_path.clone(),
-                                    serde_json::to_vec(&new_profile)?,
-                                    Some("application/json".to_string()),
-                                    uploaded_files_mutex.as_ref(),
-                                    semaphore.clone(),
-                                ).await?;
+                                manifest_builder.add_version(
+                                    "neoforge",
+                                    loader_version_full.to_string(),
+                                    version_hash.clone(),
+                                    version_bytes.len() as u64,
+                                );
+
+                                // Build CAS URL for LoaderVersion
+                                let base_url = dotenvy::var("BASE_URL").unwrap();
+                                let cas_url = format!(
+                                    "{}/v{}/objects/{}/{}",
+                                    base_url,
+                                    crate::services::cas::CAS_VERSION,
+                                    &version_hash[..2],
+                                    &version_hash[2..]
+                                );
 
                                 return Ok(Some(LoaderVersion {
                                     id: loader_version_full,
-                                    url: format_url(&version_path),
+                                    url: cas_url,
                                     stable: false
                                 }));
                             }
@@ -309,17 +369,40 @@ pub async fn retrieve_data(
                         let len = loaders_futures.len();
                         let mut versions = loaders_futures.into_iter().peekable();
                         let mut chunk_index = 0;
+                        let mut successful = 0;
+                        let mut failed = 0;
+
                         while versions.peek().is_some() {
                             let now = Instant::now();
 
                             let chunk: Vec<_> = versions.by_ref().take(1).collect();
-                            let res = futures::future::try_join_all(chunk).await?;
-                            loaders_versions.extend(res.into_iter().flatten());
+
+                            // Process each version and handle errors individually
+                            for future in chunk {
+                                match future.await {
+                                    Ok(result) => {
+                                        if let Some(version) = result {
+                                            loaders_versions.push(version);
+                                            successful += 1;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("⚠️  NeoForge - Failed to process version: {}", e);
+                                        failed += 1;
+                                        // Continue processing other versions
+                                    }
+                                }
+                            }
 
                             chunk_index += 1;
 
                             let elapsed = now.elapsed();
-                            info!("Loader Chunk {}/{len} Elapsed: {:.2?}", chunk_index, elapsed);
+                            info!("Loader Chunk {}/{len} Elapsed: {:.2?} ({} succeeded, {} failed)",
+                                chunk_index, elapsed, successful, failed);
+                        }
+
+                        if failed > 0 {
+                            warn!("⚠️  NeoForge - Skipped {} versions due to errors, {} succeeded", failed, successful);
                         }
                     }
                 }
@@ -330,32 +413,91 @@ pub async fn retrieve_data(
                     loaders: loaders_versions
                 });
 
-                Ok::<(), anyhow::Error>(())
+                Ok::<(), crate::infrastructure::error::Error>(())
             });
         }
     }
+
+    info!("📊 NeoForge - Processing {} versions ({} skipped, {} to process)",
+        total_versions, skipped_existing, total_versions - skipped_existing);
 
     {
         let len = version_futures.len();
         let mut versions = version_futures.into_iter().peekable();
         let mut chunk_index = 0;
+        let mut successful_mc_versions = 0;
+        let mut failed_mc_versions = 0;
+
         while versions.peek().is_some() {
             let now = Instant::now();
 
             let chunk: Vec<_> = versions.by_ref().take(1).collect();
-            futures::future::try_join_all(chunk).await?;
+
+            // Process each Minecraft version and handle errors individually
+            for future in chunk {
+                match future.await {
+                    Ok(()) => {
+                        successful_mc_versions += 1;
+                    }
+                    Err(e) => {
+                        warn!("⚠️  NeoForge - Failed to process Minecraft version: {}", e);
+                        failed_mc_versions += 1;
+                        // Continue processing other Minecraft versions
+                    }
+                }
+            }
 
             chunk_index += 1;
 
             let elapsed = now.elapsed();
-            info!("Chunk {}/{len} Elapsed: {:.2?}", chunk_index, elapsed);
+            info!("Chunk {}/{len} Elapsed: {:.2?} ({} MC versions succeeded, {} failed)",
+                chunk_index, elapsed, successful_mc_versions, failed_mc_versions);
+        }
+
+        if failed_mc_versions > 0 {
+            warn!("⚠️  NeoForge - {} Minecraft versions failed to process, {} succeeded",
+                failed_mc_versions, successful_mc_versions);
         }
     }
 
     if let Ok(versions) = Arc::try_unwrap(versions) {
-        let mut versions = versions.into_inner();
+        let new_versions = versions.into_inner();
 
-        versions.sort_by(|x, y| {
+        // Get old versions for merging
+        let old_manifest_versions = if let Ok(old_versions) = Arc::try_unwrap(old_versions) {
+            old_versions.into_inner()
+        } else {
+            Vec::new()
+        };
+
+        // Merge new versions with old ones: keep old versions + add/update new ones
+        let mut final_versions = old_manifest_versions;
+
+        for new_version in new_versions {
+            // Find if this Minecraft version already exists
+            if let Some(existing) = final_versions.iter_mut().find(|v| v.id == new_version.id) {
+                // Merge loaders: keep old loaders + add/update new ones
+                for new_loader in new_version.loaders {
+                    if let Some(existing_loader) = existing.loaders.iter_mut().find(|l| l.id == new_loader.id) {
+                        // Update existing loader
+                        let loader_id = new_loader.id.clone();
+                        *existing_loader = new_loader;
+                        info!("✅ NeoForge - Updated loader: {}/{}", existing.id, loader_id);
+                    } else {
+                        // Add new loader
+                        info!("✅ NeoForge - Added new loader: {}/{}", existing.id, new_loader.id);
+                        existing.loaders.push(new_loader);
+                    }
+                }
+            } else {
+                // Add new Minecraft version
+                info!("✅ NeoForge - Added new Minecraft version: {}", new_version.id);
+                final_versions.push(new_version);
+            }
+        }
+
+        // Sort by Minecraft version order
+        final_versions.sort_by(|x, y| {
             minecraft_versions
                 .versions
                 .iter()
@@ -370,7 +512,8 @@ pub async fn retrieve_data(
                 )
         });
 
-        for version in &mut versions {
+        // Sort loaders within each version
+        for version in &mut final_versions {
             let loader_versions = maven_metadata.get(&version.id);
             if let Some(loader_versions) = loader_versions {
                 version.loaders.sort_by(|x, y| {
@@ -388,23 +531,13 @@ pub async fn retrieve_data(
             }
         }
 
-        upload_file_to_bucket(
-            format!(
-                "neoforge/v{}/manifest.json",
-                daedalus::modded::CURRENT_NEOFORGE_FORMAT_VERSION,
-            ),
-            serde_json::to_vec(&Manifest {
-                game_versions: versions,
-            })?,
-            Some("application/json".to_string()),
-            uploaded_files_mutex.as_ref(),
-            semaphore,
-        )
-        .await?;
-    }
+        // Note: Versions are now tracked in ManifestBuilder and uploaded separately
+        // in the main loop via manifest_builder.build_loader_manifest()
 
-    if let Ok(uploaded_files_mutex) = Arc::try_unwrap(uploaded_files_mutex) {
-        uploaded_files.extend(uploaded_files_mutex.into_inner());
+        info!(
+            "✅ NeoForge - Processed {} Minecraft versions",
+            final_versions.len()
+        );
     }
 
     Ok(())
@@ -432,11 +565,11 @@ struct Versions {
 
 pub async fn fetch_maven_metadata(
     semaphore: Arc<Semaphore>,
-) -> Result<HashMap<String, Vec<(String, bool)>>, anyhow::Error> {
+) -> Result<HashMap<String, Vec<(String, bool)>>, crate::infrastructure::error::Error> {
     async fn fetch_values(
         url: &str,
         semaphore: Arc<Semaphore>,
-    ) -> Result<Metadata, anyhow::Error> {
+    ) -> Result<Metadata, crate::infrastructure::error::Error> {
         Ok(serde_xml_rs::from_str(
             &String::from_utf8(
                 download_file(url, None, semaphore).await?.to_vec(),
@@ -458,7 +591,7 @@ pub async fn fetch_maven_metadata(
                           value.contains("-rc");
 
         if is_snapshot {
-            log::info!("Skipping snapshot version: {}", value);
+            info!("Skipping snapshot version: {}", value);
             continue;
         }
         let original = value.clone();
@@ -477,10 +610,10 @@ pub async fn fetch_maven_metadata(
                           value.contains("-rc");
 
         if is_snapshot {
-            log::info!("Skipping snapshot version: {}", value);
+            info!("Skipping snapshot version: {}", value);
             continue;
         }
-        
+
         let original = value.clone();
 
         let mut parts = value.split('.');

@@ -1,6 +1,7 @@
 use crate::download_file;
-use crate::{format_url, upload_file_to_bucket};
-use anyhow::bail;
+use crate::format_url;
+use crate::services::upload::UploadQueue;
+use dashmap::DashSet;
 use daedalus::minecraft::{
     merge_partial_library, Dependency, DependencyRule, JavaVersion, LWJGLEntry,
     Library, LibraryDownload, LibraryDownloads, LibraryGroup,
@@ -8,7 +9,7 @@ use daedalus::minecraft::{
     VersionManifest, VersionType,
 };
 use daedalus::{get_hash, GradleSpecifier};
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
@@ -64,7 +65,7 @@ fn patch_library(
 fn process_single_lwjgl_variant(
     variant: &LibraryGroup,
     patches: &Vec<LibraryPatch>,
-) -> Result<Option<(String, LibraryGroup)>, anyhow::Error> {
+) -> Result<Option<(String, LibraryGroup)>, crate::infrastructure::error::Error> {
     let lwjgl_version = variant.version.clone();
 
     info!("Processing LWJGL variant {}", lwjgl_version);
@@ -102,8 +103,6 @@ fn process_single_lwjgl_variant(
             rule: None,
         }]);
 
-        // remove jutils and jinput from LWJGL 3
-        // this is a dependency that Mojang kept in, but doesn't belong there anymore
         let unneeded: HashSet<&str> =
             vec!["jutils", "jinput"].into_iter().collect();
         let filtered_libs = lwjgl
@@ -119,7 +118,7 @@ fn process_single_lwjgl_variant(
             lwjgl_version
         )
     } else {
-        bail!("Unknown LWJGL version {}", lwjgl_version);
+        return Err(crate::infrastructure::error::invalid_input(format!("Unknown LWJGL version {}", lwjgl_version)));
     };
 
     let mut good = true;
@@ -172,16 +171,14 @@ fn process_single_lwjgl_variant(
 /// Patch CVE-2021-44228, CVE-2021-44832, CVE-2021-45046
 fn map_log4j_artifact(
     version: &str,
-) -> Result<Option<(String, String)>, anyhow::Error> {
+) -> Result<Option<(String, String)>, crate::infrastructure::error::Error> {
     debug!("log4j version: {}", version);
     let x = lenient_semver::parse(version);
     if x <= lenient_semver::parse("2.0") {
-        // all versions below 2.0 (including beta9 and rc2) use a patch from cdn
         debug!("log4j use beta9 patch");
         return Ok(Some(("2.0-beta9-fixed".to_string(), format_url("maven/"))));
     }
-    if x <= lenient_semver::parse("2.17.1") {
-        // CVE-2021-44832 fixed in 2.17.1
+    if x < lenient_semver::parse("2.17.1") {
         debug!("bump log4j to 2.17.1");
         return Ok(Some((
             "2.17.1".to_string(),
@@ -193,13 +190,14 @@ fn map_log4j_artifact(
 }
 
 pub async fn retrieve_data(
-    uploaded_files: &mut Vec<String>,
+    upload_queue: &UploadQueue,
+    manifest_builder: &crate::services::cas::ManifestBuilder,
     semaphore: Arc<Semaphore>,
     is_first_run: bool,
-) -> Result<VersionManifest, anyhow::Error> {
+) -> Result<VersionManifest, crate::infrastructure::error::Error> {
 
 
-    log::info!("Retrieving Minecraft data ... IS_FIRST_TIME: {}", is_first_run);
+    info!(is_first_run = is_first_run, "Retrieving Minecraft data");
 
     // TODO: Old manifest doesn't take LWJGL meta into account
     let old_manifest = if is_first_run {
@@ -225,10 +223,7 @@ pub async fn retrieve_data(
 
     let lwjgl_config = get_lwjgl_config().await?;
 
-    let visited_assets_mutex = Arc::new(Mutex::new(Vec::new()));
-    let uploaded_files_mutex = Arc::new(Mutex::new(Vec::new()));
-
-    // collections of seen lwjgl versions
+    let visited_assets = Arc::new(DashSet::new());
 
     let lwjgl_version_variants_mutex: Arc<
         Mutex<BTreeMap<String, Vec<LWJGLEntry>>>,
@@ -305,9 +300,8 @@ pub async fn retrieve_data(
                 }
             }
 
-            let visited_assets_mutex = Arc::clone(&visited_assets_mutex);
+            let visited_assets = Arc::clone(&visited_assets);
             let cloned_manifest_mutex = Arc::clone(&cloned_manifest);
-            let uploaded_files_mutex = Arc::clone(&uploaded_files_mutex);
             let semaphore = Arc::clone(&semaphore);
             let patches = Arc::clone(&cloned_patches);
 
@@ -317,8 +311,6 @@ pub async fn retrieve_data(
                 old_version.and_then(|x| x.assets_index_sha1.clone());
 
             async move {
-                let mut upload_futures = Vec::new();
-
                 let mut version_info =
                     daedalus::minecraft::fetch_version_info(version).await?;
 
@@ -327,7 +319,7 @@ pub async fn retrieve_data(
                 }
 
                 fn version_has_split_natives(ver: &VersionInfo) -> bool {
-                    ver.libraries.iter().any(|lib| lib_is_split_natives(lib))
+                    ver.libraries.iter().any(lib_is_split_natives)
                 }
 
                 fn is_macos_only(rules: &Option<Vec<Rule>>) -> bool {
@@ -383,7 +375,6 @@ pub async fn retrieve_data(
                                 info!("Candidate library {} is only for macOS and is therefore ignored", spec);
                                 continue;
                             }
-                            // NOTE: Prism does macos only lib exclusion here
                             if spec.package == "org.lwjgl.lwjgl" && spec.artifact == "lwjgl" {
                                 Some(spec.version.clone())
                             } else if spec.package == "org.lwjgl" && spec.artifact == "lwjgl" {
@@ -441,7 +432,7 @@ pub async fn retrieve_data(
                                             Ok(("677991ea2d7426f76309a73739cecf609679492c", 677588))
                                         }
                                         _ => {
-                                            Err(anyhow::anyhow!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override))
+                                            Err(crate::infrastructure::error::invalid_input(format!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override)))
                                         }
                                     }
                                 }
@@ -457,12 +448,12 @@ pub async fn retrieve_data(
                                             Ok(("ca499d751f4ddd8afb016ef698c30be0da1d09f7", 21268))
                                         }
                                         _ => {
-                                            Err(anyhow::anyhow!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override))
+                                            Err(crate::infrastructure::error::invalid_input(format!("Unhandled log4j artifact {} for overridden version {}", spec.artifact, version_override)))
                                         }
                                     }
                                 }
                                 _ => {
-                                    Err(anyhow::anyhow!("Unhandled log4j version {}", version_override))
+                                    Err(crate::infrastructure::error::invalid_input(format!("Unhandled log4j version {}", version_override)))
                                 }
                             }?;
                             let artifact = LibraryDownload {
@@ -514,7 +505,6 @@ pub async fn retrieve_data(
                         add_lwjgl_version(lwjgl_version_variants_mutex.clone(), lwjgl).await;
                         info!("Found candidate LWJGL {:?} {:?}", lwjgl.version, key);
                     }
-                    // remove the common bucket
                     lwjgl_buckets.remove(&None);
                 }
 
@@ -528,13 +518,13 @@ pub async fn retrieve_data(
                     }
                 } else {
                     let bad_versions: HashSet<&str> = vec!["3.1.6", "3.2.1"].into_iter().collect();
-                    let our_versions: HashSet<&str> = lwjgl_buckets.values().into_iter().map(|lwjgl| lwjgl.version.as_str()).collect();
+                    let our_versions: HashSet<&str> = lwjgl_buckets.values().map(|lwjgl| lwjgl.version.as_str()).collect();
 
                     if our_versions == bad_versions {
                         info!("Found broken 3.1.6/3.2.1 LWJGL combo in version {} , forcing LWJGL. 3.2.1", &version_info.id);
                         Ok("3.2.1".to_string())
                     } else {
-                        Err(anyhow::anyhow!("Can not determine a single suggested LWJGL version in version {} from among {:?}", &version_info.id, our_versions))
+                        Err(crate::infrastructure::error::invalid_input(format!("Can not determine a single suggested LWJGL version in version {} from among {:?}", &version_info.id, our_versions)))
                     }
 
                 }?;
@@ -662,22 +652,13 @@ pub async fn retrieve_data(
 
                 let mut download_assets = false;
 
-                {
-                    let mut visited_assets = visited_assets_mutex.lock().await;
-
-                    if !visited_assets.contains(&version_info.asset_index.id) {
-                        if let Some(assets_hash) = assets_hash {
-                            if version_info.asset_index.sha1 != assets_hash {
-                                download_assets = true;
-                            }
-                        } else {
+                if visited_assets.insert(version_info.asset_index.id.clone()) {
+                    if let Some(assets_hash) = assets_hash {
+                        if version_info.asset_index.sha1 != assets_hash {
                             download_assets = true;
                         }
-                    }
-
-                    if download_assets {
-                        visited_assets
-                            .push(version_info.asset_index.id.clone());
+                    } else {
+                        download_assets = true;
                     }
                 }
 
@@ -689,62 +670,79 @@ pub async fn retrieve_data(
                     )
                     .await?;
 
-                    {
-                        upload_futures.push(upload_file_to_bucket(
-                            assets_path,
-                            assets_index.to_vec(),
-                            Some("application/json".to_string()),
-                            uploaded_files_mutex.as_ref(),
-                            semaphore.clone(),
-                        ));
-                    }
-                }
-
-                {
-                    upload_futures.push(upload_file_to_bucket(
-                        version_path,
-                        serde_json::to_vec(&version_info)?,
+                    let asset_bytes = assets_index.to_vec();
+                    let asset_hash = upload_queue.enqueue(
+                        asset_bytes.clone(),
                         Some("application/json".to_string()),
-                        uploaded_files_mutex.as_ref(),
-                        semaphore.clone(),
-                    ));
+                    );
+
+                    let base_url = dotenvy::var("BASE_URL").unwrap();
+                    version_info.asset_index.url = format!(
+                        "{}/v{}/objects/{}/{}",
+                        base_url,
+                        crate::services::cas::CAS_VERSION,
+                        &asset_hash[..2],
+                        &asset_hash[2..]
+                    );
                 }
 
-                futures::future::try_join_all(upload_futures).await?;
+                let version_bytes = serde_json::to_vec(&version_info)?;
+                let version_hash = upload_queue.enqueue(
+                    version_bytes.clone(),
+                    Some("application/json".to_string()),
+                );
 
-                Ok::<(), anyhow::Error>(())
+                manifest_builder.add_version(
+                    "minecraft",
+                    version_info.id.clone(),
+                    version_hash,
+                    version_bytes.len() as u64,
+                );
+
+                Ok::<(), crate::infrastructure::error::Error>(())
             }
             .await?;
 
-            Ok::<(), anyhow::Error>(())
+            Ok::<(), crate::infrastructure::error::Error>(())
         })
     }
 
     {
         let mut versions = version_futures.into_iter().peekable();
         let mut chunk_index = 0;
+        let mut successful = 0;
+        let mut failed = 0;
+
         while versions.peek().is_some() {
             let now = Instant::now();
 
             let chunk: Vec<_> = versions.by_ref().take(100).collect();
-            futures::future::try_join_all(chunk).await?;
+
+            for future in chunk {
+                match future.await {
+                    Ok(_) => {
+                        successful += 1;
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Minecraft - Failed to process version: {}", e);
+                        failed += 1;
+                    }
+                }
+            }
 
             chunk_index += 1;
 
             let elapsed = now.elapsed();
-            info!("Chunk {} Elapsed: {:.2?}", chunk_index, elapsed);
+            info!("Chunk {} Elapsed: {:.2?} (✓ {} ✗ {})", chunk_index, elapsed, successful, failed);
         }
+
+        info!("📊 Minecraft - Processing complete: {} successful, {} failed", successful, failed);
     }
     //futures::future::try_join_all(version_futures).await?;
 
     {
-        debug!("waiting for lock on lwjgl version mutex");
         let lwjgl_version_variants = lwjgl_version_variants_mutex.lock().await;
 
-        // info!(
-        //     "Processing LWJGL variants ... {:#?}",
-        //     lwjgl_version_variants
-        // );
         info!("Processing LWJGL variants");
         for (lwjgl_version_variant, lwjgl_variant_entries) in
             lwjgl_version_variants.iter()
@@ -781,7 +779,6 @@ pub async fn retrieve_data(
                     continue;
                 }
 
-                // print natives data to decide which  variant to use
                 let natives = variant
                     .group
                     .libraries
@@ -823,8 +820,6 @@ pub async fn retrieve_data(
                 unknown_variants += 1;
             }
 
-            let uploaded_files_mutex = Arc::clone(&uploaded_files_mutex);
-            let semaphore = Arc::clone(&semaphore);
             let patches = Arc::clone(&cloned_patches);
 
             async move {
@@ -834,16 +829,28 @@ pub async fn retrieve_data(
                     && unknown_variants == 0
                 {
                     if let Some((lwjgl_path, lwjgl)) = process_single_lwjgl_variant(&decided_variant.expect("Unwrap to be safe inside is_some").group, &patches)? {
-                        {
-                            debug!("Uploading {}", lwjgl_path);
-                            upload_file_to_bucket(
-                                lwjgl_path,
-                                serde_json::to_vec(&lwjgl)?,
-                                Some("application/json".to_string()),
-                                uploaded_files_mutex.as_ref(),
-                                semaphore.clone(),
-                            ).await?;
-                        }
+                        debug!("Uploading {}", lwjgl_path);
+
+                        let lwjgl_bytes = serde_json::to_vec(&lwjgl)?;
+                        let lwjgl_hash = upload_queue.enqueue(
+                            lwjgl_bytes.clone(),
+                            Some("application/json".to_string()),
+                        );
+
+                        let loader = if lwjgl.version.starts_with("2") {
+                            "minecraft-lwjgl2"
+                        } else if lwjgl.version.starts_with("3") {
+                            "minecraft-lwjgl3"
+                        } else {
+                            return Err(crate::infrastructure::error::invalid_input(format!("Unknown LWJGL version {}", lwjgl.version)));
+                        };
+
+                        manifest_builder.add_version(
+                            loader,
+                            lwjgl.version.clone(),
+                            lwjgl_hash,
+                            lwjgl_bytes.len() as u64,
+                        );
 
                     } else {
                         info!("Skipped LWJGL {}", &decided_variant.expect("Unwrap to be safe inside is_some").group.version);
@@ -860,26 +867,10 @@ pub async fn retrieve_data(
                     error!("No variant decided for version {} of out {} possible and {} unknown", lwjgl_version_variant, accepted_variants, unknown_variants);
                 }
 
-                Ok::<(), anyhow::Error>(())
+                Ok::<(), crate::infrastructure::error::Error>(())
             }
             .await?
         }
-    }
-
-    upload_file_to_bucket(
-        format!(
-            "minecraft/v{}/manifest.json",
-            daedalus::minecraft::CURRENT_FORMAT_VERSION
-        ),
-        serde_json::to_vec(&*cloned_manifest.lock().await)?,
-        Some("application/json".to_string()),
-        uploaded_files_mutex.as_ref(),
-        semaphore,
-    )
-    .await?;
-
-    if let Ok(uploaded_files_mutex) = Arc::try_unwrap(uploaded_files_mutex) {
-        uploaded_files.extend(uploaded_files_mutex.into_inner());
     }
 
     let elapsed = now.elapsed();
@@ -887,9 +878,8 @@ pub async fn retrieve_data(
 
     Ok(Arc::try_unwrap(cloned_manifest)
         .map_err(|err| {
-            anyhow::anyhow!(
-                "Failed to unwrap Arc<Mutex<VersionManifest>>: {:?}",
-                err
+            crate::infrastructure::error::invalid_input(
+                format!("Failed to unwrap Arc<Mutex<VersionManifest>>: {:?}", err)
             )
         })?
         .into_inner())
@@ -910,7 +900,7 @@ struct LibraryPatch {
 }
 
 /// Fetches the list of library patches
-async fn get_library_patches() -> Result<Vec<LibraryPatch>, anyhow::Error> {
+async fn get_library_patches() -> Result<Vec<LibraryPatch>, crate::infrastructure::error::Error> {
     let patches = include_bytes!("../patched-library-patches.json");
     let unprocessed_patches: Vec<LibraryPatch> =
         serde_json::from_slice(patches)?;
@@ -919,7 +909,7 @@ async fn get_library_patches() -> Result<Vec<LibraryPatch>, anyhow::Error> {
 
 fn pre_process_patch(patch: &LibraryPatch) -> LibraryPatch {
     fn patch_url(url: &mut String) {
-        *url = url.replace("${BASE_URL}", &*dotenvy::var("BASE_URL").unwrap());
+        *url = url.replace("${BASE_URL}", &dotenvy::var("BASE_URL").unwrap());
     }
 
     fn patch_downloads(downloads: &mut LibraryDownloads) {
@@ -974,7 +964,79 @@ pub struct LWJGLVariantConfig {
 }
 
 /// Fetches
-async fn get_lwjgl_config() -> Result<LWJGLVariantConfig, anyhow::Error> {
+async fn get_lwjgl_config() -> Result<LWJGLVariantConfig, crate::infrastructure::error::Error> {
     let config = include_bytes!("../lwjgl-config.json");
     Ok(serde_json::from_slice(config)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lenient_semver_comparison() {
+        // Test basic version comparisons
+        assert!(lenient_semver::parse("1.0.0") < lenient_semver::parse("2.0.0"));
+        assert!(lenient_semver::parse("2.0.0") > lenient_semver::parse("1.0.0"));
+        assert!(lenient_semver::parse("2.0.0") == lenient_semver::parse("2.0.0"));
+
+        // Test beta/pre-release versions (critical for Log4j patching)
+        assert!(lenient_semver::parse("2.0-beta9") <= lenient_semver::parse("2.0"));
+        assert!(lenient_semver::parse("2.0-beta9") < lenient_semver::parse("2.1.0"));
+        assert!(lenient_semver::parse("2.0-rc2") <= lenient_semver::parse("2.0"));
+
+        // Test Log4j security threshold (CVE-2021-44832 fixed in 2.17.1)
+        assert!(lenient_semver::parse("2.0") <= lenient_semver::parse("2.17.1"));
+        assert!(lenient_semver::parse("2.15.0") <= lenient_semver::parse("2.17.1"));
+        assert!(lenient_semver::parse("2.16.0") <= lenient_semver::parse("2.17.1"));
+        assert!(lenient_semver::parse("2.17.0") <= lenient_semver::parse("2.17.1"));
+        assert!(lenient_semver::parse("2.17.1") <= lenient_semver::parse("2.17.1"));
+        assert!(lenient_semver::parse("2.18.0") > lenient_semver::parse("2.17.1"));
+
+        // Test actual Log4j versions that have been patched
+        assert!(lenient_semver::parse("2.0-beta9") <= lenient_semver::parse("2.0"));
+        assert!(lenient_semver::parse("2.12.1") <= lenient_semver::parse("2.17.1"));
+        assert!(lenient_semver::parse("2.14.1") <= lenient_semver::parse("2.17.1"));
+    }
+
+    #[test]
+    fn test_log4j_artifact_mapping() {
+        // Test versions below 2.0 (should use beta9 patch)
+        let result = map_log4j_artifact("1.2.17").unwrap();
+        assert!(result.is_some());
+        let (version, _url) = result.unwrap();
+        assert_eq!(version, "2.0-beta9-fixed");
+
+        let result = map_log4j_artifact("2.0-beta9").unwrap();
+        assert!(result.is_some());
+        let (version, _url) = result.unwrap();
+        assert_eq!(version, "2.0-beta9-fixed");
+
+        // Test versions between 2.0 and 2.17.1 (should bump to 2.17.1)
+        let result = map_log4j_artifact("2.12.1").unwrap();
+        assert!(result.is_some());
+        let (version, url) = result.unwrap();
+        assert_eq!(version, "2.17.1");
+        assert_eq!(url, "https://repo1.maven.org/maven2/");
+
+        let result = map_log4j_artifact("2.15.0").unwrap();
+        assert!(result.is_some());
+        let (version, _url) = result.unwrap();
+        assert_eq!(version, "2.17.1");
+
+        let result = map_log4j_artifact("2.17.0").unwrap();
+        assert!(result.is_some());
+        let (version, _url) = result.unwrap();
+        assert_eq!(version, "2.17.1");
+
+        // Test versions at or above 2.17.1 (no patching needed)
+        let result = map_log4j_artifact("2.17.1").unwrap();
+        assert!(result.is_none());
+
+        let result = map_log4j_artifact("2.18.0").unwrap();
+        assert!(result.is_none());
+
+        let result = map_log4j_artifact("2.19.0").unwrap();
+        assert!(result.is_none());
+    }
 }

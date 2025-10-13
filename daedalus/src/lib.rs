@@ -6,7 +6,7 @@
 
 use std::{
     cmp::Ordering, convert::TryFrom, fmt::Display, path::PathBuf, str::FromStr,
-    time::Duration,
+    sync::LazyLock, time::Duration,
 };
 
 use backon::{ExponentialBuilder, Retryable};
@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 pub mod minecraft;
 /// Models and methods for fetching metadata for Minecraft mod loaders
 pub mod modded;
+/// Custom version comparison for Minecraft versions
+pub mod version;
 
 /// Your branding, used for the user agent and similar
 #[derive(Debug)]
@@ -29,6 +31,25 @@ pub struct Branding {
 
 /// The branding of your application
 pub static BRANDING: OnceCell<Branding> = OnceCell::new();
+
+/// Global HTTP client with connection pooling and TCP keepalive
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(header) = reqwest::header::HeaderValue::from_str(
+        &BRANDING.get_or_init(Branding::default).header_value,
+    ) {
+        headers.insert(reqwest::header::USER_AGENT, header);
+    }
+
+    reqwest::Client::builder()
+        .tcp_keepalive(Some(Duration::from_secs(10)))
+        .timeout(Duration::from_secs(120))
+        .connect_timeout(Duration::from_secs(30))
+        .default_headers(headers)
+        .pool_max_idle_per_host(10)
+        .build()
+        .expect("Failed to create HTTP client")
+});
 
 impl Branding {
     /// Creates a new branding instance
@@ -366,24 +387,8 @@ pub async fn download_file(
     url: &str,
     sha1: Option<&str>,
 ) -> Result<bytes::Bytes, Error> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Ok(header) = reqwest::header::HeaderValue::from_str(
-        &BRANDING.get_or_init(Branding::default).header_value,
-    ) {
-        headers.insert(reqwest::header::USER_AGENT, header);
-    }
-    let client = reqwest::Client::builder()
-        .tcp_keepalive(Some(std::time::Duration::from_secs(10)))
-        .timeout(std::time::Duration::from_secs(15))
-        .default_headers(headers)
-        .build()
-        .map_err(|err| Error::FetchError {
-            inner: err,
-            item: url.to_string(),
-        })?;
-
     (|| async {
-        let result = client.get(url).send().await;
+        let result = HTTP_CLIENT.get(url).send().await;
 
         match result {
             Ok(x) => {
