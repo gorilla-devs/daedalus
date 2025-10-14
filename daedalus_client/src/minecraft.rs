@@ -641,9 +641,7 @@ pub async fn retrieve_data(
                                         .expect("Safe to unwrap since we ensure it's valid in version_json already")
                                 }),
                                 compliance_level: 1,
-                                assets_index_url: Some(
-                                    version_info.asset_index.sha1.clone(),
-                                ),
+                                assets_index_url: Some(format_url(&assets_path)),
                                 assets_index_sha1: Some(
                                     version_info.asset_index.sha1.clone(),
                                 ),
@@ -691,19 +689,16 @@ pub async fn retrieve_data(
                 }
 
                 let version_bytes = serde_json::to_vec(&version_info)?;
-                let version_hash = uploader.upload_cas(
+                let _version_hash = uploader.upload_cas(
                     version_bytes.clone(),
                     Some("application/json".to_string()),
                     s3_client,
                     semaphore.clone(),
                 ).await?;
 
-                manifest_builder.add_version(
-                    "minecraft",
-                    version_info.id.clone(),
-                    version_hash,
-                    version_bytes.len() as u64,
-                );
+                // NOTE: We don't call manifest_builder.add_version() for minecraft here.
+                // Instead, we use set_loader_versions() with the full VersionManifest at the end
+                // to preserve rich metadata (type, url, time, releaseTime, sha1, etc.)
 
                 Ok::<(), crate::infrastructure::error::Error>(())
             }
@@ -861,6 +856,7 @@ pub async fn retrieve_data(
                             lwjgl.version.clone(),
                             lwjgl_hash,
                             lwjgl_bytes.len() as u64,
+                            lwjgl.release_time,
                         );
 
                     } else {
@@ -887,13 +883,22 @@ pub async fn retrieve_data(
     let elapsed = now.elapsed();
     info!("Elapsed: {:.2?}", elapsed);
 
-    Ok(Arc::try_unwrap(cloned_manifest)
+    // Get the final manifest with all processed versions
+    let final_manifest = Arc::try_unwrap(cloned_manifest)
         .map_err(|err| {
             crate::infrastructure::error::invalid_input(
                 format!("Failed to unwrap Arc<Mutex<VersionManifest>>: {:?}", err)
             )
         })?
-        .into_inner())
+        .into_inner();
+
+    // Set the full Minecraft versions JSON in manifest_builder
+    // This preserves rich metadata (type, url, time, releaseTime, sha1, complianceLevel, etc.)
+    let versions_json = serde_json::to_value(&final_manifest.versions)?;
+    manifest_builder.set_loader_versions("minecraft", versions_json);
+    info!(version_count = final_manifest.versions.len(), "Set Minecraft versions with rich metadata in CAS manifest builder");
+
+    Ok(final_manifest)
 }
 
 #[derive(Deserialize, Debug, Clone)]

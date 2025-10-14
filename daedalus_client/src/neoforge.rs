@@ -368,13 +368,6 @@ pub async fn retrieve_data(
                                     new_hash.clone()
                                 };
 
-                                manifest_builder.add_version(
-                                    "neoforge",
-                                    loader_version_full.to_string(),
-                                    version_hash.clone(),
-                                    version_bytes.len() as u64,
-                                );
-
                                 let base_url = dotenvy::var("BASE_URL").unwrap();
                                 let cas_url = format!(
                                     "{}/v{}/objects/{}/{}",
@@ -558,13 +551,11 @@ pub async fn retrieve_data(
             }
         }
 
-        // Note: Versions are now tracked in ManifestBuilder and uploaded separately
-        // in the main loop via manifest_builder.build_loader_manifest()
-
-        info!(
-            "✅ NeoForge - Processed {} Minecraft versions",
-            final_versions.len()
-        );
+        // Set the full NeoForge versions JSON in manifest_builder with nested structure
+        // This preserves game version -> loader version mappings
+        let versions_json = serde_json::to_value(&final_versions)?;
+        manifest_builder.set_loader_versions("neoforge", versions_json);
+        info!(version_count = final_versions.len(), "Set NeoForge versions with nested structure in CAS manifest builder");
     }
 
     Ok(())

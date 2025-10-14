@@ -20,17 +20,25 @@ pub enum MinecraftVersion {
     /// Snapshot version (YYwWWx format)
     /// Example: 23w10a = year 23, week 10, revision a
     Snapshot {
+        /// Year (e.g., 23 for 2023)
         year: u32,
+        /// Week number (1-52)
         week: u32,
+        /// Revision letter (e.g., "a", "b")
         revision: String,
     },
     /// Regular release version
     /// Example: 1.20.4
     Release {
+        /// Major version number
         major: u32,
+        /// Minor version number
         minor: u32,
+        /// Patch version number
         patch: u32,
+        /// Pre-release identifier (pre, rc, etc.)
         prerelease: Option<Prerelease>,
+        /// Build metadata (for Forge versions)
         build: Option<Vec<u32>>,
     },
 }

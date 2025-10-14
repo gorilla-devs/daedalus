@@ -411,13 +411,6 @@ pub async fn retrieve_data(
                                         new_hash.clone()
                                     };
 
-                                    manifest_builder.add_version(
-                                        "forge",
-                                        loader_version_full.to_string(),
-                                        version_hash.clone(),
-                                        version_bytes.len() as u64,
-                                    );
-
                                     let base_url = dotenvy::var("BASE_URL").unwrap();
                                     let cas_url = format!(
                                         "{}/v{}/objects/{}/{}",
@@ -745,13 +738,6 @@ pub async fn retrieve_data(
                                         new_hash.clone()
                                     };
 
-                                    manifest_builder.add_version(
-                                        "forge",
-                                        loader_version_full.to_string(),
-                                        version_hash.clone(),
-                                        version_bytes.len() as u64,
-                                    );
-
                                     let base_url = dotenvy::var("BASE_URL").unwrap();
                                     let cas_url = format!(
                                         "{}/v{}/objects/{}/{}",
@@ -930,6 +916,12 @@ pub async fn retrieve_data(
                 })
             }
         }
+
+        // Set the full Forge versions JSON in manifest_builder with nested structure
+        // This preserves game version -> loader version mappings
+        let versions_json = serde_json::to_value(&final_versions)?;
+        manifest_builder.set_loader_versions("forge", versions_json);
+        info!(version_count = final_versions.len(), "Set Forge versions with nested structure in CAS manifest builder");
     }
 
     Ok(())

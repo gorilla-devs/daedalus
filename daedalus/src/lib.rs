@@ -187,12 +187,10 @@ impl GradleSpecifier {
 
     /// Returns if specifier belongs to a lwjgl library
     pub fn is_lwjgl(&self) -> bool {
-        vec![
-            "org.lwjgl",
+        ["org.lwjgl",
             "org.lwjgl.lwjgl",
             "net.java.jinput",
-            "net.java.jutils",
-        ]
+            "net.java.jutils"]
         .contains(&self.package.as_str())
     }
 
@@ -379,7 +377,7 @@ pub async fn download_file_mirrors(
         }
     }
 
-    return Err(Error::MirrorsFailed("No mirrors succeeded!".to_string()));
+    Err(Error::MirrorsFailed("No mirrors succeeded!".to_string()))
 }
 
 /// Downloads a file with retry and checksum functionality

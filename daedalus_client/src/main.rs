@@ -382,7 +382,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
                                 info!(
                                     loader = %loader,
-                                    version_count = loader_manifest.versions.len(),
+                                    version_count = loader_manifest.versions.as_array().map(|a| a.len()).unwrap_or(0),
                                     path = %manifest_path,
                                     "Uploading loader manifest"
                                 );

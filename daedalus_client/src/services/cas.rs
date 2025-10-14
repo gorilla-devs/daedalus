@@ -8,7 +8,7 @@ use tracing::{info, instrument};
 ///
 /// This is the single version entrypoint for all metadata (minecraft, forge, fabric, quilt, neoforge).
 /// Old versions had individual versioning per loader, but v3+ uses a unified version.
-pub const CAS_VERSION: u32 = 3;
+pub const CAS_VERSION: u32 = 4;
 
 /// Content-Addressable Storage (CAS) system
 ///
@@ -108,13 +108,18 @@ pub struct LoaderManifestEntry {
     pub hash: String,
     /// Size of the content in bytes
     pub size: u64,
-    /// When this entry was last updated
+    /// When this version was originally released
     #[serde(with = "chrono::serde::ts_seconds")]
-    pub updated_at: DateTime<Utc>,
+    pub release_time: DateTime<Utc>,
 }
 
 /// Loader manifest containing all versions for a specific loader
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// The `versions` field is flexible and can contain different schemas per loader:
+/// - Simple loaders (forge, neoforge): Vec<LoaderManifestEntry> (id, hash, size, updated_at)
+/// - Complex loaders (minecraft): Full metadata (type, url, time, releaseTime, sha1, etc.)
+/// - Platform loaders (fabric, quilt): Custom format with game-specific versions
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LoaderManifest {
     /// Schema version for future compatibility
     pub schema_version: u32,
@@ -122,13 +127,13 @@ pub struct LoaderManifest {
     pub loader: String,
     /// Timestamp when this manifest was created (ISO 8601)
     pub timestamp: String,
-    /// All version entries
-    pub versions: Vec<LoaderManifestEntry>,
+    /// All version entries (schema varies per loader type)
+    pub versions: serde_json::Value,
 }
 
 impl LoaderManifest {
-    /// Create a new loader manifest
-    pub fn new(loader: String, versions: Vec<LoaderManifestEntry>) -> Self {
+    /// Create a new loader manifest with custom JSON for versions
+    pub fn new(loader: String, versions: serde_json::Value) -> Self {
         let timestamp = Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
         Self {
             schema_version: 1,
@@ -136,6 +141,16 @@ impl LoaderManifest {
             timestamp,
             versions,
         }
+    }
+
+    /// Create a new loader manifest from simple version entries
+    ///
+    /// This is a convenience method for simple loaders (forge, neoforge) that use
+    /// the standard LoaderManifestEntry schema (id, hash, size, updated_at).
+    pub fn from_entries(loader: String, entries: Vec<LoaderManifestEntry>) -> Self {
+        let versions = serde_json::to_value(&entries)
+            .expect("LoaderManifestEntry should always serialize to JSON");
+        Self::new(loader, versions)
     }
 }
 
@@ -165,9 +180,14 @@ impl LoaderManifest {
 /// let forge_manifest = builder.build_loader_manifest("forge");
 /// ```
 pub struct ManifestBuilder {
-    /// Map of loader name → (version_id → (hash, size))
+    /// Map of loader name → (version_id → (hash, size, release_time))
     /// Using nested DashMap for concurrent access at both levels
-    versions: DashMap<String, DashMap<String, (String, u64)>>,
+    /// Used for simple loaders (forge, neoforge) that use LoaderManifestEntry schema
+    versions: DashMap<String, DashMap<String, (String, u64, DateTime<Utc>)>>,
+
+    /// Map of loader name → custom JSON for versions
+    /// Used for complex loaders (minecraft, fabric, quilt) that provide full custom schemas
+    custom_versions: DashMap<String, serde_json::Value>,
 }
 
 impl ManifestBuilder {
@@ -175,22 +195,27 @@ impl ManifestBuilder {
     pub fn new() -> Self {
         Self {
             versions: DashMap::new(),
+            custom_versions: DashMap::new(),
         }
     }
 
-    /// Add a version entry for a specific loader
+    /// Add a version entry for a specific loader (simple mode)
+    ///
+    /// This is for simple loaders (forge, neoforge) that use the standard
+    /// LoaderManifestEntry schema (id, hash, size, release_time).
     ///
     /// If the version already exists for this loader, it will be overwritten.
     /// This is idempotent and thread-safe.
     ///
     /// # Arguments
     ///
-    /// * `loader` - Loader name (e.g., "minecraft", "forge")
-    /// * `version_id` - Version identifier (e.g., "1.20.4", "49.0.3")
+    /// * `loader` - Loader name (e.g., "forge", "neoforge")
+    /// * `version_id` - Version identifier (e.g., "49.0.3")
     /// * `hash` - SHA256 hash of the version's content
     /// * `size` - Size of the content in bytes
+    /// * `release_time` - When this version was originally released
     #[instrument(skip(self))]
-    pub fn add_version(&self, loader: &str, version_id: String, hash: String, size: u64) {
+    pub fn add_version(&self, loader: &str, version_id: String, hash: String, size: u64, release_time: DateTime<Utc>) {
         // Get or create the version map for this loader
         let loader_map = self
             .versions
@@ -198,9 +223,45 @@ impl ManifestBuilder {
             .or_default();
 
         // Add the version entry
-        loader_map.insert(version_id, (hash, size));
+        loader_map.insert(version_id, (hash, size, release_time));
 
         info!(loader = %loader, "Added version to manifest builder");
+    }
+
+    /// Set custom versions JSON for a loader (complex mode)
+    ///
+    /// This is for complex loaders (minecraft, fabric, quilt) that provide their
+    /// own custom schema with rich metadata beyond just id/hash/size.
+    ///
+    /// The entire versions array is set at once, replacing any previous data.
+    /// This is thread-safe.
+    ///
+    /// # Arguments
+    ///
+    /// * `loader` - Loader name (e.g., "minecraft", "fabric")
+    /// * `versions` - Custom JSON value containing the versions array
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use daedalus_client::services::cas::ManifestBuilder;
+    /// let builder = ManifestBuilder::new();
+    /// let minecraft_versions = serde_json::json!([
+    ///     {
+    ///         "id": "1.20.4",
+    ///         "type": "release",
+    ///         "url": "https://meta.gdl.gg/minecraft/v2/versions/1.20.4.json",
+    ///         "sha1": "abc123...",
+    ///         "releaseTime": "2023-12-07T12:00:00Z",
+    ///         // ... other fields
+    ///     }
+    /// ]);
+    /// builder.set_loader_versions("minecraft", minecraft_versions);
+    /// ```
+    #[instrument(skip(self, versions))]
+    pub fn set_loader_versions(&self, loader: &str, versions: serde_json::Value) {
+        self.custom_versions.insert(loader.to_string(), versions);
+        info!(loader = %loader, "Set custom versions JSON for loader");
     }
 
     /// Build a loader manifest from the tracked versions
@@ -208,23 +269,39 @@ impl ManifestBuilder {
     /// Creates a LoaderManifest with all versions that were added for this loader.
     /// Returns None if no versions exist for this loader.
     ///
+    /// Checks custom_versions first (for complex loaders like minecraft), then falls back
+    /// to building from simple version entries (for forge, neoforge, etc.).
+    ///
     /// # Arguments
     ///
     /// * `loader` - Loader name to build manifest for
     #[instrument(skip(self))]
     pub fn build_loader_manifest(&self, loader: &str) -> Option<LoaderManifest> {
+        // Check if we have custom versions JSON (complex loaders)
+        if let Some(custom) = self.custom_versions.get(loader) {
+            let versions_json = custom.value().clone();
+
+            info!(
+                loader = %loader,
+                "Built loader manifest from custom versions JSON"
+            );
+
+            return Some(LoaderManifest::new(loader.to_string(), versions_json));
+        }
+
+        // Fall back to building from simple version entries (forge, neoforge, etc.)
         let loader_map = self.versions.get(loader)?;
 
         // Collect all version entries
         let mut entries: Vec<LoaderManifestEntry> = loader_map
             .iter()
             .map(|entry| {
-                let (version_id, (hash, size)) = entry.pair();
+                let (version_id, (hash, size, release_time)) = entry.pair();
                 LoaderManifestEntry {
                     id: version_id.clone(),
                     hash: hash.clone(),
                     size: *size,
-                    updated_at: Utc::now(),
+                    release_time: *release_time,
                 }
             })
             .collect();
@@ -235,17 +312,26 @@ impl ManifestBuilder {
         info!(
             loader = %loader,
             version_count = entries.len(),
-            "Built loader manifest"
+            "Built loader manifest from simple entries"
         );
 
-        Some(LoaderManifest::new(loader.to_string(), entries))
+        Some(LoaderManifest::from_entries(loader.to_string(), entries))
     }
 
     /// Get list of all loaders that have versions
     ///
-    /// Returns a sorted vector of loader names.
+    /// Returns a sorted vector of loader names from both simple and custom versions.
     pub fn get_loaders(&self) -> Vec<String> {
         let mut loaders: Vec<String> = self.versions.iter().map(|e| e.key().clone()).collect();
+
+        // Add loaders from custom_versions that aren't already in the list
+        for entry in self.custom_versions.iter() {
+            let loader = entry.key().clone();
+            if !loaders.contains(&loader) {
+                loaders.push(loader);
+            }
+        }
+
         loaders.sort();
         loaders
     }
@@ -275,14 +361,20 @@ impl ManifestBuilder {
     /// # Arguments
     ///
     /// * `manifest` - The old loader manifest to load
+    #[allow(dead_code)]
     pub fn load_old_manifest(&self, manifest: &LoaderManifest) {
         let loader_map = self
             .versions
             .entry(manifest.loader.clone())
             .or_default();
 
-        for entry in &manifest.versions {
-            loader_map.insert(entry.id.clone(), (entry.hash.clone(), entry.size));
+        // Try to deserialize versions as Vec<LoaderManifestEntry>
+        // This works for simple loaders (forge, neoforge) that use the standard schema
+        // For complex loaders (minecraft), this method won't be used
+        if let Ok(entries) = serde_json::from_value::<Vec<LoaderManifestEntry>>(manifest.versions.clone()) {
+            for entry in entries {
+                loader_map.insert(entry.id.clone(), (entry.hash.clone(), entry.size, entry.release_time));
+            }
         }
     }
 
@@ -300,11 +392,12 @@ impl ManifestBuilder {
     /// * `loader` - Loader name (e.g., "minecraft", "forge")
     /// * `version_id` - Version identifier
     /// * `new_hash` - New content hash to compare
+    #[allow(dead_code)]
     pub fn has_version_changed(&self, loader: &str, version_id: &str, new_hash: &str) -> bool {
         if let Some(loader_map) = self.versions.get(loader) {
             if let Some(entry) = loader_map.get(version_id) {
                 // Version exists, check if hash changed
-                let (old_hash, _) = entry.value();
+                let (old_hash, _, _) = entry.value();
                 return old_hash.as_str() != new_hash;
             }
         }
@@ -379,7 +472,7 @@ mod tests {
             id: "1.20.4".to_string(),
             hash: "abc123".to_string(),
             size: 1024,
-            updated_at: Utc::now(),
+            release_time: Utc::now(),
         };
 
         assert_eq!(entry.id, "1.20.4");
@@ -389,32 +482,35 @@ mod tests {
 
     #[test]
     fn test_loader_manifest_creation() {
+        let release_time = Utc::now();
         let entries = vec![
             LoaderManifestEntry {
                 id: "1.20.4".to_string(),
                 hash: "abc123".to_string(),
                 size: 1024,
-                updated_at: Utc::now(),
+                release_time,
             },
             LoaderManifestEntry {
                 id: "1.20.3".to_string(),
                 hash: "def456".to_string(),
                 size: 2048,
-                updated_at: Utc::now(),
+                release_time,
             },
         ];
 
-        let manifest = LoaderManifest::new("minecraft".to_string(), entries.clone());
+        let manifest = LoaderManifest::from_entries("minecraft".to_string(), entries.clone());
 
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(manifest.loader, "minecraft");
-        assert_eq!(manifest.versions.len(), 2);
-        assert_eq!(manifest.versions[0].id, "1.20.4");
+        // versions is now serde_json::Value, so deserialize to check
+        let versions: Vec<LoaderManifestEntry> = serde_json::from_value(manifest.versions).unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].id, "1.20.4");
     }
 
     #[test]
     fn test_loader_manifest_serialization() {
-        let manifest = LoaderManifest::new("forge".to_string(), vec![]);
+        let manifest = LoaderManifest::from_entries("forge".to_string(), vec![]);
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: LoaderManifest = serde_json::from_str(&json).unwrap();
 
@@ -433,7 +529,7 @@ mod tests {
     fn test_manifest_builder_add_version() {
         let builder = ManifestBuilder::new();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, Utc::now());
 
         assert_eq!(builder.loader_count(), 1);
         assert_eq!(builder.version_count("minecraft"), 1);
@@ -442,10 +538,11 @@ mod tests {
     #[test]
     fn test_manifest_builder_multiple_loaders() {
         let builder = ManifestBuilder::new();
+        let release_time = Utc::now();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
-        builder.add_version("forge", "49.0.3".to_string(), "def456".to_string(), 2048);
-        builder.add_version("fabric", "0.15.0".to_string(), "ghi789".to_string(), 512);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, release_time);
+        builder.add_version("forge", "49.0.3".to_string(), "def456".to_string(), 2048, release_time);
+        builder.add_version("fabric", "0.15.0".to_string(), "ghi789".to_string(), 512, release_time);
 
         assert_eq!(builder.loader_count(), 3);
         assert_eq!(builder.version_count("minecraft"), 1);
@@ -459,10 +556,11 @@ mod tests {
     #[test]
     fn test_manifest_builder_multiple_versions() {
         let builder = ManifestBuilder::new();
+        let release_time = Utc::now();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
-        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048);
-        builder.add_version("minecraft", "1.20.2".to_string(), "ghi789".to_string(), 512);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, release_time);
+        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048, release_time);
+        builder.add_version("minecraft", "1.20.2".to_string(), "ghi789".to_string(), 512, release_time);
 
         assert_eq!(builder.loader_count(), 1);
         assert_eq!(builder.version_count("minecraft"), 3);
@@ -471,25 +569,29 @@ mod tests {
     #[test]
     fn test_manifest_builder_build_manifest() {
         let builder = ManifestBuilder::new();
+        let release_time = Utc::now();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
-        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, release_time);
+        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048, release_time);
 
         let manifest = builder.build_loader_manifest("minecraft").unwrap();
 
         assert_eq!(manifest.loader, "minecraft");
-        assert_eq!(manifest.versions.len(), 2);
+
+        // Deserialize versions to check them
+        let versions: Vec<LoaderManifestEntry> = serde_json::from_value(manifest.versions).unwrap();
+        assert_eq!(versions.len(), 2);
 
         // Check versions are sorted by ID
-        assert_eq!(manifest.versions[0].id, "1.20.3");
-        assert_eq!(manifest.versions[1].id, "1.20.4");
+        assert_eq!(versions[0].id, "1.20.3");
+        assert_eq!(versions[1].id, "1.20.4");
     }
 
     #[test]
     fn test_manifest_builder_nonexistent_loader() {
         let builder = ManifestBuilder::new();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, Utc::now());
 
         assert!(builder.build_loader_manifest("forge").is_none());
         assert_eq!(builder.version_count("forge"), 0);
@@ -498,16 +600,20 @@ mod tests {
     #[test]
     fn test_manifest_builder_overwrite_version() {
         let builder = ManifestBuilder::new();
+        let release_time = Utc::now();
 
         // Add same version twice with different hashes
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
-        builder.add_version("minecraft", "1.20.4".to_string(), "def456".to_string(), 2048);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, release_time);
+        builder.add_version("minecraft", "1.20.4".to_string(), "def456".to_string(), 2048, release_time);
 
         assert_eq!(builder.version_count("minecraft"), 1); // Still 1, overwritten
 
         let manifest = builder.build_loader_manifest("minecraft").unwrap();
-        assert_eq!(manifest.versions.len(), 1);
-        assert_eq!(manifest.versions[0].hash, "def456"); // Latest hash
-        assert_eq!(manifest.versions[0].size, 2048); // Latest size
+
+        // Deserialize versions to check them
+        let versions: Vec<LoaderManifestEntry> = serde_json::from_value(manifest.versions).unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].hash, "def456"); // Latest hash
+        assert_eq!(versions[0].size, 2048); // Latest size
     }
 }

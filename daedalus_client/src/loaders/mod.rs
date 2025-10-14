@@ -557,6 +557,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             loader.clone(),
             version_hash.clone(),
             version_bytes.len() as u64,
+            version_info.release_time,
         );
 
         let base_url = dotenvy::var("BASE_URL").unwrap();
