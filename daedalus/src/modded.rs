@@ -8,11 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
-#[cfg(feature = "bincode")]
-use bincode::{Decode, Encode};
 
 /// A data variable entry that depends on the side of the installation
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SidedDataEntry {
     /// The value on the client
@@ -35,7 +32,6 @@ where
         .map_err(serde::de::Error::custom)
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// A partial version returned by fabric meta
@@ -45,11 +41,9 @@ pub struct PartialVersionInfo {
     /// The version ID this partial version inherits from
     pub inherits_from: String,
     /// The time that the version was released
-    #[cfg_attr(feature = "bincode", bincode(with_serde))]
     #[serde(deserialize_with = "deserialize_date")]
     pub release_time: DateTime<Utc>,
     /// The latest time a file in this version was updated
-    #[cfg_attr(feature = "bincode", bincode(with_serde))]
     #[serde(deserialize_with = "deserialize_date")]
     pub time: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,7 +72,6 @@ pub struct PartialVersionInfo {
 }
 
 /// A processor to be ran after downloading the files
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Processor {
     /// Maven coordinates for the JAR library of this processor.
@@ -199,7 +192,6 @@ pub fn merge_partial_version(
     }
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// A manifest containing information about a mod loader's versions
@@ -208,7 +200,6 @@ pub struct Manifest {
     pub game_versions: Vec<Version>,
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 ///  A game version of Minecraft
 pub struct Version {
@@ -220,7 +211,6 @@ pub struct Version {
     pub loaders: Vec<LoaderVersion>,
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A version of a Minecraft mod loader
 pub struct LoaderVersion {

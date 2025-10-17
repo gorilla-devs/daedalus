@@ -1,5 +1,13 @@
+//! NeoForge loader processing
+//!
+//! This module handles NeoForge version retrieval and processing,
+//! using common utilities shared with other loaders.
+
+pub mod types;
+
 use crate::{download_file, format_url};
 use crate::services::upload::BatchUploader;
+use crate::common::{change_detection::detect_version_change, manifest_merge::{merge_loader_versions, sort_by_minecraft_order, sort_loaders_by_metadata}};
 use dashmap::DashSet;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{
@@ -16,6 +24,9 @@ use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
 
+// Re-export types
+pub use types::NeoForgeInstallerProfile;
+
 /// Skip list for known broken NeoForge/Forge versions
 /// These versions have permanent issues (missing files, corrupted archives, etc.)
 static NEOFORGE_SKIP_LIST: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
@@ -26,17 +37,6 @@ static NEOFORGE_SKIP_LIST: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     .into_iter()
     .collect()
 });
-
-fn extract_hash_from_cas_url(url: &str) -> Option<String> {
-    let parts: Vec<&str> = url.rsplitn(3, '/').collect();
-    if parts.len() >= 2 {
-        let hash_suffix = parts[0];
-        let hash_prefix = parts[1];
-        Some(format!("{}{}", hash_prefix, hash_suffix))
-    } else {
-        None
-    }
-}
 
 pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
@@ -87,8 +87,6 @@ pub async fn retrieve_data(
                         let visited_assets = Arc::clone(&visited_assets);
                         let semaphore = Arc::clone(&semaphore);
                         let minecraft_version = minecraft_version.clone();
-                        let uploader = uploader;
-                        let s3_client = s3_client;
 
                         async move {
                             // Check skip list first
@@ -112,7 +110,7 @@ pub async fn retrieve_data(
                                     let mut contents = String::new();
                                     install_profile.read_to_string(&mut contents)?;
 
-                                    Ok::<ForgeInstallerProfileV2, crate::infrastructure::error::Error>(serde_json::from_str::<ForgeInstallerProfileV2>(&contents)?)
+                                    Ok::<NeoForgeInstallerProfile, crate::infrastructure::error::Error>(serde_json::from_str::<NeoForgeInstallerProfile>(&contents)?)
                                 }).await??;
 
                                 let mut archive_clone = archive.clone();
@@ -221,8 +219,6 @@ pub async fn retrieve_data(
                                     let semaphore = semaphore.clone();
                                     let visited_assets = visited_assets.clone();
                                     let local_libs = local_libs.clone();
-                                    let uploader = uploader;
-                                    let s3_client = s3_client;
 
                                     async move {
                                     let artifact_path = &lib.name.path();
@@ -288,15 +284,8 @@ pub async fn retrieve_data(
                                             semaphore.clone(),
                                         ).await?;
 
-                                        // Store full CAS URL
-                                        let base_url = dotenvy::var("BASE_URL").unwrap();
-                                        let cas_url = format!(
-                                            "{}/v{}/objects/{}/{}",
-                                            base_url,
-                                            crate::services::cas::CAS_VERSION,
-                                            &hash[..2],
-                                            &hash[2..]
-                                        );
+                                        // Use common CAS URL building
+                                        let cas_url = crate::common::cas::build_cas_url(&hash);
 
                                         // Update library URL with CAS URL
                                         if let Some(ref mut downloads) = lib.downloads {
@@ -340,22 +329,14 @@ pub async fn retrieve_data(
                                         .cloned()
                                 };
 
-                                let should_upload = if let Some(old_version) = &old_loader_version {
-                                    if let Some(old_hash) = extract_hash_from_cas_url(&old_version.url) {
-                                        if old_hash == new_hash {
-                                            info!("✓ NeoForge {} unchanged (hash: {})", loader_version_full, &new_hash[..8]);
-                                            false
-                                        } else {
-                                            info!("↻ NeoForge {} changed (old: {}, new: {})", loader_version_full, &old_hash[..8], &new_hash[..8]);
-                                            true
-                                        }
-                                    } else {
-                                        true
-                                    }
-                                } else {
-                                    info!("+ NeoForge {} is new", loader_version_full);
-                                    true
-                                };
+                                // Use common change detection logic
+                                let change_result = detect_version_change(
+                                    "NeoForge",
+                                    &loader_version_full,
+                                    old_loader_version.as_ref().map(|v| v.url.as_str()),
+                                    &new_hash,
+                                );
+                                let should_upload = change_result.should_upload;
 
                                 let version_hash = if should_upload {
                                     uploader.upload_cas(
@@ -368,14 +349,8 @@ pub async fn retrieve_data(
                                     new_hash.clone()
                                 };
 
-                                let base_url = dotenvy::var("BASE_URL").unwrap();
-                                let cas_url = format!(
-                                    "{}/v{}/objects/{}/{}",
-                                    base_url,
-                                    crate::services::cas::CAS_VERSION,
-                                    &version_hash[..2],
-                                    &version_hash[2..]
-                                );
+                                // Use common CAS URL building
+                                let cas_url = crate::common::cas::build_cas_url(&version_hash);
 
                                 return Ok(Some(LoaderVersion {
                                     id: loader_version_full,
@@ -490,64 +465,21 @@ pub async fn retrieve_data(
             Vec::new()
         };
 
-        // Merge new versions with old ones: keep old versions + add/update new ones
-        let mut final_versions = old_manifest_versions;
+        // Use common version merging logic
+        let mut final_versions = merge_loader_versions(
+            old_manifest_versions,
+            new_versions,
+            "NeoForge"
+        );
 
-        for new_version in new_versions {
-            // Find if this Minecraft version already exists
-            if let Some(existing) = final_versions.iter_mut().find(|v| v.id == new_version.id) {
-                // Merge loaders: keep old loaders + add/update new ones
-                for new_loader in new_version.loaders {
-                    if let Some(existing_loader) = existing.loaders.iter_mut().find(|l| l.id == new_loader.id) {
-                        // Update existing loader
-                        let loader_id = new_loader.id.clone();
-                        *existing_loader = new_loader;
-                        info!("✅ NeoForge - Updated loader: {}/{}", existing.id, loader_id);
-                    } else {
-                        // Add new loader
-                        info!("✅ NeoForge - Added new loader: {}/{}", existing.id, new_loader.id);
-                        existing.loaders.push(new_loader);
-                    }
-                }
-            } else {
-                // Add new Minecraft version
-                info!("✅ NeoForge - Added new Minecraft version: {}", new_version.id);
-                final_versions.push(new_version);
-            }
-        }
+        // Use common sorting utilities
+        sort_by_minecraft_order(&mut final_versions, minecraft_versions);
 
-        // Sort by Minecraft version order
-        final_versions.sort_by(|x, y| {
-            minecraft_versions
-                .versions
-                .iter()
-                .position(|z| x.id == z.id)
-                .unwrap_or_default()
-                .cmp(
-                    &minecraft_versions
-                        .versions
-                        .iter()
-                        .position(|z| y.id == z.id)
-                        .unwrap_or_default(),
-                )
-        });
-
-        // Sort loaders within each version
+        // Sort loaders within each version using metadata order
         for version in &mut final_versions {
-            let loader_versions = maven_metadata.get(&version.id);
-            if let Some(loader_versions) = loader_versions {
-                version.loaders.sort_by(|x, y| {
-                    loader_versions
-                        .iter()
-                        .position(|z| y.id == z.0)
-                        .unwrap_or_default()
-                        .cmp(
-                            &loader_versions
-                                .iter()
-                                .position(|z| x.id == z.0)
-                                .unwrap_or_default(),
-                        )
-                });
+            if let Some(loader_versions) = maven_metadata.get(&version.id) {
+                let loader_order: Vec<String> = loader_versions.iter().map(|(id, _)| id.clone()).collect();
+                sort_loaders_by_metadata(version, &loader_order);
             }
         }
 
@@ -604,8 +536,8 @@ pub async fn fetch_maven_metadata(
     let mut map: HashMap<String, Vec<(String, bool)>> = HashMap::new();
 
     for value in forge_values.versioning.versions.version {
-        let is_snapshot = value.contains('w') || 
-                          value.contains("-pre") || 
+        let is_snapshot = value.contains('w') ||
+                          value.contains("-pre") ||
                           value.contains("-rc");
 
         if is_snapshot {
@@ -623,8 +555,8 @@ pub async fn fetch_maven_metadata(
     }
 
     for value in neo_values.versioning.versions.version {
-        let is_snapshot = value.contains('w') || 
-                          value.contains("-pre") || 
+        let is_snapshot = value.contains('w') ||
+                          value.contains("-pre") ||
                           value.contains("-rc");
 
         if is_snapshot {
@@ -652,17 +584,4 @@ pub async fn fetch_maven_metadata(
     }
 
     Ok(map)
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct ForgeInstallerProfileV2 {
-    pub profile: String,
-    pub version: String,
-    pub json: String,
-    pub path: Option<String>,
-    pub minecraft: String,
-    pub data: HashMap<String, SidedDataEntry>,
-    pub libraries: Vec<Library>,
-    pub processors: Vec<Processor>,
 }

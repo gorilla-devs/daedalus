@@ -20,6 +20,16 @@ pub mod modded;
 /// Custom version comparison for Minecraft versions
 pub mod version;
 
+/// HTTP client configuration constants
+/// TCP keepalive interval for persistent connections
+const TCP_KEEPALIVE_SECS: u64 = 10;
+/// Overall request timeout including reading response
+const REQUEST_TIMEOUT_SECS: u64 = 120;
+/// Connection establishment timeout
+const CONNECT_TIMEOUT_SECS: u64 = 30;
+/// Maximum idle connections per host in the pool
+const MAX_IDLE_CONNECTIONS_PER_HOST: usize = 10;
+
 /// Your branding, used for the user agent and similar
 #[derive(Debug)]
 pub struct Branding {
@@ -33,6 +43,11 @@ pub struct Branding {
 pub static BRANDING: OnceCell<Branding> = OnceCell::new();
 
 /// Global HTTP client with connection pooling and TCP keepalive
+///
+/// # Panics
+/// Panics if the HTTP client fails to initialize. This is intentional as
+/// the application cannot function without a working HTTP client (e.g., if
+/// TLS initialization fails, which is extremely rare on modern systems).
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     let mut headers = reqwest::header::HeaderMap::new();
     if let Ok(header) = reqwest::header::HeaderValue::from_str(
@@ -42,11 +57,11 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     }
 
     reqwest::Client::builder()
-        .tcp_keepalive(Some(Duration::from_secs(10)))
-        .timeout(Duration::from_secs(120))
-        .connect_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Some(Duration::from_secs(TCP_KEEPALIVE_SECS)))
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .default_headers(headers)
-        .pool_max_idle_per_host(10)
+        .pool_max_idle_per_host(MAX_IDLE_CONNECTIONS_PER_HOST)
         .build()
         .expect("Failed to create HTTP client")
 });
@@ -121,7 +136,6 @@ pub enum Error {
     MirrorsFailed(String),
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Default)]
 /// A specifier string for Gradle
 pub struct GradleSpecifier {
@@ -205,7 +219,7 @@ impl GradleSpecifier {
             "{}:{}:{}",
             self.package,
             self.artifact,
-            self.identifier.clone().unwrap_or("".to_string())
+            self.identifier.as_deref().unwrap_or("")
         )
     }
 
@@ -214,17 +228,12 @@ impl GradleSpecifier {
     /// Returns Ordering::Greater if self is greater than other
     /// Returns Ordering::Less if self is less than other
     pub fn compare_versions(&self, other: &Self) -> Result<Ordering, Error> {
-        let x = lenient_semver::parse(self.version.as_str());
-        let y = lenient_semver::parse(other.version.as_str());
+        let x = lenient_semver::parse(self.version.as_str())
+            .map_err(|_| Error::ParseError("Unable to parse version".to_string()))?;
+        let y = lenient_semver::parse(other.version.as_str())
+            .map_err(|_| Error::ParseError("Unable to parse version".to_string()))?;
 
-        if x.is_err() || y.is_err() {
-            return Err(Error::ParseError(
-                "Unable to parse version".to_string(),
-            ));
-        }
-
-        // safe to unwrap because we already checked for errors
-        Ok(x.unwrap().cmp(&y.unwrap()))
+        Ok(x.cmp(&y))
     }
 }
 

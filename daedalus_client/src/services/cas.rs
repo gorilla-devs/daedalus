@@ -214,7 +214,7 @@ impl ManifestBuilder {
     /// * `hash` - SHA256 hash of the version's content
     /// * `size` - Size of the content in bytes
     /// * `release_time` - When this version was originally released
-    #[instrument(skip(self))]
+    #[instrument(skip(self), level = "debug")]
     pub fn add_version(&self, loader: &str, version_id: String, hash: String, size: u64, release_time: DateTime<Utc>) {
         // Get or create the version map for this loader
         let loader_map = self
@@ -224,8 +224,6 @@ impl ManifestBuilder {
 
         // Add the version entry
         loader_map.insert(version_id, (hash, size, release_time));
-
-        info!(loader = %loader, "Added version to manifest builder");
     }
 
     /// Set custom versions JSON for a loader (complex mode)
@@ -258,10 +256,9 @@ impl ManifestBuilder {
     /// ]);
     /// builder.set_loader_versions("minecraft", minecraft_versions);
     /// ```
-    #[instrument(skip(self, versions))]
+    #[instrument(skip(self, versions), level = "debug")]
     pub fn set_loader_versions(&self, loader: &str, versions: serde_json::Value) {
         self.custom_versions.insert(loader.to_string(), versions);
-        info!(loader = %loader, "Set custom versions JSON for loader");
     }
 
     /// Build a loader manifest from the tracked versions
@@ -351,58 +348,6 @@ impl ManifestBuilder {
     #[cfg(test)]
     pub fn loader_count(&self) -> usize {
         self.versions.len()
-    }
-
-    /// Load old manifest data for comparison
-    ///
-    /// This populates the builder with version hashes from an existing manifest,
-    /// allowing us to detect which versions have changed.
-    ///
-    /// # Arguments
-    ///
-    /// * `manifest` - The old loader manifest to load
-    #[allow(dead_code)]
-    pub fn load_old_manifest(&self, manifest: &LoaderManifest) {
-        let loader_map = self
-            .versions
-            .entry(manifest.loader.clone())
-            .or_default();
-
-        // Try to deserialize versions as Vec<LoaderManifestEntry>
-        // This works for simple loaders (forge, neoforge) that use the standard schema
-        // For complex loaders (minecraft), this method won't be used
-        if let Ok(entries) = serde_json::from_value::<Vec<LoaderManifestEntry>>(manifest.versions.clone()) {
-            for entry in entries {
-                loader_map.insert(entry.id.clone(), (entry.hash.clone(), entry.size, entry.release_time));
-            }
-        }
-    }
-
-    /// Check if a version's content hash has changed compared to the old manifest
-    ///
-    /// Returns true if:
-    /// - The version doesn't exist in old data (new version)
-    /// - The version exists but hash is different (content changed)
-    ///
-    /// Returns false if:
-    /// - The version exists with the same hash (no changes)
-    ///
-    /// # Arguments
-    ///
-    /// * `loader` - Loader name (e.g., "minecraft", "forge")
-    /// * `version_id` - Version identifier
-    /// * `new_hash` - New content hash to compare
-    #[allow(dead_code)]
-    pub fn has_version_changed(&self, loader: &str, version_id: &str, new_hash: &str) -> bool {
-        if let Some(loader_map) = self.versions.get(loader) {
-            if let Some(entry) = loader_map.get(version_id) {
-                // Version exists, check if hash changed
-                let (old_hash, _, _) = entry.value();
-                return old_hash.as_str() != new_hash;
-            }
-        }
-        // Version doesn't exist, so it's new
-        true
     }
 }
 

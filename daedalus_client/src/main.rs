@@ -14,6 +14,21 @@ use tracing_subscriber::EnvFilter;
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 
+/// Configuration constants
+/// Update interval for fetching new metadata (1 hour)
+const UPDATE_INTERVAL_SECS: u64 = 60 * 60;
+/// Maximum number of concurrent upload operations
+const MAX_CONCURRENT_UPLOADS: usize = 10;
+/// Circuit breaker: number of consecutive failures before opening
+const CIRCUIT_BREAKER_FAILURE_THRESHOLD: u32 = 5;
+/// Circuit breaker: duration to wait before retrying (5 minutes)
+const CIRCUIT_BREAKER_RESET_TIMEOUT_SECS: u64 = 300;
+/// Maximum number of retry attempts for uploads
+const MAX_UPLOAD_RETRIES: usize = 10;
+/// Maximum delay between retries (30 minutes)
+const MAX_RETRY_DELAY_SECS: u64 = 1800;
+
+mod common;
 mod fabric;
 mod infrastructure;
 mod forge;
@@ -185,8 +200,8 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
             ))
             .unwrap();
 
-            let mut timer = tokio::time::interval(Duration::from_secs(60 * 60));
-            let semaphore = Arc::new(Semaphore::new(10));
+            let mut timer = tokio::time::interval(Duration::from_secs(UPDATE_INTERVAL_SECS));
+            let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS));
 
             {
                 let uploaded_files = Arc::new(Mutex::new(Vec::new()));
@@ -570,23 +585,23 @@ static CLIENT: LazyLock<Bucket> = LazyLock::new(|| {
 });
 
 static MINECRAFT_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("minecraft", 5, Duration::from_secs(300))
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new("minecraft", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
 });
 
 static FORGE_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("forge", 5, Duration::from_secs(300))
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new("forge", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
 });
 
 static FABRIC_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("fabric", 5, Duration::from_secs(300))
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new("fabric", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
 });
 
 static QUILT_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("quilt", 5, Duration::from_secs(300))
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new("quilt", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
 });
 
 static NEOFORGE_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("neoforge", 5, Duration::from_secs(300))
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new("neoforge", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
 });
 
 #[instrument(skip(bytes, uploaded_files, semaphore), fields(size = bytes.len()))]
@@ -619,10 +634,10 @@ pub async fn upload_file_to_bucket(
         match result {
             Ok(_) => {
                 {
-                    info!(path = %path, "Upload completed");
                     let mut uploaded_files = uploaded_files.lock().await;
                     uploaded_files.push(key);
                 }
+                info!(path = %path, "Upload completed");
 
                 Ok(())
             }
@@ -634,8 +649,8 @@ pub async fn upload_file_to_bucket(
     })
     .retry(
         ExponentialBuilder::default()
-            .with_max_times(10)
-            .with_max_delay(Duration::from_secs(1800)),
+            .with_max_times(MAX_UPLOAD_RETRIES)
+            .with_max_delay(Duration::from_secs(MAX_RETRY_DELAY_SECS)),
     )
     .await
 }

@@ -24,6 +24,21 @@ fn extract_hash_from_cas_url(url: &str) -> Option<String> {
     }
 }
 
+/// Determines if a library is an intermediary/hashed mapping library
+///
+/// Intermediary libraries are the ONLY libraries that are truly game-version-specific
+/// in Fabric/Quilt loaders. All other libraries (asm, mixin, loader itself) are
+/// version-agnostic and should be downloaded once.
+///
+/// Examples:
+/// - `net.fabricmc:intermediary:1.21` → true
+/// - `org.quiltmc:hashed:1.20.4` → true
+/// - `org.ow2.asm:asm:9.7.1` → false
+/// - `net.fabricmc:fabric-loader:0.16.10` → false
+fn is_intermediary_library(library_name: &str) -> bool {
+    library_name.contains("intermediary") || library_name.contains("hashed")
+}
+
 /// Strategy trait for loader-specific behavior
 ///
 /// This trait abstracts the differences between loaders like Fabric and Quilt,
@@ -377,8 +392,6 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             let visited_artifacts = visited_artifacts.clone();
             let list_game = list.game().to_vec();
             let maven_fallback = self.strategy.maven_fallback().to_string();
-            let uploader = uploader;
-            let s3_client = s3_client;
 
             async move {
                 // Check if we've already processed this artifact (lock-free)
@@ -402,7 +415,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
 
                 let name = lib.name.to_string();
                 if name.contains(DUMMY_GAME_VERSION) {
-                    // This library is game-version-specific, download for all game versions
+                    // Replace dummy game version with placeholder
                     lib.name = name
                         .replace(
                             DUMMY_GAME_VERSION,
@@ -410,53 +423,90 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                         )
                         .parse()?;
 
-                    // Collect hashes for all game versions
-                    let version_hash_results = futures::future::try_join_all(list_game.iter().map(|game_version| {
-                        let semaphore = semaphore.clone();
-                        let lib_name = lib.name.to_string();
-                        let lib_url = lib.url.clone();
-                        let maven_fallback = maven_fallback.clone();
-                        let game_version_str = game_version.version().to_string();
-                        let uploader = uploader;
-                        let s3_client = s3_client;
+                    // Check if this is an intermediary library
+                    // Only intermediary libraries are truly game-version-specific and need version_hashes
+                    if is_intermediary_library(&lib.name.to_string()) {
+                        // Intermediary library: Download for all game versions and create version_hashes map
+                        let version_hash_results = futures::future::try_join_all(list_game.iter().map(|game_version| {
+                            let semaphore = semaphore.clone();
+                            let lib_name = lib.name.to_string();
+                            let lib_url = lib.url.clone();
+                            let maven_fallback = maven_fallback.clone();
+                            let game_version_str = game_version.version().to_string();
 
-                        async move {
-                            let artifact_path = daedalus::get_path_from_artifact(
-                                &lib_name.replace(
-                                    &BRANDING.get_or_init(Branding::default).dummy_replace_string,
-                                    &game_version_str,
-                                ),
-                            )?;
+                            async move {
+                                let artifact_path = daedalus::get_path_from_artifact(
+                                    &lib_name.replace(
+                                        &BRANDING.get_or_init(Branding::default).dummy_replace_string,
+                                        &game_version_str,
+                                    ),
+                                )?;
 
-                            let artifact = download_file(
-                                &format!(
-                                    "{}{}",
-                                    lib_url.as_deref()
-                                        .unwrap_or(&maven_fallback),
-                                    artifact_path
-                                ),
-                                None,
-                                semaphore.clone(),
-                            )
-                            .await?;
+                                let artifact = download_file(
+                                    &format!(
+                                        "{}{}",
+                                        lib_url.as_deref()
+                                            .unwrap_or(&maven_fallback),
+                                        artifact_path
+                                    ),
+                                    None,
+                                    semaphore.clone(),
+                                )
+                                .await?;
 
-                            // Upload to CAS and get hash
-                            let hash = uploader.upload_cas(
-                                artifact.to_vec(),
-                                Some("application/java-archive".to_string()),
-                                s3_client,
-                                semaphore.clone(),
-                            ).await?;
+                                // Upload to CAS and get hash
+                                let hash = uploader.upload_cas(
+                                    artifact.to_vec(),
+                                    Some("application/java-archive".to_string()),
+                                    s3_client,
+                                    semaphore.clone(),
+                                ).await?;
 
-                            Ok::<(String, String), crate::infrastructure::error::Error>((game_version_str, hash))
-                        }
-                    }))
-                    .await?;
+                                Ok::<(String, String), crate::infrastructure::error::Error>((game_version_str, hash))
+                            }
+                        }))
+                        .await?;
 
-                    // Build version_hashes map from results
-                    let version_hashes: HashMap<String, String> = version_hash_results.into_iter().collect();
-                    lib.version_hashes = Some(version_hashes);
-                    lib.url = None;
+                        // Build version_hashes map from results
+                        let version_hashes: HashMap<String, String> = version_hash_results.into_iter().collect();
+                        lib.version_hashes = Some(version_hashes);
+                        lib.url = None;
+                    } else {
+                        // Regular library with placeholder: Download ONCE and use single URL
+                        // The dummy game version was only used to fetch the manifest, but this library
+                        // itself is version-agnostic (e.g., org.ow2.asm:asm, fabric-loader, etc.)
+                        let artifact_path = lib.name.path();
+
+                        let artifact = download_file(
+                            &format!(
+                                "{}{}",
+                                lib.url.as_deref()
+                                    .unwrap_or(&maven_fallback),
+                                artifact_path
+                            ),
+                            None,
+                            semaphore.clone(),
+                        )
+                        .await?;
+
+                        // Upload to CAS and get hash
+                        let hash = uploader.upload_cas(
+                            artifact.to_vec(),
+                            Some("application/java-archive".to_string()),
+                            s3_client,
+                            semaphore.clone(),
+                        ).await?;
+
+                        // Store full CAS URL
+                        let base_url = dotenvy::var("BASE_URL").unwrap();
+                        lib.url = Some(format!(
+                            "{}/v{}/objects/{}/{}",
+                            base_url,
+                            crate::services::cas::CAS_VERSION,
+                            &hash[..2],
+                            &hash[2..]
+                        ));
+                    }
 
                     return Ok(lib);
                 }

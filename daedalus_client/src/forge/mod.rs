@@ -1,20 +1,32 @@
+//! Forge loader metadata retrieval and processing
+
+pub mod types;
+pub mod archive;
+pub mod libraries;
+pub mod version;
+
+// Re-export commonly used types
+pub use types::{
+    ForgeInstallerProfileV1,
+    ForgeInstallerProfileV2,
+    MinecraftVersionLibraryCache,
+};
+
 use crate::{
     download_file, download_file_mirrors, format_url,
 };
 use crate::services::upload::BatchUploader;
-use chrono::{DateTime, Utc};
 use dashmap::DashSet;
 use daedalus::minecraft::{
-    Argument, ArgumentType, Library, VersionManifest, VersionType,
+    Argument, ArgumentType, Library, VersionManifest,
 };
 use daedalus::modded::{
-    LoaderVersion, PartialVersionInfo, Processor, SidedDataEntry,
+    LoaderVersion, PartialVersionInfo,
 };
 use daedalus::{get_hash, GradleSpecifier};
 use tracing::{info, warn};
 use semver::{Version, VersionReq};
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::{TryInto, TryFrom};
 use std::io::Read;
 use std::sync::{Arc, LazyLock};
@@ -37,114 +49,11 @@ static FORGE_MANIFEST_V3_QUERY: LazyLock<VersionReq> = LazyLock::new(|| {
     VersionReq::parse(">=37.0.0").unwrap()
 });
 
-fn extract_hash_from_cas_url(url: &str) -> Option<String> {
-    let parts: Vec<&str> = url.rsplitn(3, '/').collect();
-    if parts.len() >= 2 {
-        let hash_suffix = parts[0];
-        let hash_prefix = parts[1];
-        Some(format!("{}{}", hash_prefix, hash_suffix))
-    } else {
-        None
-    }
-}
+// Re-export version utilities for convenience
+pub use version::{extract_hash_from_cas_url, fetch_generated_version_info, should_ignore_artifact};
 
-pub async fn fetch_generated_version_info(
-    version_id: &str,
-) -> Result<daedalus::minecraft::VersionInfo, crate::infrastructure::error::Error> {
-    let path = format!(
-        "minecraft/v{}/versions/{}.json",
-        daedalus::minecraft::CURRENT_FORMAT_VERSION,
-        version_id
-    );
-
-    Ok(serde_json::from_slice(
-        &daedalus::download_file(&format_url(&path), None).await?,
-    )?)
-}
-
-#[derive(Clone)]
-struct MinecraftVersionCacheEntry {
-    pub id: String,
-    pub libraries: HashSet<GradleSpecifier>,
-}
-
-#[derive(Clone)]
-pub struct MinecraftVersionLibraryCache {
-    versions: Vec<MinecraftVersionCacheEntry>,
-    max_size: usize,
-}
-
-impl MinecraftVersionLibraryCache {
-    pub fn new() -> Self {
-        MinecraftVersionLibraryCache {
-            versions: Vec::new(),
-            max_size: 20,
-        }
-    }
-
-    pub async fn load_minecraft_version_libs(
-        &mut self,
-        version_id: &str,
-    ) -> Result<&HashSet<GradleSpecifier>, crate::infrastructure::error::Error> {
-        let index = self.versions.iter().position(|ver| ver.id == version_id);
-
-        if let Some(index) = index {
-            // move found entry to the front of the stack
-            let entry = self.versions.remove(index);
-            self.versions.insert(0, entry);
-        } else {
-            let generated_version =
-                fetch_generated_version_info(version_id).await?;
-
-            let libraries: HashSet<GradleSpecifier> = generated_version
-                .libraries
-                .into_iter()
-                .map(|lib| lib.name)
-                .collect();
-            self.versions.insert(
-                0,
-                MinecraftVersionCacheEntry {
-                    id: version_id.to_string(),
-                    libraries,
-                },
-            );
-            // truncate to drop oldest entry ()
-            self.versions.truncate(self.max_size);
-        }
-
-        let entry = self
-            .versions
-            .first()
-            .expect("Valid first index as we just inserted it");
-        Ok(&entry.libraries)
-    }
-}
-
-pub fn should_ignore_artifact(
-    libs: &HashSet<GradleSpecifier>,
-    name: &GradleSpecifier,
-) -> bool {
-    if let Some(ver) = libs.iter().find(|ver| {
-        ver.package == name.package
-            && ver.artifact == name.artifact
-            && ver.identifier == name.identifier
-    }) {
-        if ver.version == name.version
-            || lenient_semver::parse(&ver.version)
-                > lenient_semver::parse(&name.version)
-        {
-            // new version is lower
-            true
-        } else {
-            // no match or new version is higher and this is an upgrade
-            false
-        }
-    } else {
-        // no match in set
-        false
-    }
-}
-
+// Temporary: Keep retrieve_data here until we refactor it
+// This will be broken down in Phase 1.5
 pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
     uploader: &BatchUploader,
@@ -184,8 +93,8 @@ pub async fn retrieve_data(
 
         for loader_version_full in loader_versions {
 
-            let is_snapshot = minecraft_version.contains('w') || 
-                              minecraft_version.contains("-pre") || 
+            let is_snapshot = minecraft_version.contains('w') ||
+                              minecraft_version.contains("-pre") ||
                               minecraft_version.contains("-rc");
 
             if is_snapshot {
@@ -293,8 +202,6 @@ pub async fn retrieve_data(
                                         let forge_universal_bytes = forge_universal_bytes.clone();
                                         let forge_universal_path = forge_universal_path.clone();
                                         let minecraft_libs_filter = minecraft_libs_filter.clone();
-                                        let uploader = uploader;
-                                        let s3_client = s3_client;
 
                                         async move {
                                         if lib.name.is_lwjgl() || lib.name.is_log4j() || should_ignore_artifact(&minecraft_libs_filter, &lib.name) {
@@ -383,22 +290,14 @@ pub async fn retrieve_data(
                                             .cloned()
                                     };
 
-                                    let should_upload = if let Some(old_version) = &old_loader_version {
-                                        if let Some(old_hash) = extract_hash_from_cas_url(&old_version.url) {
-                                            if old_hash == new_hash {
-                                                info!("✓ Forge {} unchanged (hash: {})", loader_version_full, &new_hash[..8]);
-                                                false
-                                            } else {
-                                                info!("↻ Forge {} changed (old: {}, new: {})", loader_version_full, &old_hash[..8], &new_hash[..8]);
-                                                true
-                                            }
-                                        } else {
-                                            true
-                                        }
-                                    } else {
-                                        info!("+ Forge {} is new", loader_version_full);
-                                        true
-                                    };
+                                    // Use common change detection logic
+                                    let change_result = crate::common::change_detection::detect_version_change(
+                                        "Forge",
+                                        &loader_version_full,
+                                        old_loader_version.as_ref().map(|v| v.url.as_str()),
+                                        &new_hash,
+                                    );
+                                    let should_upload = change_result.should_upload;
 
                                     let version_hash = if should_upload {
                                         uploader.upload_cas(
@@ -469,17 +368,13 @@ pub async fn retrieve_data(
 
                                     let mut local_libs : HashMap<String, Option<bytes::Bytes>> = HashMap::new();
 
-                                    fn is_local_lib(lib: &Library) -> bool {
-                                        lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().and_then(|x| x.url.as_ref().map(|lib| lib.is_empty()))).unwrap_or(false) || lib.url.is_some()
-                                    }
-
                                     let mut i = 0;
                                     loop {
                                         let Some(lib) = &libs.get(i) else {
                                             break;
                                         };
-                                        
-                                        if is_local_lib(lib) {
+
+                                        if libraries::is_local_lib(lib) {
                                             let mut archive_clone = archive.clone();
                                             let lib_name_clone = lib.name.clone();
 
@@ -507,7 +402,7 @@ pub async fn retrieve_data(
                                             }).await??;
 
                                             local_libs.insert(lib.name.to_string(), lib_bytes);
-                                            
+
                                         }
 
                                         i += 1;
@@ -581,8 +476,6 @@ pub async fn retrieve_data(
                                         let semaphore = semaphore.clone();
                                         let visited_assets = visited_assets.clone();
                                         let local_libs = local_libs.clone();
-                                        let uploader = uploader;
-                                        let s3_client = s3_client;
 
                                         async move {
                                         let artifact_path = lib.name.path();
@@ -710,22 +603,14 @@ pub async fn retrieve_data(
                                             .cloned()
                                     };
 
-                                    let should_upload = if let Some(old_version) = &old_loader_version {
-                                        if let Some(old_hash) = extract_hash_from_cas_url(&old_version.url) {
-                                            if old_hash == new_hash {
-                                                info!("✓ Forge {} unchanged (hash: {})", loader_version_full, &new_hash[..8]);
-                                                false
-                                            } else {
-                                                info!("↻ Forge {} changed (old: {}, new: {})", loader_version_full, &old_hash[..8], &new_hash[..8]);
-                                                true
-                                            }
-                                        } else {
-                                            true
-                                        }
-                                    } else {
-                                        info!("+ Forge {} is new", loader_version_full);
-                                        true
-                                    };
+                                    // Use common change detection logic
+                                    let change_result = crate::common::change_detection::detect_version_change(
+                                        "Forge",
+                                        &loader_version_full,
+                                        old_loader_version.as_ref().map(|v| v.url.as_str()),
+                                        &new_hash,
+                                    );
+                                    let should_upload = change_result.should_upload;
 
                                     let version_hash = if should_upload {
                                         uploader.upload_cas(
@@ -946,193 +831,4 @@ pub async fn fetch_maven_metadata(
         )
         .await?,
     )?)
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct ForgeInstallerProfileInstallDataV1 {
-    pub mirror_list: String,
-    pub target: String,
-    /// Path to the Forge universal library
-    pub file_path: String,
-    pub logo: String,
-    pub welcome: String,
-    pub version: String,
-    /// Maven coordinates of the Forge universal library
-    pub path: String,
-    pub profile_name: String,
-    pub minecraft: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct ForgeInstallerProfileManifestV1 {
-    pub id: String,
-    pub libraries: Vec<Library>,
-    pub main_class: Option<String>,
-    pub minecraft_arguments: Option<String>,
-    pub release_time: DateTime<Utc>,
-    pub time: DateTime<Utc>,
-    pub type_: VersionType,
-    pub assets: Option<String>,
-    pub inherits_from: Option<String>,
-    pub jar: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct ForgeInstallerProfileV1 {
-    pub install: ForgeInstallerProfileInstallDataV1,
-    pub version_info: ForgeInstallerProfileManifestV1,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct ForgeInstallerProfileV2 {
-    pub profile: String,
-    pub version: String,
-    pub json: String,
-    pub path: Option<String>,
-    pub minecraft: String,
-    pub data: HashMap<String, SidedDataEntry>,
-    pub libraries: Vec<Library>,
-    pub processors: Vec<Processor>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::str::FromStr;
-
-    #[test]
-    fn test_should_ignore_artifact() {
-        // Create test artifacts
-        let create_spec = |package: &str, artifact: &str, version: &str| -> GradleSpecifier {
-            GradleSpecifier::from_str(&format!("{}:{}:{}", package, artifact, version))
-                .expect("Valid GradleSpecifier")
-        };
-
-        // Test case 1: Identical version (should ignore - already have it)
-        {
-            let mut libs = HashSet::new();
-            libs.insert(create_spec("org.example", "library", "1.0.0"));
-
-            let new_artifact = create_spec("org.example", "library", "1.0.0");
-            assert!(should_ignore_artifact(&libs, &new_artifact),
-                "Should ignore identical version");
-        }
-
-        // Test case 2: Lower version in new data (should ignore - keep existing higher version)
-        {
-            let mut libs = HashSet::new();
-            libs.insert(create_spec("org.example", "library", "2.0.0"));
-
-            let new_artifact = create_spec("org.example", "library", "1.0.0");
-            assert!(should_ignore_artifact(&libs, &new_artifact),
-                "Should ignore lower version");
-        }
-
-        // Test case 3: Higher version in new data (should NOT ignore - upgrade needed)
-        {
-            let mut libs = HashSet::new();
-            libs.insert(create_spec("org.example", "library", "1.0.0"));
-
-            let new_artifact = create_spec("org.example", "library", "2.0.0");
-            assert!(!should_ignore_artifact(&libs, &new_artifact),
-                "Should NOT ignore higher version (upgrade needed)");
-        }
-
-        // Test case 4: No match in set (should NOT ignore - new artifact)
-        {
-            let mut libs = HashSet::new();
-            libs.insert(create_spec("org.example", "other-library", "1.0.0"));
-
-            let new_artifact = create_spec("org.example", "library", "1.0.0");
-            assert!(!should_ignore_artifact(&libs, &new_artifact),
-                "Should NOT ignore new artifact");
-        }
-
-        // Test case 5: Different package (should NOT ignore)
-        {
-            let mut libs = HashSet::new();
-            libs.insert(create_spec("org.example", "library", "1.0.0"));
-
-            let new_artifact = create_spec("com.other", "library", "1.0.0");
-            assert!(!should_ignore_artifact(&libs, &new_artifact),
-                "Should NOT ignore different package");
-        }
-
-        // Test case 6: Empty libs set (should NOT ignore)
-        {
-            let libs = HashSet::new();
-            let new_artifact = create_spec("org.example", "library", "1.0.0");
-            assert!(!should_ignore_artifact(&libs, &new_artifact),
-                "Should NOT ignore when libs is empty");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_minecraft_version_cache_basic() {
-        let cache = MinecraftVersionLibraryCache::new();
-
-        // Verify initial state
-        assert_eq!(cache.versions.len(), 0, "Cache should start empty");
-        assert_eq!(cache.max_size, 20, "Max size should be 20");
-    }
-
-    #[test]
-    fn test_minecraft_version_cache_lru_reordering() {
-        // Test LRU reordering logic without network calls
-        let mut cache = MinecraftVersionLibraryCache::new();
-
-        // Manually populate cache with test entries
-        let mut libs1 = HashSet::new();
-        libs1.insert(GradleSpecifier::from_str("org.example:lib1:1.0.0").unwrap());
-        cache.versions.push(MinecraftVersionCacheEntry {
-            id: "1.19.4".to_string(),
-            libraries: libs1,
-        });
-
-        let mut libs2 = HashSet::new();
-        libs2.insert(GradleSpecifier::from_str("org.example:lib2:2.0.0").unwrap());
-        cache.versions.push(MinecraftVersionCacheEntry {
-            id: "1.20.1".to_string(),
-            libraries: libs2,
-        });
-
-        // Verify initial order
-        assert_eq!(cache.versions[0].id, "1.19.4");
-        assert_eq!(cache.versions[1].id, "1.20.1");
-
-        // Simulate LRU access: access second entry (should move to front)
-        let index = cache.versions.iter().position(|v| v.id == "1.20.1").unwrap();
-        let entry = cache.versions.remove(index);
-        cache.versions.insert(0, entry);
-
-        // Verify reordering
-        assert_eq!(cache.versions[0].id, "1.20.1", "Accessed entry should move to front");
-        assert_eq!(cache.versions[1].id, "1.19.4");
-    }
-
-    #[test]
-    fn test_minecraft_version_cache_eviction() {
-        let mut cache = MinecraftVersionLibraryCache::new();
-
-        // Fill cache beyond max_size
-        for i in 0..25 {
-            let mut libs = HashSet::new();
-            libs.insert(GradleSpecifier::from_str(&format!("org.example:lib{}:1.0.0", i)).unwrap());
-            cache.versions.push(MinecraftVersionCacheEntry {
-                id: format!("1.{}.0", i),
-                libraries: libs,
-            });
-        }
-
-        // Simulate truncation (what happens in load_minecraft_version_libs)
-        cache.versions.truncate(cache.max_size);
-
-        // Verify eviction
-        assert_eq!(cache.versions.len(), 20, "Cache should be truncated to max_size");
-        assert_eq!(cache.versions[0].id, "1.0.0", "First entry should remain");
-    }
 }

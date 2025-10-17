@@ -239,9 +239,21 @@ impl Ord for MinecraftVersion {
                 }
             }
 
-            // Snapshot vs Release: snapshots are generally "development" versions
-            // We treat them as lexicographically greater for now
-            // (This is a heuristic and may need refinement based on usage)
+            // Snapshot vs Release comparison heuristic
+            //
+            // This is a simplified comparison that treats ALL snapshots as greater than
+            // ALL releases, which matches the general pattern that snapshots are development
+            // versions that come after the previous release.
+            //
+            // Example: 23w51a (snapshot for 1.20.3/1.20.4) > 1.20.2 (release)
+            //
+            // This heuristic works for most use cases in daedalus_client where we're
+            // organizing versions chronologically within a loader. For precise timeline
+            // ordering, callers should use the Minecraft version manifest ordering.
+            //
+            // Note: This does NOT mean 23w51a > 1.20.4, but rather that when comparing
+            // a snapshot to any release without additional context, we assume the snapshot
+            // is newer development work.
             (MinecraftVersion::Snapshot { .. }, MinecraftVersion::Release { .. }) => {
                 Ordering::Greater
             }

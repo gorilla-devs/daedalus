@@ -69,6 +69,19 @@ impl CircuitBreaker {
 
     /// Executes a future with circuit breaker protection
     ///
+    /// # Concurrency Model
+    ///
+    /// This implementation intentionally releases the state lock before executing
+    /// the future to avoid holding the lock during potentially long-running I/O
+    /// operations. This means:
+    ///
+    /// - Multiple requests may execute concurrently when the circuit is closed
+    /// - In half-open state, multiple test requests may execute if they arrive
+    ///   while another is in flight (this is acceptable for our use case)
+    /// - State changes are atomic but not synchronized with request execution
+    ///
+    /// This design prioritizes throughput over strict serialization of requests.
+    ///
     /// # Returns
     /// - `Ok(T)` if the operation succeeded
     /// - `Err(CircuitBreakerError::Open)` if the circuit is open
