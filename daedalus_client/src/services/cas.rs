@@ -8,7 +8,11 @@ use tracing::{info, instrument};
 ///
 /// This is the single version entrypoint for all metadata (minecraft, forge, fabric, quilt, neoforge).
 /// Old versions had individual versioning per loader, but v3+ uses a unified version.
-pub const CAS_VERSION: u32 = 4;
+///
+/// ## Version History
+/// - v4: Previous version
+/// - v5: Optimized Fabric/Quilt processing - only intermediary libraries are downloaded per game version
+pub const CAS_VERSION: u32 = 5;
 
 /// Content-Addressable Storage (CAS) system
 ///

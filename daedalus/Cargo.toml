@@ -1,6 +1,6 @@
 [package]
 name = "daedalus"
-version = "0.1.21"
+version = "5.0.0"
 authors = ["Jai A <jaiagr+gpg@pm.me>"]
 edition = "2024"
 license = "MIT"
