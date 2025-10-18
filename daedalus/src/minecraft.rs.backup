@@ -5,9 +5,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 
+#[cfg(feature = "bincode")]
+use bincode::{Decode, Encode};
+
 /// The latest version of the format the model structs deserialize to
 pub const CURRENT_FORMAT_VERSION: usize = 2;
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 /// The version type
@@ -34,6 +38,7 @@ impl VersionType {
     }
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// A game version of Minecraft
@@ -46,8 +51,10 @@ pub struct Version {
     /// A link to additional information about the version
     pub url: String,
     /// The latest time a file in this version was updated
+    #[cfg_attr(feature = "bincode", bincode(with_serde))]
     pub time: DateTime<Utc>,
     /// The time this version was released
+    #[cfg_attr(feature = "bincode", bincode(with_serde))]
     pub release_time: DateTime<Utc>,
     /// The SHA1 hash of the additional information about the version
     pub sha1: String,
@@ -66,6 +73,7 @@ pub struct Version {
     pub java_profile: Option<MinecraftJavaProfile>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 /// Java profile required to run this mc version
@@ -128,6 +136,7 @@ impl TryFrom<&str> for MinecraftJavaProfile {
     }
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// The latest snapshot and release of the game
 pub struct LatestVersion {
@@ -137,6 +146,7 @@ pub struct LatestVersion {
     pub snapshot: String,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// Data of all game versions of Minecraft
 pub struct VersionManifest {
@@ -159,6 +169,7 @@ pub async fn fetch_version_manifest(
     )?)
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Information about the assets of the game
@@ -175,6 +186,7 @@ pub struct AssetIndex {
     pub url: String,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone)]
 #[serde(rename_all = "snake_case")]
 /// The type of download
@@ -191,6 +203,7 @@ pub enum DownloadType {
     WindowsServer,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// Download information of a file
 pub struct Download {
@@ -202,6 +215,7 @@ pub struct Download {
     pub url: String,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// Download information of a library
 pub struct LibraryDownload {
@@ -215,6 +229,7 @@ pub struct LibraryDownload {
     pub url: Option<String>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A list of files that should be downloaded for libraries
 pub struct LibraryDownloads {
@@ -227,6 +242,7 @@ pub struct LibraryDownloads {
     pub classifiers: Option<BTreeMap<String, LibraryDownload>>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 /// The action a rule can follow
@@ -237,6 +253,7 @@ pub enum RuleAction {
     Disallow,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(
     Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone,
 )]
@@ -261,6 +278,7 @@ pub enum Os {
     Unknown,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 /// A rule which depends on what OS the user is on
 pub struct OsRule {
@@ -275,6 +293,7 @@ pub struct OsRule {
     pub arch: Option<String>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 /// A rule which depends on the toggled features of the launcher
 pub struct FeatureRule {
@@ -297,6 +316,7 @@ pub struct FeatureRule {
     pub is_quick_play_realms: Option<bool>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 /// A rule deciding whether a file is downloaded, an argument is used, etc.
 pub struct Rule {
@@ -310,6 +330,7 @@ pub struct Rule {
     pub features: Option<FeatureRule>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// Information delegating the extraction of the library
 pub struct LibraryExtract {
@@ -318,6 +339,7 @@ pub struct LibraryExtract {
     pub exclude: Option<Vec<String>>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Information about the java version the game needs
@@ -328,6 +350,7 @@ pub struct JavaVersion {
     pub major_version: u32,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A library which the game relies on to run
 pub struct Library {
@@ -410,10 +433,6 @@ impl Library {
         // First try version_hashes if present
         if let Some(ref hashes) = self.version_hashes {
             if let Some(hash) = hashes.get(minecraft_version) {
-                // Validate hash is at least 2 characters to avoid panic on slicing
-                if hash.len() < 2 {
-                    return None;
-                }
                 return Some(format!(
                     "{}/v{}/objects/{}/{}",
                     base_url,
@@ -450,6 +469,7 @@ pub struct PartialLibrary {
     pub include_in_classpath: Option<bool>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 /// A dependency rule, either suggests or equals
@@ -460,6 +480,7 @@ pub enum DependencyRule {
     Suggests(String),
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A library dependency
 pub struct Dependency {
@@ -473,21 +494,7 @@ pub struct Dependency {
     pub rule: Option<DependencyRule>,
 }
 
-/// Merges a partial library definition into a complete library
-///
-/// This function takes a partial library (which may override specific fields)
-/// and merges it with an existing complete library. Fields present in the partial
-/// library will override the corresponding fields in the complete library.
-///
-/// # Arguments
-///
-/// * `partial` - Partial library with fields to override
-/// * `merge` - Complete library to merge into
-///
-/// # Returns
-///
-/// A complete library with merged fields. The `patched` flag is set to true
-/// to indicate this library has been modified by a partial library.
+/// Merges a partial library to make a complete library
 pub fn merge_partial_library(
     partial: PartialLibrary,
     mut merge: Library,
@@ -550,15 +557,11 @@ pub fn merge_partial_library(
     merge
 }
 
-/// Default value for include_in_classpath field
-///
-/// Returns `true` because libraries should be included in the classpath by default.
-/// Only specialized libraries (like native libraries that are extracted but not loaded)
-/// should set this to false explicitly.
 fn default_include_in_classpath() -> bool {
     true
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 /// A container for an argument or multiple arguments
@@ -569,6 +572,7 @@ pub enum ArgumentValue {
     Many(Vec<String>),
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 /// A command line argument passed to a program
@@ -584,6 +588,7 @@ pub enum Argument {
     },
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 /// The type of argument
@@ -594,6 +599,7 @@ pub enum ArgumentType {
     Jvm,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
 /// Java Logging type
@@ -602,6 +608,7 @@ pub enum LoggingType {
     Log4j2Xml,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
 /// Java Logging config names
@@ -610,6 +617,7 @@ pub enum LoggingConfigName {
     Client,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Java Logging artifact for download
@@ -624,6 +632,7 @@ pub struct LoggingArtifact {
     pub url: String,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Java Logging configuration
@@ -637,6 +646,7 @@ pub struct LoggingConfig {
     pub type_: LoggingType,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Information about a version
@@ -671,8 +681,10 @@ pub struct VersionInfo {
     /// The minimum version of the Minecraft Launcher that can run this version of the game
     pub minimum_launcher_version: u32,
     /// The time that the version was released
+    #[cfg_attr(feature = "bincode", bincode(with_serde))]
     pub release_time: DateTime<Utc>,
     /// The latest time a file in this version was updated
+    #[cfg_attr(feature = "bincode", bincode(with_serde))]
     pub time: DateTime<Utc>,
     #[serde(rename = "type")]
     /// The type of version
@@ -688,6 +700,7 @@ pub struct VersionInfo {
     pub processors: Option<Vec<Processor>>,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// Information about grouping of libraries
@@ -698,6 +711,7 @@ pub struct LibraryGroup {
     pub version: String,
     /// The uid aka maven package group id of this group
     pub uid: String,
+    #[cfg_attr(feature = "bincode", bincode(with_serde))]
     /// The time that the version was released
     pub release_time: DateTime<Utc>,
     /// The type of version
@@ -752,6 +766,7 @@ pub async fn fetch_version_info(
     )?)
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// An asset of the game
 pub struct Asset {
@@ -761,6 +776,7 @@ pub struct Asset {
     pub size: u32,
 }
 
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// An index containing all assets the game needs
 pub struct AssetsIndex {

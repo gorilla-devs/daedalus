@@ -6,7 +6,7 @@
 
 use std::{
     cmp::Ordering, convert::TryFrom, fmt::Display, path::PathBuf, str::FromStr,
-    time::Duration,
+    sync::LazyLock, time::Duration,
 };
 
 use backon::{ExponentialBuilder, Retryable};
@@ -17,6 +17,18 @@ use serde::{Deserialize, Serialize};
 pub mod minecraft;
 /// Models and methods for fetching metadata for Minecraft mod loaders
 pub mod modded;
+/// Custom version comparison for Minecraft versions
+pub mod version;
+
+/// HTTP client configuration constants
+/// TCP keepalive interval for persistent connections
+const TCP_KEEPALIVE_SECS: u64 = 10;
+/// Overall request timeout including reading response
+const REQUEST_TIMEOUT_SECS: u64 = 120;
+/// Connection establishment timeout
+const CONNECT_TIMEOUT_SECS: u64 = 30;
+/// Maximum idle connections per host in the pool
+const MAX_IDLE_CONNECTIONS_PER_HOST: usize = 10;
 
 /// Your branding, used for the user agent and similar
 #[derive(Debug)]
@@ -29,6 +41,30 @@ pub struct Branding {
 
 /// The branding of your application
 pub static BRANDING: OnceCell<Branding> = OnceCell::new();
+
+/// Global HTTP client with connection pooling and TCP keepalive
+///
+/// # Panics
+/// Panics if the HTTP client fails to initialize. This is intentional as
+/// the application cannot function without a working HTTP client (e.g., if
+/// TLS initialization fails, which is extremely rare on modern systems).
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(header) = reqwest::header::HeaderValue::from_str(
+        &BRANDING.get_or_init(Branding::default).header_value,
+    ) {
+        headers.insert(reqwest::header::USER_AGENT, header);
+    }
+
+    reqwest::Client::builder()
+        .tcp_keepalive(Some(Duration::from_secs(TCP_KEEPALIVE_SECS)))
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .default_headers(headers)
+        .pool_max_idle_per_host(MAX_IDLE_CONNECTIONS_PER_HOST)
+        .build()
+        .expect("Failed to create HTTP client")
+});
 
 impl Branding {
     /// Creates a new branding instance
@@ -100,7 +136,6 @@ pub enum Error {
     MirrorsFailed(String),
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Default)]
 /// A specifier string for Gradle
 pub struct GradleSpecifier {
@@ -166,12 +201,10 @@ impl GradleSpecifier {
 
     /// Returns if specifier belongs to a lwjgl library
     pub fn is_lwjgl(&self) -> bool {
-        vec![
-            "org.lwjgl",
+        ["org.lwjgl",
             "org.lwjgl.lwjgl",
             "net.java.jinput",
-            "net.java.jutils",
-        ]
+            "net.java.jutils"]
         .contains(&self.package.as_str())
     }
 
@@ -186,7 +219,7 @@ impl GradleSpecifier {
             "{}:{}:{}",
             self.package,
             self.artifact,
-            self.identifier.clone().unwrap_or("".to_string())
+            self.identifier.as_deref().unwrap_or("")
         )
     }
 
@@ -195,17 +228,12 @@ impl GradleSpecifier {
     /// Returns Ordering::Greater if self is greater than other
     /// Returns Ordering::Less if self is less than other
     pub fn compare_versions(&self, other: &Self) -> Result<Ordering, Error> {
-        let x = lenient_semver::parse(self.version.as_str());
-        let y = lenient_semver::parse(other.version.as_str());
+        let x = lenient_semver::parse(self.version.as_str())
+            .map_err(|_| Error::ParseError("Unable to parse version".to_string()))?;
+        let y = lenient_semver::parse(other.version.as_str())
+            .map_err(|_| Error::ParseError("Unable to parse version".to_string()))?;
 
-        if x.is_err() || y.is_err() {
-            return Err(Error::ParseError(
-                "Unable to parse version".to_string(),
-            ));
-        }
-
-        // safe to unwrap because we already checked for errors
-        Ok(x.unwrap().cmp(&y.unwrap()))
+        Ok(x.cmp(&y))
     }
 }
 
@@ -358,7 +386,7 @@ pub async fn download_file_mirrors(
         }
     }
 
-    return Err(Error::MirrorsFailed("No mirrors succeeded!".to_string()));
+    Err(Error::MirrorsFailed("No mirrors succeeded!".to_string()))
 }
 
 /// Downloads a file with retry and checksum functionality
@@ -366,24 +394,8 @@ pub async fn download_file(
     url: &str,
     sha1: Option<&str>,
 ) -> Result<bytes::Bytes, Error> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Ok(header) = reqwest::header::HeaderValue::from_str(
-        &BRANDING.get_or_init(Branding::default).header_value,
-    ) {
-        headers.insert(reqwest::header::USER_AGENT, header);
-    }
-    let client = reqwest::Client::builder()
-        .tcp_keepalive(Some(std::time::Duration::from_secs(10)))
-        .timeout(std::time::Duration::from_secs(15))
-        .default_headers(headers)
-        .build()
-        .map_err(|err| Error::FetchError {
-            inner: err,
-            item: url.to_string(),
-        })?;
-
     (|| async {
-        let result = client.get(url).send().await;
+        let result = HTTP_CLIENT.get(url).send().await;
 
         match result {
             Ok(x) => {

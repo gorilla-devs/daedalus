@@ -4,24 +4,12 @@ use crate::minecraft::{
     Argument, ArgumentType, Library, LoggingConfig, LoggingConfigName,
     VersionInfo, VersionType,
 };
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
-#[cfg(feature = "bincode")]
-use bincode::{Decode, Encode};
-
-/// The latest version of the format the fabric model structs deserialize to
-pub const CURRENT_FABRIC_FORMAT_VERSION: usize = 2;
-/// The latest version of the format the fabric model structs deserialize to
-pub const CURRENT_FORGE_FORMAT_VERSION: usize = 2;
-/// The latest version of the format the quilt model structs deserialize to
-pub const CURRENT_QUILT_FORMAT_VERSION: usize = 2;
-/// The latest version of the format the neoforge model structs deserialize to
-pub const CURRENT_NEOFORGE_FORMAT_VERSION: usize = 2;
 
 /// A data variable entry that depends on the side of the installation
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SidedDataEntry {
     /// The value on the client
@@ -37,11 +25,13 @@ where
     let s = String::deserialize(deserializer)?;
 
     serde_json::from_str::<DateTime<Utc>>(&format!("\"{s}\""))
-        .or_else(|_| Utc.datetime_from_str(&s, "%Y-%m-%dT%H:%M:%S%.9f"))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.9f")
+                .map(|dt| dt.and_utc())
+        })
         .map_err(serde::de::Error::custom)
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// A partial version returned by fabric meta
@@ -51,11 +41,9 @@ pub struct PartialVersionInfo {
     /// The version ID this partial version inherits from
     pub inherits_from: String,
     /// The time that the version was released
-    #[cfg_attr(feature = "bincode", bincode(with_serde))]
     #[serde(deserialize_with = "deserialize_date")]
     pub release_time: DateTime<Utc>,
     /// The latest time a file in this version was updated
-    #[cfg_attr(feature = "bincode", bincode(with_serde))]
     #[serde(deserialize_with = "deserialize_date")]
     pub time: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,7 +72,6 @@ pub struct PartialVersionInfo {
 }
 
 /// A processor to be ran after downloading the files
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Processor {
     /// Maven coordinates for the JAR library of this processor.
@@ -180,6 +167,7 @@ pub fn merge_partial_version(
                 rules: x.rules,
                 checksums: x.checksums,
                 include_in_classpath: x.include_in_classpath,
+                version_hashes: x.version_hashes,
                 patched: false,
             })
             .collect::<Vec<_>>(),
@@ -204,7 +192,6 @@ pub fn merge_partial_version(
     }
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 /// A manifest containing information about a mod loader's versions
@@ -213,7 +200,6 @@ pub struct Manifest {
     pub game_versions: Vec<Version>,
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 ///  A game version of Minecraft
 pub struct Version {
@@ -225,7 +211,6 @@ pub struct Version {
     pub loaders: Vec<LoaderVersion>,
 }
 
-#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A version of a Minecraft mod loader
 pub struct LoaderVersion {
