@@ -32,6 +32,7 @@ use crate::format_url;
 use crate::services::upload::BatchUploader;
 use dashmap::DashSet;
 use daedalus::minecraft::{JavaVersion, MinecraftJavaProfile, VersionManifest};
+use futures::future::join_all;
 use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Instant;
@@ -44,9 +45,12 @@ use tracing::{info, warn};
 /// 1. Fetches the Minecraft version manifest
 /// 2. Processes each version in parallel (with chunking)
 /// 3. Applies Log4j security patches
-/// 4. Applies library patches (including LWJGL fixes)
+/// 4. Applies library patches (e.g., LWJGL-related fixes via generic patching; no LWJGL variant processing)
 /// 5. Processes assets and uploads to CAS
 /// 6. Builds the final manifest with all processed versions
+///
+/// LWJGL libraries are kept inline in version manifests and fixed via library patches,
+/// not extracted as separate components.
 ///
 /// # Arguments
 /// - `uploader`: Batch uploader for CAS uploads
@@ -82,8 +86,9 @@ pub async fn retrieve_data(
 
     let cloned_manifest = Arc::new(Mutex::new(manifest.clone()));
 
-    let patches = library_patches::get_library_patches().await?;
-    let cloned_patches = Arc::new(&patches);
+    // Own the patches and share as an Arc slice to avoid borrowed refs in futures
+    let patches: Arc<[LibraryPatch]> =
+        Arc::from(library_patches::get_library_patches().await?.into_boxed_slice());
 
     let visited_assets = Arc::new(DashSet::new());
 
@@ -108,7 +113,7 @@ pub async fn retrieve_data(
             let visited_assets = Arc::clone(&visited_assets);
             let cloned_manifest_mutex = Arc::clone(&cloned_manifest);
             let semaphore = Arc::clone(&semaphore);
-            let patches = Arc::clone(&cloned_patches);
+            let patches = Arc::clone(&patches);
 
             let assets_hash = old_version.and_then(|x| x.assets_index_sha1.clone());
 
@@ -139,20 +144,26 @@ pub async fn retrieve_data(
                         if let Some((version_override, maven_override)) =
                             log4j::map_log4j_artifact(&spec.version)?
                         {
-                            let replacement_library = log4j::create_log4j_replacement_library(
+                            let mut replacement_library = log4j::create_log4j_replacement_library(
                                 &spec.artifact,
                                 &version_override,
                                 &maven_override,
                                 library.include_in_classpath,
                             )?;
-                            new_libraries.push(replacement_library);
+                            // Mark for traceability and run through patcher for consistency
+                            replacement_library.patched = true;
+                            let mut libs = library_patches::patch_library(
+                                Arc::as_ref(&patches),
+                                replacement_library,
+                            );
+                            new_libraries.append(&mut libs);
                         } else {
                             new_libraries.push(library.clone())
                         }
                     } else {
                         // Apply library patches to ALL libraries (including LWJGL!)
                         // Patches handle: ARM64 natives, missing tinyfd, bad LWJGL variants, etc.
-                        let mut libs = library_patches::patch_library(&patches, library.clone());
+                        let mut libs = library_patches::patch_library(Arc::as_ref(&patches), library.clone());
                         new_libraries.append(&mut libs);
                     }
                 }
@@ -332,8 +343,9 @@ pub async fn retrieve_data(
 
             let chunk: Vec<_> = versions.by_ref().take(100).collect();
 
-            for future in chunk {
-                match future.await {
+            // Process chunk concurrently (semaphore controls actual I/O parallelism)
+            for result in join_all(chunk).await {
+                match result {
                     Ok(_) => {
                         successful += 1;
                     }
