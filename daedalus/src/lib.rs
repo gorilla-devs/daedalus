@@ -17,8 +17,6 @@ use serde::{Deserialize, Serialize};
 pub mod minecraft;
 /// Models and methods for fetching metadata for Minecraft mod loaders
 pub mod modded;
-/// Custom version comparison for Minecraft versions
-pub mod version;
 
 /// HTTP client configuration constants
 /// TCP keepalive interval for persistent connections
