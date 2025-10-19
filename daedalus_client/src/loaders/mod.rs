@@ -312,13 +312,20 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             })
         }
 
-        // Note: Versions are now tracked in ManifestBuilder and uploaded separately
-        // in the main loop via manifest_builder.build_loader_manifest()
+        // Build the complete manifest and store it in ManifestBuilder
+        // Fabric/Quilt use daedalus::modded::Manifest format (game_versions array)
+        // which doesn't include release_time unlike LoaderManifestEntry
+        let manifest = daedalus::modded::Manifest {
+            game_versions: versions,
+        };
+
+        let versions_json = serde_json::to_value(&manifest.game_versions)?;
+        manifest_builder.set_loader_versions(self.strategy.manifest_path_prefix(), versions_json);
 
         info!(
             "✅ {} - Processed {} game versions",
             self.strategy.name(),
-            versions.len()
+            manifest.game_versions.len()
         );
 
         Ok(())
@@ -602,14 +609,11 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             new_hash.clone()
         };
 
-        manifest_builder.add_version(
-            self.strategy.manifest_path_prefix(),
-            loader.clone(),
-            version_hash.clone(),
-            version_bytes.len() as u64,
-            version_info.release_time,
-        );
-
+        // Store the CAS URL for this loader version
+        // Note: We don't call manifest_builder.add_version() here because Fabric/Quilt
+        // use a custom manifest format (daedalus::modded::Manifest) that doesn't include
+        // release_time. The manifest will be built at the end of retrieve_data() using
+        // manifest_builder.set_loader_versions().
         let base_url = dotenvy::var("BASE_URL").unwrap();
         let cas_url = format!(
             "{}/v{}/objects/{}/{}",

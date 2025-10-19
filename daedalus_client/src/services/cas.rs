@@ -112,9 +112,6 @@ pub struct LoaderManifestEntry {
     pub hash: String,
     /// Size of the content in bytes
     pub size: u64,
-    /// When this version was originally released
-    #[serde(with = "chrono::serde::ts_seconds")]
-    pub release_time: DateTime<Utc>,
 }
 
 /// Loader manifest containing all versions for a specific loader
@@ -184,10 +181,10 @@ impl LoaderManifest {
 /// let forge_manifest = builder.build_loader_manifest("forge");
 /// ```
 pub struct ManifestBuilder {
-    /// Map of loader name → (version_id → (hash, size, release_time))
+    /// Map of loader name → (version_id → (hash, size))
     /// Using nested DashMap for concurrent access at both levels
     /// Used for simple loaders (forge, neoforge) that use LoaderManifestEntry schema
-    versions: DashMap<String, DashMap<String, (String, u64, DateTime<Utc>)>>,
+    versions: DashMap<String, DashMap<String, (String, u64)>>,
 
     /// Map of loader name → custom JSON for versions
     /// Used for complex loaders (minecraft, fabric, quilt) that provide full custom schemas
@@ -206,7 +203,7 @@ impl ManifestBuilder {
     /// Add a version entry for a specific loader (simple mode)
     ///
     /// This is for simple loaders (forge, neoforge) that use the standard
-    /// LoaderManifestEntry schema (id, hash, size, release_time).
+    /// LoaderManifestEntry schema (id, hash, size).
     ///
     /// If the version already exists for this loader, it will be overwritten.
     /// This is idempotent and thread-safe.
@@ -217,9 +214,8 @@ impl ManifestBuilder {
     /// * `version_id` - Version identifier (e.g., "49.0.3")
     /// * `hash` - SHA256 hash of the version's content
     /// * `size` - Size of the content in bytes
-    /// * `release_time` - When this version was originally released
     #[instrument(skip(self), level = "debug")]
-    pub fn add_version(&self, loader: &str, version_id: String, hash: String, size: u64, release_time: DateTime<Utc>) {
+    pub fn add_version(&self, loader: &str, version_id: String, hash: String, size: u64) {
         // Get or create the version map for this loader
         let loader_map = self
             .versions
@@ -227,7 +223,7 @@ impl ManifestBuilder {
             .or_default();
 
         // Add the version entry
-        loader_map.insert(version_id, (hash, size, release_time));
+        loader_map.insert(version_id, (hash, size));
     }
 
     /// Set custom versions JSON for a loader (complex mode)
@@ -297,12 +293,11 @@ impl ManifestBuilder {
         let mut entries: Vec<LoaderManifestEntry> = loader_map
             .iter()
             .map(|entry| {
-                let (version_id, (hash, size, release_time)) = entry.pair();
+                let (version_id, (hash, size)) = entry.pair();
                 LoaderManifestEntry {
                     id: version_id.clone(),
                     hash: hash.clone(),
                     size: *size,
-                    release_time: *release_time,
                 }
             })
             .collect();
@@ -421,7 +416,6 @@ mod tests {
             id: "1.20.4".to_string(),
             hash: "abc123".to_string(),
             size: 1024,
-            release_time: Utc::now(),
         };
 
         assert_eq!(entry.id, "1.20.4");
@@ -431,19 +425,16 @@ mod tests {
 
     #[test]
     fn test_loader_manifest_creation() {
-        let release_time = Utc::now();
         let entries = vec![
             LoaderManifestEntry {
                 id: "1.20.4".to_string(),
                 hash: "abc123".to_string(),
                 size: 1024,
-                release_time,
             },
             LoaderManifestEntry {
                 id: "1.20.3".to_string(),
                 hash: "def456".to_string(),
                 size: 2048,
-                release_time,
             },
         ];
 
@@ -478,7 +469,7 @@ mod tests {
     fn test_manifest_builder_add_version() {
         let builder = ManifestBuilder::new();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, Utc::now());
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
 
         assert_eq!(builder.loader_count(), 1);
         assert_eq!(builder.version_count("minecraft"), 1);
@@ -487,11 +478,10 @@ mod tests {
     #[test]
     fn test_manifest_builder_multiple_loaders() {
         let builder = ManifestBuilder::new();
-        let release_time = Utc::now();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, release_time);
-        builder.add_version("forge", "49.0.3".to_string(), "def456".to_string(), 2048, release_time);
-        builder.add_version("fabric", "0.15.0".to_string(), "ghi789".to_string(), 512, release_time);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
+        builder.add_version("forge", "49.0.3".to_string(), "def456".to_string(), 2048);
+        builder.add_version("fabric", "0.15.0".to_string(), "ghi789".to_string(), 512);
 
         assert_eq!(builder.loader_count(), 3);
         assert_eq!(builder.version_count("minecraft"), 1);
@@ -505,11 +495,10 @@ mod tests {
     #[test]
     fn test_manifest_builder_multiple_versions() {
         let builder = ManifestBuilder::new();
-        let release_time = Utc::now();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, release_time);
-        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048, release_time);
-        builder.add_version("minecraft", "1.20.2".to_string(), "ghi789".to_string(), 512, release_time);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
+        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048);
+        builder.add_version("minecraft", "1.20.2".to_string(), "ghi789".to_string(), 512);
 
         assert_eq!(builder.loader_count(), 1);
         assert_eq!(builder.version_count("minecraft"), 3);
@@ -518,10 +507,9 @@ mod tests {
     #[test]
     fn test_manifest_builder_build_manifest() {
         let builder = ManifestBuilder::new();
-        let release_time = Utc::now();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, release_time);
-        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048, release_time);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
+        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048);
 
         let manifest = builder.build_loader_manifest("minecraft").unwrap();
 
@@ -540,7 +528,7 @@ mod tests {
     fn test_manifest_builder_nonexistent_loader() {
         let builder = ManifestBuilder::new();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, Utc::now());
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
 
         assert!(builder.build_loader_manifest("forge").is_none());
         assert_eq!(builder.version_count("forge"), 0);
@@ -549,11 +537,10 @@ mod tests {
     #[test]
     fn test_manifest_builder_overwrite_version() {
         let builder = ManifestBuilder::new();
-        let release_time = Utc::now();
 
         // Add same version twice with different hashes
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024, release_time);
-        builder.add_version("minecraft", "1.20.4".to_string(), "def456".to_string(), 2048, release_time);
+        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
+        builder.add_version("minecraft", "1.20.4".to_string(), "def456".to_string(), 2048);
 
         assert_eq!(builder.version_count("minecraft"), 1); // Still 1, overwritten
 

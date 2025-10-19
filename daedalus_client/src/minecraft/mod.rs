@@ -645,7 +645,6 @@ pub async fn retrieve_data(
                             lwjgl.version.clone(),
                             lwjgl_hash,
                             lwjgl_bytes.len() as u64,
-                            lwjgl.release_time,
                         );
                     } else {
                         info!(
