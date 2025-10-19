@@ -372,63 +372,12 @@ pub async fn retrieve_data(
                     }
                 };
 
-                let version_info_hash =
-                    get_hash(bytes::Bytes::from(serde_json::to_vec(&version_info)?)).await?;
-
-                let version_path = format!(
-                    "minecraft/v{}/versions/{}.json",
-                    daedalus::minecraft::CURRENT_FORMAT_VERSION,
-                    version.id
-                );
                 let assets_path = format!(
                     "minecraft/v{}/assets/{}.json",
                     daedalus::minecraft::CURRENT_FORMAT_VERSION,
                     version_info.asset_index.id
                 );
                 let assets_index_url = version_info.asset_index.url.clone();
-
-                {
-                    let mut cloned_manifest = cloned_manifest_mutex.lock().await;
-
-                    if let Some(position) = cloned_manifest
-                        .versions
-                        .iter()
-                        .position(|x| version.id == x.id)
-                    {
-                        cloned_manifest.versions[position].url = format_url(&version_path);
-                        cloned_manifest.versions[position].assets_index_sha1 =
-                            Some(version_info.asset_index.sha1.clone());
-                        cloned_manifest.versions[position].assets_index_url =
-                            Some(format_url(&assets_path));
-                        cloned_manifest.versions[position].java_profile =
-                            version_info.java_version.as_ref().map(|x| {
-                                MinecraftJavaProfile::try_from(&*x.component).expect(
-                                    "Safe to unwrap since we ensure it's valid in version_json already",
-                                )
-                            });
-                        cloned_manifest.versions[position].sha1 = version_info_hash;
-                    } else {
-                        cloned_manifest.versions.insert(
-                            0,
-                            daedalus::minecraft::Version {
-                                id: version_info.id.clone(),
-                                type_: version_info.type_.clone(),
-                                url: format_url(&version_path),
-                                time: version_info.time,
-                                release_time: version_info.release_time,
-                                sha1: version_info_hash,
-                                java_profile: version_info.java_version.as_ref().map(|x| {
-                                    MinecraftJavaProfile::try_from(&*x.component).expect(
-                                        "Safe to unwrap since we ensure it's valid in version_json already",
-                                    )
-                                }),
-                                compliance_level: 1,
-                                assets_index_url: Some(format_url(&assets_path)),
-                                assets_index_sha1: Some(version_info.asset_index.sha1.clone()),
-                            },
-                        )
-                    }
-                }
 
                 let mut download_assets = false;
 
@@ -471,7 +420,7 @@ pub async fn retrieve_data(
                 }
 
                 let version_bytes = serde_json::to_vec(&version_info)?;
-                let _version_hash = uploader
+                let version_hash = uploader
                     .upload_cas(
                         version_bytes.clone(),
                         Some("application/json".to_string()),
@@ -479,6 +428,64 @@ pub async fn retrieve_data(
                         semaphore.clone(),
                     )
                     .await?;
+
+                // Update manifest with CAS URL
+                {
+                    let mut cloned_manifest = cloned_manifest_mutex.lock().await;
+
+                    if let Some(position) = cloned_manifest
+                        .versions
+                        .iter()
+                        .position(|x| version.id == x.id)
+                    {
+                        let base_url = dotenvy::var("BASE_URL").unwrap();
+                        cloned_manifest.versions[position].url = format!(
+                            "{}/v{}/objects/{}/{}",
+                            base_url,
+                            crate::services::cas::CAS_VERSION,
+                            &version_hash[..2],
+                            &version_hash[2..]
+                        );
+                        cloned_manifest.versions[position].assets_index_sha1 =
+                            Some(version_info.asset_index.sha1.clone());
+                        cloned_manifest.versions[position].assets_index_url =
+                            Some(format_url(&assets_path));
+                        cloned_manifest.versions[position].java_profile =
+                            version_info.java_version.as_ref().map(|x| {
+                                MinecraftJavaProfile::try_from(&*x.component).expect(
+                                    "Safe to unwrap since we ensure it's valid in version_json already",
+                                )
+                            });
+                        cloned_manifest.versions[position].sha1 = version_hash.clone();
+                    } else {
+                        let base_url = dotenvy::var("BASE_URL").unwrap();
+                        cloned_manifest.versions.insert(
+                            0,
+                            daedalus::minecraft::Version {
+                                id: version_info.id.clone(),
+                                type_: version_info.type_.clone(),
+                                url: format!(
+                                    "{}/v{}/objects/{}/{}",
+                                    base_url,
+                                    crate::services::cas::CAS_VERSION,
+                                    &version_hash[..2],
+                                    &version_hash[2..]
+                                ),
+                                time: version_info.time,
+                                release_time: version_info.release_time,
+                                sha1: version_hash.clone(),
+                                java_profile: version_info.java_version.as_ref().map(|x| {
+                                    MinecraftJavaProfile::try_from(&*x.component).expect(
+                                        "Safe to unwrap since we ensure it's valid in version_json already",
+                                    )
+                                }),
+                                compliance_level: 1,
+                                assets_index_url: Some(format_url(&assets_path)),
+                                assets_index_sha1: Some(version_info.asset_index.sha1.clone()),
+                            },
+                        )
+                    }
+                }
 
                 // NOTE: We don't call manifest_builder.add_version() for minecraft here.
                 // Instead, we use set_loader_versions() with the full VersionManifest at the end
