@@ -408,7 +408,6 @@ pub async fn retrieve_data(
                                         i += 1;
                                     }
 
-                                    let path = profile.path.clone();
                                     let version = profile.version.clone();
 
                                     for entry in profile.data.values_mut() {
@@ -417,8 +416,15 @@ pub async fn retrieve_data(
                                                 ($value:expr) => {
                                                     let mut archive_clone = archive.clone();
                                                     let value_clone = $value.clone();
+                                                    // Validate path has content after the leading slash
+                                                    if value_clone.len() <= 1 {
+                                                        return Err(crate::infrastructure::error::invalid_input(format!(
+                                                            "Invalid data path in Forge installer: '{}'",
+                                                            value_clone
+                                                        )));
+                                                    }
                                                     let lib_bytes = tokio::task::spawn_blocking(move || {
-                                                        let mut lib_file = archive_clone.by_name(&value_clone[1..value_clone.len()])?;
+                                                        let mut lib_file = archive_clone.by_name(&value_clone[1..])?;
                                                         let mut lib_bytes =  Vec::new();
                                                         lib_file.read_to_end(&mut lib_bytes)?;
 
@@ -432,12 +438,8 @@ pub async fn retrieve_data(
 
                                                         if let Some(file_name) = file.next() {
                                                             if let Some(ext) = file.next() {
-                                                                // We need to append tne entry to the forge path
-                                                                // Since new versions (1.20.4?) forge started filling the `path` key with a valid maven path (was previously empty)
-                                                                // To avoid having multiple classifiers (invalid maven path) we parse it as a GradleSpecifier
-                                                                // which will consider multiple classifiers as a single classifier replacing the `:` with a `-`
-                                                                let unsanitized_path = format!("{}:{}@{}", path.as_deref().unwrap_or(&*format!("net.minecraftforge:forge:{}", version)), file_name, ext);
-                                                                let path = GradleSpecifier::try_from(&*unsanitized_path)?.to_string();
+                                                                // Use consistent namespace (synced with Modrinth daedalus approach)
+                                                                let path = format!("gg.gdl.daedalus:forge-installer-extracts:{}:{}@{}", version, file_name, ext);
                                                                 $value = format!("[{}]", &path);
                                                                 local_libs.insert(path.clone(), Some(bytes::Bytes::from(lib_bytes)));
 

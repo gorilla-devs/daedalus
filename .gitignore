@@ -124,3 +124,4 @@ Cargo.lock
 .env
 bucket
 .DS_Store
+rust-analyzer-target

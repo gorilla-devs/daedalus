@@ -1,40 +1,36 @@
-lockfileVersion: '6.0'
+lockfileVersion: '9.0'
 
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-dependencies:
-  '@types/follow-redirects':
-    specifier: ^1.14.4
-    version: 1.14.4
-  dotenv:
-    specifier: ^16.4.5
-    version: 16.4.5
-  follow-redirects:
-    specifier: ^1.15.6
-    version: 1.15.6
+importers:
+
+  .:
+    dependencies:
+      '@types/follow-redirects':
+        specifier: ^1.14.4
+        version: 1.14.4
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.4.5
+      follow-redirects:
+        specifier: ^1.15.6
+        version: 1.15.6
 
 packages:
 
-  /@types/follow-redirects@1.14.4:
+  '@types/follow-redirects@1.14.4':
     resolution: {integrity: sha512-GWXfsD0Jc1RWiFmMuMFCpXMzi9L7oPDVwxUnZdg89kDNnqsRfUKXEtUYtA98A6lig1WXH/CYY/fvPW9HuN5fTA==}
-    dependencies:
-      '@types/node': 20.13.0
-    dev: false
 
-  /@types/node@20.13.0:
+  '@types/node@20.13.0':
     resolution: {integrity: sha512-FM6AOb3khNkNIXPnHFDYaHerSv8uN22C91z098AnGccVu+Pcdhi+pNUFDi0iLmPIsVE0JBD0KVS7mzUYt4nRzQ==}
-    dependencies:
-      undici-types: 5.26.5
-    dev: false
 
-  /dotenv@16.4.5:
+  dotenv@16.4.5:
     resolution: {integrity: sha512-ZmdL2rui+eB2YwhsWzjInR8LldtZHGDoQ1ugH85ppHKwpUHL7j7rN0Ti9NCnGiQbhaZ11FpR+7ao1dNsmduNUg==}
     engines: {node: '>=12'}
-    dev: false
 
-  /follow-redirects@1.15.6:
+  follow-redirects@1.15.6:
     resolution: {integrity: sha512-wWN62YITEaOpSK584EZXJafH1AGpO8RVgElfkuXbTOrPX4fIfOyEpW/CsiNd8JdYrAoOvafRTOEnvsO++qCqFA==}
     engines: {node: '>=4.0'}
     peerDependencies:
@@ -42,8 +38,22 @@ packages:
     peerDependenciesMeta:
       debug:
         optional: true
-    dev: false
 
-  /undici-types@5.26.5:
+  undici-types@5.26.5:
     resolution: {integrity: sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA==}
-    dev: false
+
+snapshots:
+
+  '@types/follow-redirects@1.14.4':
+    dependencies:
+      '@types/node': 20.13.0
+
+  '@types/node@20.13.0':
+    dependencies:
+      undici-types: 5.26.5
+
+  dotenv@16.4.5: {}
+
+  follow-redirects@1.15.6: {}
+
+  undici-types@5.26.5: {}

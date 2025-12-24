@@ -31,8 +31,9 @@ pub use types::NeoForgeInstallerProfile;
 /// These versions have permanent issues (missing files, corrupted archives, etc.)
 static NEOFORGE_SKIP_LIST: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     vec![
-        // Add known broken versions here as they're discovered
-        // Example: "21.3.0-beta",  // Missing universal JAR
+        // Unreachable / 404 versions (synced from Modrinth daedalus)
+        "1.20.1-47.1.7",
+        "47.1.82",
     ]
     .into_iter()
     .collect()
@@ -156,7 +157,6 @@ pub async fn retrieve_data(
                                     }
                                 }
 
-                                let path = profile.path.clone();
                                 let version = profile.version.clone();
 
                                 for entry in profile.data.values_mut() {
@@ -165,8 +165,15 @@ pub async fn retrieve_data(
                                     ($value:expr) => {
                                         let mut archive_clone = archive.clone();
                                         let value_clone = $value.clone();
+                                        // Validate path has content after the leading slash
+                                        if value_clone.len() <= 1 {
+                                            return Err(crate::infrastructure::error::invalid_input(format!(
+                                                "Invalid data path in NeoForge installer: '{}'",
+                                                value_clone
+                                            )));
+                                        }
                                         let lib_bytes = tokio::task::spawn_blocking(move || {
-                                            let mut lib_file = archive_clone.by_name(&value_clone[1..value_clone.len()])?;
+                                            let mut lib_file = archive_clone.by_name(&value_clone[1..])?;
                                             let mut lib_bytes =  Vec::new();
                                             lib_file.read_to_end(&mut lib_bytes)?;
 
@@ -180,7 +187,7 @@ pub async fn retrieve_data(
 
                                             if let Some(file_name) = file.next() {
                                                 if let Some(ext) = file.next() {
-                                                    let path = format!("{}:{}@{}", path.as_deref().unwrap_or(&*format!("net.minecraftforge:forge:{}", version)), file_name, ext);
+                                                    let path = format!("gg.gdl.daedalus:neoforge-installer-extracts:{}:{}@{}", version, file_name, ext);
                                                     $value = format!("[{}]", &path);
                                                     local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
 
@@ -285,7 +292,7 @@ pub async fn retrieve_data(
                                         ).await?;
 
                                         // Use common CAS URL building
-                                        let cas_url = crate::common::cas::build_cas_url(&hash);
+                                        let cas_url = crate::common::cas::build_cas_url(&hash)?;
 
                                         // Update library URL with CAS URL
                                         if let Some(ref mut downloads) = lib.downloads {
@@ -350,7 +357,7 @@ pub async fn retrieve_data(
                                 };
 
                                 // Use common CAS URL building
-                                let cas_url = crate::common::cas::build_cas_url(&version_hash);
+                                let cas_url = crate::common::cas::build_cas_url(&version_hash)?;
 
                                 return Ok(Some(LoaderVersion {
                                     id: loader_version_full,

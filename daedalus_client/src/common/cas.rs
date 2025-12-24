@@ -44,28 +44,34 @@ pub fn extract_hash_from_cas_url(url: &str) -> Option<String> {
 ///
 /// # Arguments
 ///
-/// * `hash` - The content hash to build a URL for
+/// * `hash` - The content hash to build a URL for (must be at least 2 characters)
 ///
 /// # Returns
 ///
-/// The complete CAS URL
+/// The complete CAS URL, or an error if the hash is too short
 ///
 /// # Example
 ///
 /// ```
 /// let hash = "abcdef123456";
-/// let url = build_cas_url(hash);
+/// let url = build_cas_url(hash)?;
 /// // Returns: "{BASE_URL}/v{CAS_VERSION}/objects/ab/cdef123456"
 /// ```
-pub fn build_cas_url(hash: &str) -> String {
+pub fn build_cas_url(hash: &str) -> Result<String, crate::infrastructure::error::Error> {
+    if hash.len() < 2 {
+        return Err(crate::infrastructure::error::invalid_input(format!(
+            "Hash too short for CAS URL: '{}' (must be at least 2 characters)",
+            hash
+        )));
+    }
     let base_url = dotenvy::var("BASE_URL").expect("BASE_URL must be set");
-    format!(
+    Ok(format!(
         "{}/v{}/objects/{}/{}",
         base_url,
         crate::services::cas::CAS_VERSION,
         &hash[..2],
         &hash[2..]
-    )
+    ))
 }
 
 #[cfg(test)]
