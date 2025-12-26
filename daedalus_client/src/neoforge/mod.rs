@@ -462,40 +462,42 @@ pub async fn retrieve_data(
         }
     }
 
-    if let Ok(versions) = Arc::try_unwrap(versions) {
-        let new_versions = versions.into_inner();
+    // Extract versions by locking the mutex instead of try_unwrap
+    // This avoids silent failures when Arc still has strong references from async closures
+    let new_versions = {
+        let mut guard = versions.lock().await;
+        std::mem::take(&mut *guard)
+    };
 
-        // Get old versions for merging
-        let old_manifest_versions = if let Ok(old_versions) = Arc::try_unwrap(old_versions) {
-            old_versions.into_inner()
-        } else {
-            Vec::new()
-        };
+    // Get old versions for merging
+    let old_manifest_versions = {
+        let mut guard = old_versions.lock().await;
+        std::mem::take(&mut *guard)
+    };
 
-        // Use common version merging logic
-        let mut final_versions = merge_loader_versions(
-            old_manifest_versions,
-            new_versions,
-            "NeoForge"
-        );
+    // Use common version merging logic
+    let mut final_versions = merge_loader_versions(
+        old_manifest_versions,
+        new_versions,
+        "NeoForge"
+    );
 
-        // Use common sorting utilities
-        sort_by_minecraft_order(&mut final_versions, minecraft_versions);
+    // Use common sorting utilities
+    sort_by_minecraft_order(&mut final_versions, minecraft_versions);
 
-        // Sort loaders within each version using metadata order
-        for version in &mut final_versions {
-            if let Some(loader_versions) = maven_metadata.get(&version.id) {
-                let loader_order: Vec<String> = loader_versions.iter().map(|(id, _)| id.clone()).collect();
-                sort_loaders_by_metadata(version, &loader_order);
-            }
+    // Sort loaders within each version using metadata order
+    for version in &mut final_versions {
+        if let Some(loader_versions) = maven_metadata.get(&version.id) {
+            let loader_order: Vec<String> = loader_versions.iter().map(|(id, _)| id.clone()).collect();
+            sort_loaders_by_metadata(version, &loader_order);
         }
-
-        // Set the full NeoForge versions JSON in manifest_builder with nested structure
-        // This preserves game version -> loader version mappings
-        let versions_json = serde_json::to_value(&final_versions)?;
-        manifest_builder.set_loader_versions("neoforge", versions_json);
-        info!(version_count = final_versions.len(), "Set NeoForge versions with nested structure in CAS manifest builder");
     }
+
+    // Set the full NeoForge versions JSON in manifest_builder with nested structure
+    // This preserves game version -> loader version mappings
+    let versions_json = serde_json::to_value(&final_versions)?;
+    manifest_builder.set_loader_versions("neoforge", versions_json);
+    info!(version_count = final_versions.len(), "Set NeoForge versions with nested structure in CAS manifest builder");
 
     Ok(())
 }

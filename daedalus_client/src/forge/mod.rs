@@ -733,83 +733,84 @@ pub async fn retrieve_data(
     }
     //futures::future::try_join_all(version_futures).await?;
 
-    // Get old manifest versions for merging
-    let old_manifest_versions = if let Ok(old_versions) = Arc::try_unwrap(old_versions) {
-        old_versions.into_inner()
-    } else {
-        Vec::new()
+    // Extract versions by locking the mutex instead of try_unwrap
+    // This avoids silent failures when Arc still has strong references from async closures
+    let old_manifest_versions = {
+        let mut guard = old_versions.lock().await;
+        std::mem::take(&mut *guard)
     };
 
-    if let Ok(versions) = Arc::try_unwrap(versions) {
-        let new_versions = versions.into_inner();
+    let new_versions = {
+        let mut guard = versions.lock().await;
+        std::mem::take(&mut *guard)
+    };
 
-        // Merge new versions with old ones to preserve existing data
-        let mut final_versions = old_manifest_versions;
+    // Merge new versions with old ones to preserve existing data
+    let mut final_versions = old_manifest_versions;
 
-        for new_version in new_versions {
-            if let Some(existing) = final_versions.iter_mut().find(|v| v.id == new_version.id) {
-                // Merge loaders: keep old loaders + add/update new ones
-                for new_loader in new_version.loaders {
-                    if let Some(existing_loader) = existing.loaders.iter_mut().find(|l| l.id == new_loader.id) {
-                        let loader_id = new_loader.id.clone();
-                        *existing_loader = new_loader;
-                        info!("✅ Forge - Updated loader: {}/{}", existing.id, loader_id);
-                    } else {
-                        info!("✅ Forge - Added new loader: {}/{}", existing.id, new_loader.id);
-                        existing.loaders.push(new_loader);
-                    }
+    for new_version in new_versions {
+        if let Some(existing) = final_versions.iter_mut().find(|v| v.id == new_version.id) {
+            // Merge loaders: keep old loaders + add/update new ones
+            for new_loader in new_version.loaders {
+                if let Some(existing_loader) = existing.loaders.iter_mut().find(|l| l.id == new_loader.id) {
+                    let loader_id = new_loader.id.clone();
+                    *existing_loader = new_loader;
+                    info!("✅ Forge - Updated loader: {}/{}", existing.id, loader_id);
+                } else {
+                    info!("✅ Forge - Added new loader: {}/{}", existing.id, new_loader.id);
+                    existing.loaders.push(new_loader);
                 }
-            } else {
-                info!("✅ Forge - Added new Minecraft version: {}", new_version.id);
-                final_versions.push(new_version);
             }
+        } else {
+            info!("✅ Forge - Added new Minecraft version: {}", new_version.id);
+            final_versions.push(new_version);
         }
-
-        // Sort versions
-        final_versions.sort_by(|x, y| {
-            minecraft_versions
-                .versions
-                .iter()
-                .position(|z| {
-                    x.id.replace("1.7.10_pre4", "1.7.10-pre4") == z.id
-                })
-                .unwrap_or_default()
-                .cmp(
-                    &minecraft_versions
-                        .versions
-                        .iter()
-                        .position(|z| {
-                            y.id.replace("1.7.10_pre4", "1.7.10-pre4") == z.id
-                        })
-                        .unwrap_or_default(),
-                )
-        });
-
-        // Sort loaders within each version
-        for version in &mut final_versions {
-            let loader_versions = maven_metadata.get(&version.id);
-            if let Some(loader_versions) = loader_versions {
-                version.loaders.sort_by(|x, y| {
-                    loader_versions
-                        .iter()
-                        .position(|z| &y.id == z)
-                        .unwrap_or_default()
-                        .cmp(
-                            &loader_versions
-                                .iter()
-                                .position(|z| &x.id == z)
-                                .unwrap_or_default(),
-                        )
-                })
-            }
-        }
-
-        // Set the full Forge versions JSON in manifest_builder with nested structure
-        // This preserves game version -> loader version mappings
-        let versions_json = serde_json::to_value(&final_versions)?;
-        manifest_builder.set_loader_versions("forge", versions_json);
-        info!(version_count = final_versions.len(), "Set Forge versions with nested structure in CAS manifest builder");
     }
+
+    // Sort versions
+    final_versions.sort_by(|x, y| {
+        minecraft_versions
+            .versions
+            .iter()
+            .position(|z| {
+                x.id.replace("1.7.10_pre4", "1.7.10-pre4") == z.id
+            })
+            .unwrap_or_default()
+            .cmp(
+                &minecraft_versions
+                    .versions
+                    .iter()
+                    .position(|z| {
+                        y.id.replace("1.7.10_pre4", "1.7.10-pre4") == z.id
+                    })
+                    .unwrap_or_default(),
+            )
+    });
+
+    // Sort loaders within each version
+    for version in &mut final_versions {
+        let loader_versions = maven_metadata.get(&version.id);
+        if let Some(loader_versions) = loader_versions {
+            version.loaders.sort_by(|x, y| {
+                loader_versions
+                    .iter()
+                    .position(|z| &y.id == z)
+                    .unwrap_or_default()
+                    .cmp(
+                        &loader_versions
+                            .iter()
+                            .position(|z| &x.id == z)
+                            .unwrap_or_default(),
+                    )
+            })
+        }
+    }
+
+    // Set the full Forge versions JSON in manifest_builder with nested structure
+    // This preserves game version -> loader version mappings
+    let versions_json = serde_json::to_value(&final_versions)?;
+    manifest_builder.set_loader_versions("forge", versions_json);
+    info!(version_count = final_versions.len(), "Set Forge versions with nested structure in CAS manifest builder");
 
     Ok(())
 }
