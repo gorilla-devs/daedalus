@@ -15,7 +15,8 @@ use daedalus::modded::{
 };
 use daedalus::get_hash;
 use tracing::{info, warn};
-use semver::Version;
+// Note: Using lenient_semver instead of semver::Version to handle
+// non-standard NeoForge versions like "26.1.0.0-alpha.1+snapshot-1"
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
@@ -73,9 +74,13 @@ pub async fn retrieve_data(
         let mut loaders = Vec::new();
 
         for (loader_version, new_forge) in loader_versions {
-            let version = Version::parse(&loader_version)?;
+            // Validate version format using lenient_semver (handles 4+ component versions like "26.1.0.0-alpha.1")
+            if let Err(e) = lenient_semver::parse(&loader_version) {
+                warn!("Skipping NeoForge version '{}' with invalid format: {}", loader_version, e);
+                continue;
+            }
 
-            loaders.push((loader_version, version, new_forge.to_string()))
+            loaders.push((loader_version, new_forge.to_string()))
         }
 
         if !loaders.is_empty() {
@@ -83,7 +88,7 @@ pub async fn retrieve_data(
                 let mut loaders_versions = Vec::new();
 
                 {
-                    let loaders_futures = loaders.into_iter().map(|(loader_version_full, _, new_forge)| async {
+                    let loaders_futures = loaders.into_iter().map(|(loader_version_full, new_forge)| async {
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets);
                         let semaphore = Arc::clone(&semaphore);

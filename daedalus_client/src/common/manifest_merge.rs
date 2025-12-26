@@ -123,12 +123,12 @@ pub fn sort_loaders_by_metadata(version: &mut Version, loader_order: &[String]) 
     version.loaders.sort_by(|x, y| {
         let x_pos = loader_order
             .iter()
-            .position(|z| &y.id == z)
+            .position(|z| &x.id == z)
             .unwrap_or(usize::MAX);
 
         let y_pos = loader_order
             .iter()
-            .position(|z| &x.id == z)
+            .position(|z| &y.id == z)
             .unwrap_or(usize::MAX);
 
         x_pos.cmp(&y_pos)
