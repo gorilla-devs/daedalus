@@ -417,9 +417,10 @@ pub async fn retrieve_data(
                     }
                 }
 
+                let is_stable = !minecraft_version.contains("-snapshot-");
                 versions.lock().await.push(daedalus::modded::Version {
                     id: minecraft_version,
-                    stable: true,
+                    stable: is_stable,
                     loaders: loaders_versions
                 });
 
@@ -569,26 +570,39 @@ pub async fn fetch_maven_metadata(
     }
 
     for value in neo_values.versioning.versions.version {
-        let is_snapshot = value.contains('w') ||
-                          value.contains("-pre") ||
-                          value.contains("-rc");
+        // Skip weekly snapshots, pre-releases, and release candidates for old MC versions
+        let is_old_snapshot = value.contains('w') ||
+                              value.contains("-pre") ||
+                              value.contains("-rc");
 
-        if is_snapshot {
-            info!("Skipping snapshot version: {}", value);
+        if is_old_snapshot {
+            info!("Skipping old snapshot version: {}", value);
             continue;
         }
 
         let original = value.clone();
-
         let mut parts = value.split('.');
 
-        if let Some(minor) = parts.next() {
-            if let Some(patch) = parts.next() {
-                let mut game_version = format!("1.{}", minor);
-
-                if patch != "0" {
-                    game_version.push_str(&format!(".{}", patch));
-                }
+        if let Some(major) = parts.next() {
+            if let Some(minor) = parts.next() {
+                // Check for +snapshot-X suffix (new MC version format starting with 26.x)
+                // NeoForge version: 26.1.0.0-alpha.1+snapshot-1 -> MC version: 26.1-snapshot-1
+                let game_version = if let Some(snapshot_suffix) = original.split("+snapshot-").nth(1) {
+                    // Extract snapshot number (e.g., "1" from "1" or from "1+other")
+                    let snapshot_num = snapshot_suffix
+                        .split(|c: char| !c.is_ascii_digit())
+                        .next()
+                        .unwrap_or("1");
+                    // New format: 26.1-snapshot-1 (no 1. prefix)
+                    format!("{}.{}-snapshot-{}", major, minor, snapshot_num)
+                } else {
+                    // Standard format: 1.21.1
+                    if minor == "0" {
+                        format!("1.{}", major)
+                    } else {
+                        format!("1.{}.{}", major, minor)
+                    }
+                };
 
                 map.entry(game_version.clone())
                     .or_default()
