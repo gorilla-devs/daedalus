@@ -539,6 +539,8 @@ pub enum ArgumentType {
     Game,
     /// The argument is passed to the JVM
     Jvm,
+    /// Default JVM arguments that users can customize
+    DefaultUserJvm,
 }
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
