@@ -532,7 +532,7 @@ pub enum Argument {
 
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 /// The type of argument
 pub enum ArgumentType {
     /// The argument is passed to the game
