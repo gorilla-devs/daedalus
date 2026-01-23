@@ -4,7 +4,7 @@ use crate::minecraft::{
     Argument, ArgumentType, Library, LoggingConfig, LoggingConfigName,
     VersionInfo, VersionType,
 };
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
@@ -36,8 +36,19 @@ where
 {
     let s = String::deserialize(deserializer)?;
 
+    // Try parsing with timezone first (standard ISO 8601)
     serde_json::from_str::<DateTime<Utc>>(&format!("\"{s}\""))
-        .or_else(|_| Utc.datetime_from_str(&s, "%Y-%m-%dT%H:%M:%S%.9f"))
+        // Fallback: parse as naive datetime (no timezone) and assume UTC
+        // Uses %.f to accept any number of fractional seconds (not just 9)
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f")
+                .map(|dt| dt.and_utc())
+        })
+        // Fallback: try without fractional seconds
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
+                .map(|dt| dt.and_utc())
+        })
         .map_err(serde::de::Error::custom)
 }
 
