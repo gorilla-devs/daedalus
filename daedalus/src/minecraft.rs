@@ -521,9 +521,12 @@ pub enum ArgumentValue {
 pub enum Argument {
     /// An argument which is applied no matter what
     Normal(String),
-    /// An argument which is only applied if certain conditions are met
+    /// An argument which is only applied if certain conditions are met.
+    /// When rules is empty (or not provided in JSON), the argument is always applied.
     Ruled {
-        /// The rules deciding whether the argument(s) is used or not
+        /// The rules deciding whether the argument(s) is used or not.
+        /// Defaults to empty (always apply) when not present in JSON.
+        #[serde(default)]
         rules: Vec<Rule>,
         /// The container of the argument(s) that should be applied accordingly
         value: ArgumentValue,
