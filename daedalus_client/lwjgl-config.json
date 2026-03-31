@@ -1,6 +1,14 @@
 {
   "accept": [
     {
+      "match": "fcf37d03db6ad0b457f9c23a5bfe91f5b96975b2",
+      "_comment": "#3.4.1 (2026-03-24 12:11:04 UTC) natives: [] Split: true"
+    },
+    {
+      "match": "2eb6e2bfa1f9435e1b414c08cf8471f75d4173f2",
+      "_comment": "#3.3.6 (2025-10-21 11:38:51 UTC) natives: [] Split: true. Used by 25w43a only."
+    },
+    {
       "match": "4abf9e55d73bb6502e84cb9eff5d9ab2e2895a33",
       "_comment": "#3.3.3 (2024-06-13 08:24:03 UTC) natives: [] Split: true",
       "equals": "73974b3af2afeb5b272ffbadcd7963014387c84f / # 3.3.3 (2024-05-22 16:25:41+00:00)"
