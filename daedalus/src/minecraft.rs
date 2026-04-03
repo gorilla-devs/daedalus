@@ -282,6 +282,8 @@ pub enum Os {
     LinuxArm64,
     /// Linux ARM 32
     LinuxArm32,
+    /// Linux RISC-V 64
+    LinuxRiscv64,
     /// The OS is unknown
     Unknown,
 }
