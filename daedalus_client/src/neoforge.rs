@@ -476,53 +476,55 @@ pub async fn fetch_maven_metadata(
     }
 
     for value in neo_values.versioning.versions.version {
-        // Skip weekly snapshots, pre-releases, and release candidates for old MC versions
-        let is_old_snapshot = value.contains('w') ||
-                              value.contains("-pre") ||
-                              value.contains("-rc");
-
-        if is_old_snapshot {
-            log::info!("Skipping old snapshot version: {}", value);
-            continue;
-        }
-
         let original = value.clone();
         let mut parts = value.split('.');
 
-        if let Some(major) = parts.next() {
-            if let Some(minor) = parts.next() {
-                // Check for +snapshot-X suffix (new MC version format starting with 26.x)
-                // NeoForge version: 26.1.0.0-alpha.1+snapshot-1 -> MC version: 26.1-snapshot-1
-                let game_version = if let Some(snapshot_suffix) = original.split("+snapshot-").nth(1) {
-                    // Extract snapshot number (e.g., "1" from "1" or from "1+other")
-                    let snapshot_num = snapshot_suffix
-                        .split(|c: char| !c.is_ascii_digit())
-                        .next()
-                        .unwrap_or("1");
-                    // New format: 26.1-snapshot-1 (no 1. prefix)
-                    format!("{}.{}-snapshot-{}", major, minor, snapshot_num)
-                } else {
-                    // MC dropped the "1." prefix after 1.21
-                    let major_num: u32 = major.parse().unwrap_or(0);
-                    if major_num > 21 {
-                        if minor == "0" {
-                            major.to_string()
-                        } else {
-                            format!("{}.{}", major, minor)
-                        }
-                    } else {
-                        if minor == "0" {
-                            format!("1.{}", major)
-                        } else {
-                            format!("1.{}.{}", major, minor)
-                        }
-                    }
-                };
+        let Some(major) = parts.next() else { continue };
+        let Some(minor) = parts.next() else { continue };
+        let major_num: u32 = major.parse().unwrap_or(0);
 
-                map.entry(game_version.clone())
-                    .or_default()
-                    .push((original.clone(), true));
+        if major_num > 21 {
+            // New MC versioning (YY.D.H) — MC dropped the "1." prefix after 1.21
+            // NeoForge format: YY.D.H.build[-prerelease][+phase-N]
+            // e.g. 26.1.2.11-beta -> MC 26.1.2
+            // e.g. 26.1.0.0-alpha.1+snapshot-1 -> MC 26.1-snapshot-1
+            // e.g. 26.1.0.0-alpha.15+pre-3 -> MC 26.1-pre-3
+            let hotfix = parts.next()
+                .and_then(|h| h.split(|c: char| !c.is_ascii_digit()).next())
+                .unwrap_or("0");
+
+            let base = match (minor, hotfix) {
+                ("0", _) => major.to_string(),
+                (_, "0") => format!("{}.{}", major, minor),
+                _ => format!("{}.{}.{}", major, minor, hotfix),
+            };
+
+            // Extract MC phase suffix: +snapshot-N, +pre-N, +rc-N
+            let game_version = if let Some((_, phase)) = original.split_once('+') {
+                format!("{}-{}", base, phase)
+            } else {
+                base
+            };
+
+            map.entry(game_version)
+                .or_default()
+                .push((original, true));
+        } else {
+            // Old MC versioning (1.x.y) — skip weekly snapshots, pre-releases, RCs
+            if original.contains('w') || original.contains("-pre") || original.contains("-rc") {
+                log::info!("Skipping old snapshot version: {}", original);
+                continue;
             }
+
+            let game_version = if minor == "0" {
+                format!("1.{}", major)
+            } else {
+                format!("1.{}.{}", major, minor)
+            };
+
+            map.entry(game_version)
+                .or_default()
+                .push((original, true));
         }
     }
 
