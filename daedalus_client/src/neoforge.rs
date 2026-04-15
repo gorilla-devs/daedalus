@@ -502,11 +502,20 @@ pub async fn fetch_maven_metadata(
                     // New format: 26.1-snapshot-1 (no 1. prefix)
                     format!("{}.{}-snapshot-{}", major, minor, snapshot_num)
                 } else {
-                    // Standard format: 1.21.1
-                    if minor == "0" {
-                        format!("1.{}", major)
+                    // MC dropped the "1." prefix after 1.21
+                    let major_num: u32 = major.parse().unwrap_or(0);
+                    if major_num > 21 {
+                        if minor == "0" {
+                            major.to_string()
+                        } else {
+                            format!("{}.{}", major, minor)
+                        }
                     } else {
-                        format!("1.{}.{}", major, minor)
+                        if minor == "0" {
+                            format!("1.{}", major)
+                        } else {
+                            format!("1.{}.{}", major, minor)
+                        }
                     }
                 };
 
