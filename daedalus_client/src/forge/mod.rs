@@ -26,7 +26,7 @@ use daedalus::modded::{
 use daedalus::{get_hash, GradleSpecifier};
 use tracing::{info, warn};
 use semver::{Version, VersionReq};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::{TryInto, TryFrom};
 use std::io::Read;
 use std::sync::{Arc, LazyLock};
@@ -64,6 +64,24 @@ pub async fn retrieve_data(
     info!("Retrieving Forge data ...");
 
     let maven_metadata = fetch_maven_metadata(None, semaphore.clone()).await?;
+
+    // Forge publishes a small JSON file marking each MC version's "recommended"
+    // and "latest" build. We mirror Prism's approach and surface "recommended"
+    // as LoaderVersion.stable. The set is keyed by full loader id (e.g.
+    // "1.20.1-47.4.10") for direct lookup at LoaderVersion construction time.
+    let recommended_loaders: Arc<HashSet<String>> = Arc::new(
+        match fetch_forge_promotions(semaphore.clone()).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(error = %e, "Failed to fetch Forge promotions; marking all as unstable");
+                HashSet::new()
+            }
+        },
+    );
+    info!(
+        recommended_count = recommended_loaders.len(),
+        "Loaded Forge promotions"
+    );
 
     let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
         "forge/v{}/manifest.json",
@@ -136,6 +154,7 @@ pub async fn retrieve_data(
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets);
                         let visited_v1_hashes = Arc::clone(&visited_v1_hashes);
+                        let recommended_loaders = Arc::clone(&recommended_loaders);
                         let semaphore = Arc::clone(&semaphore);
                         let minecraft_version = minecraft_version.clone();
 
@@ -306,9 +325,9 @@ pub async fn retrieve_data(
                                     let cas_url = crate::common::cas::build_cas_url(&version_hash)?;
 
                                     return Ok(Some(LoaderVersion {
+                                        stable: recommended_loaders.contains(&loader_version_full),
                                         id: loader_version_full,
                                         url: cas_url,
-                                        stable: false
                                     }));
                                 } else if FORGE_MANIFEST_V2_QUERY_P1.matches(&version) || FORGE_MANIFEST_V2_QUERY_P2.matches(&version) || FORGE_MANIFEST_V3_QUERY.matches(&version) {
                                     let mut archive_clone = archive.clone();
@@ -607,9 +626,9 @@ pub async fn retrieve_data(
                                     let cas_url = crate::common::cas::build_cas_url(&version_hash)?;
 
                                     return Ok(Some(LoaderVersion {
+                                        stable: recommended_loaders.contains(&loader_version_full),
                                         id: loader_version_full,
                                         url: cas_url,
-                                        stable: false
                                     }));
                                 }
                             }
@@ -725,4 +744,41 @@ pub async fn fetch_maven_metadata(
         )
         .await?,
     )?)
+}
+
+const PROMOTIONS_SLIM_URL: &str =
+    "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
+
+#[derive(serde::Deserialize)]
+struct PromotionsSlim {
+    promos: HashMap<String, String>,
+}
+
+/// Fetches Forge's promotions_slim.json and returns the set of full loader IDs
+/// (e.g. "1.20.1-47.4.10") that the upstream marks as `recommended`.
+///
+/// The JSON keys are `<mc>-<latest|recommended>[-<branch>]` and the values are
+/// short Forge versions. We mirror Prism's logic: only `-recommended` entries
+/// without a branch suffix promote the build, and the resulting full id is
+/// reconstructed by joining the MC version with the short Forge version.
+pub async fn fetch_forge_promotions(
+    semaphore: Arc<Semaphore>,
+) -> Result<HashSet<String>, crate::infrastructure::error::Error> {
+    let bytes = download_file(PROMOTIONS_SLIM_URL, None, semaphore).await?;
+    let parsed: PromotionsSlim = serde_json::from_slice(&bytes)?;
+
+    let mut recommended = HashSet::new();
+    for (key, short_forge_version) in parsed.promos {
+        // Key shape: <mc>-<promotion>[-<branch>]. We want exactly two segments
+        // ending in "recommended" (skipping branch-specific promotions like
+        // "1.20.1-recommended-lts").
+        let Some((mc, suffix)) = key.rsplit_once('-') else {
+            continue;
+        };
+        if suffix != "recommended" {
+            continue;
+        }
+        recommended.insert(format!("{}-{}", mc, short_forge_version));
+    }
+    Ok(recommended)
 }
