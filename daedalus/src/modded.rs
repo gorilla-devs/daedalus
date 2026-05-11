@@ -1,4 +1,4 @@
-use crate::{download_file, Branding, Error, BRANDING};
+use crate::{download_file, Error, BRANDING};
 
 use crate::minecraft::{
     Argument, ArgumentType, Library, LoggingConfig, LoggingConfigName,
@@ -6,7 +6,7 @@ use crate::minecraft::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 
 /// A data variable entry that depends on the side of the installation
@@ -62,7 +62,7 @@ pub struct PartialVersionInfo {
     pub minecraft_arguments: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Arguments passed to the game or JVM
-    pub arguments: Option<HashMap<ArgumentType, Vec<Argument>>>,
+    pub arguments: Option<BTreeMap<ArgumentType, Vec<Argument>>>,
     /// Libraries that the version depends on
     pub libraries: Vec<Library>,
     #[serde(rename = "type")]
@@ -70,10 +70,10 @@ pub struct PartialVersionInfo {
     pub type_: VersionType,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Logging configuration
-    pub logging: Option<HashMap<LoggingConfigName, LoggingConfig>>,
+    pub logging: Option<BTreeMap<LoggingConfigName, LoggingConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// (Forge-only)
-    pub data: Option<HashMap<String, SidedDataEntry>>,
+    pub data: Option<BTreeMap<String, SidedDataEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// (Forge-only) The list of processors to run after downloading the files
     pub processors: Option<Vec<Processor>>,
@@ -90,7 +90,7 @@ pub struct Processor {
     pub args: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Represents a map of outputs. Keys and values can be data values
-    pub outputs: Option<HashMap<String, String>>,
+    pub outputs: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Which sides this processor shall be ran on.
     /// Valid values: client, server, extract
@@ -105,20 +105,32 @@ pub async fn fetch_partial_version(
 }
 
 /// Merges a partial version into a complete one
+///
+/// # Panics
+/// Panics if `Branding::set_branding` was never called. Previously this fell back
+/// to a hard-coded `unbranded` default, which silently no-op'd the dummy-version
+/// substitution for any consumer using a real brand. Calling `set_branding`
+/// before this function is required.
 pub fn merge_partial_version(
     partial: PartialVersionInfo,
     merge: VersionInfo,
 ) -> VersionInfo {
     let merge_id = merge.id.clone();
+    let dummy_replace_string = &BRANDING
+        .get()
+        .expect(
+            "Branding must be set via Branding::set_branding before merge_partial_version",
+        )
+        .dummy_replace_string;
 
     VersionInfo {
         arguments: if let Some(partial_args) = partial.arguments {
             if let Some(merge_args) = merge.arguments {
-                let mut new_map = HashMap::new();
+                let mut new_map = BTreeMap::new();
 
                 fn add_keys(
-                    new_map: &mut HashMap<ArgumentType, Vec<Argument>>,
-                    args: HashMap<ArgumentType, Vec<Argument>>,
+                    new_map: &mut BTreeMap<ArgumentType, Vec<Argument>>,
+                    args: BTreeMap<ArgumentType, Vec<Argument>>,
                 ) {
                     for (type_, arguments) in args {
                         for arg in arguments {
@@ -144,10 +156,7 @@ pub fn merge_partial_version(
         asset_index: merge.asset_index,
         assets: merge.assets,
         downloads: merge.downloads,
-        id: partial.id.replace(
-            &BRANDING.get_or_init(Branding::default).dummy_replace_string,
-            &merge_id,
-        ),
+        id: partial.id.replace(dummy_replace_string, &merge_id),
         inherits_from: Some(merge_id.clone()),
         java_version: merge.java_version,
         libraries: partial
@@ -160,12 +169,7 @@ pub fn merge_partial_version(
                 name: x
                     .name
                     .to_string()
-                    .replace(
-                        &BRANDING
-                            .get_or_init(Branding::default)
-                            .dummy_replace_string,
-                        &merge_id,
-                    )
+                    .replace(dummy_replace_string, &merge_id)
                     .parse()
                     .expect(
                         "Gradle specifier to still be valid after branding",

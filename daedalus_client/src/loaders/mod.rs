@@ -8,7 +8,7 @@ use crate::services::upload::BatchUploader;
 use dashmap::DashMap;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, Version};
-use daedalus::{get_hash, Branding, BRANDING};
+use daedalus::{get_hash, BRANDING};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -118,7 +118,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             .unwrap_or_default();
 
         let dummy_replace_string = BRANDING
-            .get_or_init(Branding::default)
+            .get()
+            .expect("Branding must be set via Branding::set_branding before retrieve_data")
             .dummy_replace_string
             .clone();
 
