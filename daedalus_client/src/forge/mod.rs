@@ -303,14 +303,7 @@ pub async fn retrieve_data(
                                         new_hash.clone()
                                     };
 
-                                    let base_url = dotenvy::var("BASE_URL").unwrap();
-                                    let cas_url = format!(
-                                        "{}/v{}/objects/{}/{}",
-                                        base_url,
-                                        crate::services::cas::CAS_VERSION,
-                                        &version_hash[..2],
-                                        &version_hash[2..]
-                                    );
+                                    let cas_url = crate::common::cas::build_cas_url(&version_hash)?;
 
                                     return Ok(Some(LoaderVersion {
                                         id: loader_version_full,
