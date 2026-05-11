@@ -3,7 +3,7 @@
 //! This module contains utility functions used during version processing
 //! to check library and version properties.
 
-use daedalus::minecraft::{Library, VersionInfo};
+use daedalus::minecraft::Library;
 
 /// Check if a library uses split natives
 ///
@@ -20,16 +20,5 @@ pub fn lib_is_split_natives(lib: &Library) -> bool {
         .identifier
         .as_ref()
         .is_some_and(|data| data.starts_with("natives-"))
-}
-
-/// Check if a Minecraft version has any libraries with split natives
-///
-/// # Arguments
-/// - `ver`: The version info to check
-///
-/// # Returns
-/// `true` if any library in the version has split natives, `false` otherwise
-pub fn version_has_split_natives(ver: &VersionInfo) -> bool {
-    ver.libraries.iter().any(lib_is_split_natives)
 }
 

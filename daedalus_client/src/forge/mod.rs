@@ -1,7 +1,6 @@
 //! Forge loader metadata retrieval and processing
 
 pub mod types;
-pub mod archive;
 pub mod libraries;
 pub mod version;
 
