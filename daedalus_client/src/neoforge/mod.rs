@@ -165,12 +165,10 @@ pub async fn retrieve_data(
 
                                 let version = profile.version.clone();
 
-                                // Use BTreeMap iteration order for determinism — pushed library order
-                                // ends up in `libs` and is later included in the version JSON we hash.
-                                let profile_data: BTreeMap<String, SidedDataEntry> =
-                                    profile.data.into_iter().collect();
-                                profile.data = HashMap::new();
-
+                                // profile.data is a BTreeMap, so iteration order is deterministic —
+                                // pushed library order ends up in `libs` and is later included in
+                                // the version JSON we hash.
+                                let profile_data = std::mem::take(&mut profile.data);
                                 let mut sorted_data: BTreeMap<String, SidedDataEntry> = BTreeMap::new();
 
                                 for (key, mut entry) in profile_data {
@@ -234,8 +232,7 @@ pub async fn retrieve_data(
                                     sorted_data.insert(key, entry);
                                 }
 
-                                // Re-collect data into a HashMap for the PartialVersionInfo (keys ordered via the BTreeMap walk above).
-                                profile.data = sorted_data.into_iter().collect();
+                                profile.data = sorted_data;
 
                                 let now = Instant::now();
 

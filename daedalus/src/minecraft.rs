@@ -191,7 +191,7 @@ pub struct AssetIndex {
     pub url: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone)]
 #[serde(rename_all = "snake_case")]
 /// The type of download
 pub enum DownloadType {
@@ -606,7 +606,7 @@ pub enum Argument {
     },
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
 /// The type of argument
 pub enum ArgumentType {
@@ -626,7 +626,7 @@ pub enum LoggingType {
     Log4j2Xml,
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
 /// Java Logging config names
 pub enum LoggingConfigName {
@@ -667,13 +667,13 @@ pub struct LoggingConfig {
 pub struct VersionInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Arguments passed to the game or JVM
-    pub arguments: Option<HashMap<ArgumentType, Vec<Argument>>>,
+    pub arguments: Option<BTreeMap<ArgumentType, Vec<Argument>>>,
     /// Assets for the game
     pub asset_index: AssetIndex,
     /// The version ID of the assets
     pub assets: String,
     /// Game downloads of the version
-    pub downloads: HashMap<DownloadType, Download>,
+    pub downloads: BTreeMap<DownloadType, Download>,
     /// The version ID of the version
     pub id: String,
 
@@ -703,10 +703,10 @@ pub struct VersionInfo {
     pub type_: VersionType,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Logging configuration
-    pub logging: Option<HashMap<LoggingConfigName, LoggingConfig>>,
+    pub logging: Option<BTreeMap<LoggingConfigName, LoggingConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// (Forge-only)
-    pub data: Option<HashMap<String, SidedDataEntry>>,
+    pub data: Option<BTreeMap<String, SidedDataEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// (Forge-only) The list of processors to run after downloading the files
     pub processors: Option<Vec<Processor>>,
