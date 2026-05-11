@@ -155,7 +155,27 @@ impl ErrorKind {
                         .unwrap_or(false)
             }
             ErrorKind::ChecksumFailure { .. } => true,
-            ErrorKind::S3 { .. } => true,
+            ErrorKind::S3 { source, .. } => {
+                // Treat 4xx (auth, missing bucket, malformed request) as permanent —
+                // retrying these used to produce ~3-hour retry storms on misconfig.
+                // 5xx, 429 (Too Many Requests), and 408 (Request Timeout) are retryable.
+                use s3::error::S3Error;
+                match source.as_ref() {
+                    S3Error::Http(status, _) => {
+                        *status >= 500 || *status == 429 || *status == 408
+                    }
+                    S3Error::HttpFail => true, // generic transient
+                    S3Error::Reqwest(e) => {
+                        e.is_timeout()
+                            || e.is_connect()
+                            || e.status()
+                                .map(|s| s.is_server_error() || s.as_u16() == 429 || s.as_u16() == 408)
+                                .unwrap_or(true) // no status = network-level, retry
+                    }
+                    S3Error::Io(_) => true,
+                    _ => false,
+                }
+            }
             _ => false,
         }
     }

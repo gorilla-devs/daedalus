@@ -162,6 +162,7 @@ async fn upload_single_file(
             .with_max_times(10)
             .with_max_delay(Duration::from_secs(1800)),
     )
+    .when(|e: &crate::infrastructure::error::Error| e.should_retry())
     .await
 }
 

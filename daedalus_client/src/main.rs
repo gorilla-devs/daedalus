@@ -652,6 +652,7 @@ pub async fn upload_file_to_bucket(
             .with_max_times(MAX_UPLOAD_RETRIES)
             .with_max_delay(Duration::from_secs(MAX_RETRY_DELAY_SECS)),
     )
+    .when(|e: &crate::infrastructure::error::Error| e.should_retry())
     .await
 }
 
