@@ -1,15 +1,11 @@
 //! Type definitions for Forge loader processing
 
-use crate::services::upload::BatchUploader;
 use chrono::{DateTime, Utc};
-use dashmap::DashSet;
 use daedalus::minecraft::{Library, VersionType};
 use daedalus::modded::{Processor, SidedDataEntry};
 use daedalus::GradleSpecifier;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore};
+use std::collections::{BTreeMap, HashSet};
 
 /// Forge installer profile (v1 format) - install section
 #[derive(Serialize, Deserialize, Debug)]
@@ -53,16 +49,31 @@ pub struct ForgeInstallerProfileV1 {
 }
 
 /// Forge installer profile (v2+ format)
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+///
+/// Forge has historically tweaked this schema between releases (renaming or
+/// dropping descriptive metadata fields). Only the fields that are actually
+/// load-bearing for processing are required; everything else is `Option` with
+/// `default` so a future field rename doesn't take down a whole MC version.
+#[derive(Serialize, Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ForgeInstallerProfileV2 {
+    /// Display name (e.g. "forge", "neoforge"). Not load-bearing for our pipeline.
     pub profile: String,
+    /// Maven version coord; used to namespace extracted artifacts.
     pub version: String,
+    /// Path to the bundled version.json inside the installer JAR. Currently unused
+    /// (we read `version.json` by name) but kept so future tooling can rely on it.
     pub json: String,
+    /// Maven coord of the universal jar; nullable for some installers.
     pub path: Option<String>,
+    /// Minecraft version this installer targets — load-bearing (replaces the
+    /// reverse-engineered MC id in the maven coordinate).
     pub minecraft: String,
-    pub data: HashMap<String, SidedDataEntry>,
+    /// Sided data entries (client/server). May be missing on some legacy installers.
+    pub data: BTreeMap<String, SidedDataEntry>,
+    /// Library list with per-entry artifact metadata.
     pub libraries: Vec<Library>,
+    /// Post-install processors. May be empty for non-installer flows.
     pub processors: Vec<Processor>,
 }
 
@@ -126,12 +137,3 @@ impl MinecraftVersionLibraryCache {
     }
 }
 
-/// Context shared across Forge processing operations
-pub struct ForgeProcessingContext<'a> {
-    pub uploader: &'a BatchUploader,
-    pub s3_client: &'a s3::Bucket,
-    pub semaphore: Arc<Semaphore>,
-    pub visited_assets: Arc<DashSet<GradleSpecifier>>,
-    pub mc_library_cache: Arc<Mutex<MinecraftVersionLibraryCache>>,
-    pub old_versions: Arc<Mutex<Vec<daedalus::modded::Version>>>,
-}
