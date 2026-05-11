@@ -11,14 +11,14 @@ use crate::common::{change_detection::detect_version_change, manifest_merge::{me
 use dashmap::DashSet;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{
-    LoaderVersion, PartialVersionInfo, Processor, SidedDataEntry,
+    LoaderVersion, PartialVersionInfo, SidedDataEntry,
 };
 use daedalus::get_hash;
 use tracing::{info, warn};
 // Note: Using lenient_semver instead of semver::Version to handle
 // non-standard NeoForge versions like "26.1.0.0-alpha.1+snapshot-1"
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::Read;
 use std::sync::{Arc, LazyLock};
@@ -64,13 +64,15 @@ pub async fn retrieve_data(
             Vec::new()
         }));
 
-    let versions = Arc::new(Mutex::new(Vec::new()));
+    let versions: Arc<Mutex<Vec<daedalus::modded::Version>>> = Arc::new(Mutex::new(Vec::new()));
 
     let visited_assets = Arc::new(DashSet::new());
 
     let mut version_futures = Vec::new();
 
-    for (minecraft_version, loader_versions) in maven_metadata.clone() {
+    // The maven-metadata grouping by inferred MC is still used to scope the inner futures,
+    // but the actual published Minecraft id comes from each installer's profile.minecraft.
+    for (_inferred_mc_version, loader_versions) in maven_metadata.clone() {
         let mut loaders = Vec::new();
 
         for (loader_version, new_forge) in loader_versions {
@@ -92,13 +94,12 @@ pub async fn retrieve_data(
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets);
                         let semaphore = Arc::clone(&semaphore);
-                        let minecraft_version = minecraft_version.clone();
 
                         async move {
                             // Check skip list first
                             if NEOFORGE_SKIP_LIST.contains(loader_version_full.as_str()) {
                                 info!("⏭️  NeoForge - Skipping excluded version: {}", loader_version_full);
-                                return Ok::<Option<LoaderVersion>, crate::infrastructure::error::Error>(None);
+                                return Ok::<Option<(String, LoaderVersion)>, crate::infrastructure::error::Error>(None);
                             }
 
                             info!("Neoforge - Installer Start {}", loader_version_full.clone());
@@ -164,65 +165,77 @@ pub async fn retrieve_data(
 
                                 let version = profile.version.clone();
 
-                                for entry in profile.data.values_mut() {
+                                // Use BTreeMap iteration order for determinism — pushed library order
+                                // ends up in `libs` and is later included in the version JSON we hash.
+                                let profile_data: BTreeMap<String, SidedDataEntry> =
+                                    profile.data.into_iter().collect();
+                                profile.data = HashMap::new();
+
+                                let mut sorted_data: BTreeMap<String, SidedDataEntry> = BTreeMap::new();
+
+                                for (key, mut entry) in profile_data {
                                     if entry.client.starts_with('/') || entry.server.starts_with('/') {
+                                        // Tag artifact identifier with the side so client/server data
+                                        // entries that share a filename don't collide on the same coord.
                                         macro_rules! read_data {
-                                    ($value:expr) => {
-                                        let mut archive_clone = archive.clone();
-                                        let value_clone = $value.clone();
-                                        // Validate path has content after the leading slash
-                                        if value_clone.len() <= 1 {
-                                            return Err(crate::infrastructure::error::invalid_input(format!(
-                                                "Invalid data path in NeoForge installer: '{}'",
-                                                value_clone
-                                            )));
-                                        }
-                                        let lib_bytes = tokio::task::spawn_blocking(move || {
-                                            let mut lib_file = archive_clone.by_name(&value_clone[1..])?;
-                                            let mut lib_bytes =  Vec::new();
-                                            lib_file.read_to_end(&mut lib_bytes)?;
+                                            ($value:expr, $side:literal) => {
+                                                let mut archive_clone = archive.clone();
+                                                let value_clone = $value.clone();
+                                                // Validate path has content after the leading slash
+                                                if value_clone.len() <= 1 {
+                                                    warn!("Skipping invalid NeoForge data path '{}' (key: {}, side: {})", value_clone, key, $side);
+                                                } else {
+                                                    let lib_bytes = tokio::task::spawn_blocking(move || {
+                                                        let mut lib_file = archive_clone.by_name(&value_clone[1..])?;
+                                                        let mut lib_bytes =  Vec::new();
+                                                        lib_file.read_to_end(&mut lib_bytes)?;
 
-                                            Ok::<bytes::Bytes, crate::infrastructure::error::Error>(bytes::Bytes::from(lib_bytes))
-                                        }).await??;
+                                                        Ok::<bytes::Bytes, crate::infrastructure::error::Error>(bytes::Bytes::from(lib_bytes))
+                                                    }).await??;
 
-                                        let split = $value.split('/').last();
+                                                    let split = $value.rsplit('/').next();
 
-                                        if let Some(last) = split {
-                                            let mut file = last.split('.');
+                                                    if let Some(last) = split {
+                                                        // rsplit_once handles `foo.tar.gz` (file_name = "foo.tar", ext = "gz")
+                                                        if let Some((file_name, ext)) = last.rsplit_once('.') {
+                                                            let path = format!(
+                                                                "gg.gdl.daedalus:neoforge-installer-extracts:{}:{}-{}@{}",
+                                                                version, $side, file_name, ext
+                                                            );
+                                                            $value = format!("[{}]", &path);
+                                                            local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
 
-                                            if let Some(file_name) = file.next() {
-                                                if let Some(ext) = file.next() {
-                                                    let path = format!("gg.gdl.daedalus:neoforge-installer-extracts:{}:{}@{}", version, file_name, ext);
-                                                    $value = format!("[{}]", &path);
-                                                    local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
-
-                                                    libs.push(Library {
-                                                        downloads: None,
-                                                        extract: None,
-                                                        name: path.as_str().try_into()?,
-                                                        url: Some("".to_string()),
-                                                        natives: None,
-                                                        rules: None,
-                                                        checksums: None,
-                                                        include_in_classpath: false,
-                                                        version_hashes: None,
-                                                        patched: false,
-                                                    });
+                                                            libs.push(Library {
+                                                                downloads: None,
+                                                                extract: None,
+                                                                name: path.as_str().try_into()?,
+                                                                url: Some("".to_string()),
+                                                                natives: None,
+                                                                rules: None,
+                                                                checksums: None,
+                                                                include_in_classpath: false,
+                                                                version_hashes: None,
+                                                                patched: false,
+                                                            });
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-                                }
 
                                         if entry.client.starts_with('/') {
-                                            read_data!(entry.client);
+                                            read_data!(entry.client, "client");
                                         }
 
                                         if entry.server.starts_with('/') {
-                                            read_data!(entry.server);
+                                            read_data!(entry.server, "server");
                                         }
                                     }
+                                    sorted_data.insert(key, entry);
                                 }
+
+                                // Re-collect data into a HashMap for the PartialVersionInfo (keys ordered via the BTreeMap walk above).
+                                profile.data = sorted_data.into_iter().collect();
 
                                 let now = Instant::now();
 
@@ -333,11 +346,14 @@ pub async fn retrieve_data(
                                 let version_bytes = serde_json::to_vec(&new_profile)?;
                                 let new_hash = get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
 
+                                // Loader IDs are globally unique, so look up by loader id alone.
+                                // This is robust against migrations of the MC-version grouping
+                                // (e.g. inferred maven-derived id → profile.minecraft).
                                 let old_loader_version = {
                                     let versions = versions_mutex.lock().await;
                                     versions.iter()
-                                        .find(|v| v.id == minecraft_version)
-                                        .and_then(|v| v.loaders.iter().find(|l| l.id == loader_version_full))
+                                        .flat_map(|v| v.loaders.iter())
+                                        .find(|l| l.id == loader_version_full)
                                         .cloned()
                                 };
 
@@ -364,11 +380,14 @@ pub async fn retrieve_data(
                                 // Use common CAS URL building
                                 let cas_url = crate::common::cas::build_cas_url(&version_hash)?;
 
-                                return Ok(Some(LoaderVersion {
+                                // Trust profile.minecraft over the maven-derived inferred id —
+                                // Mojang's "no 1.x prefix" versioning makes reverse-engineering
+                                // from the NeoForge coordinate brittle.
+                                return Ok(Some((profile.minecraft.clone(), LoaderVersion {
                                     id: loader_version_full,
                                     url: cas_url,
                                     stable: false
-                                }));
+                                })));
                             }
 
                             Ok(None)
@@ -377,38 +396,21 @@ pub async fn retrieve_data(
 
                     {
                         let len = loaders_futures.len();
-                        let mut versions = loaders_futures.into_iter().peekable();
-                        let mut chunk_index = 0;
                         let mut successful = 0;
                         let mut failed = 0;
 
-                        while versions.peek().is_some() {
-                            let now = Instant::now();
-
-                            let chunk: Vec<_> = versions.by_ref().take(1).collect();
-
-                            // Process each version and handle errors individually
-                            for future in chunk {
-                                match future.await {
-                                    Ok(result) => {
-                                        if let Some(version) = result {
-                                            loaders_versions.push(version);
-                                            successful += 1;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!("⚠️  NeoForge - Failed to process version: {}", e);
-                                        failed += 1;
-                                        // Continue processing other versions
-                                    }
+                        for (idx, result) in futures::future::join_all(loaders_futures).await.into_iter().enumerate() {
+                            match result {
+                                Ok(Some(entry)) => {
+                                    loaders_versions.push(entry);
+                                    successful += 1;
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    warn!("⚠️  NeoForge - Failed to process version {}/{len}: {}", idx + 1, e);
+                                    failed += 1;
                                 }
                             }
-
-                            chunk_index += 1;
-
-                            let elapsed = now.elapsed();
-                            info!("Loader Chunk {}/{len} Elapsed: {:.2?} ({} succeeded, {} failed)",
-                                chunk_index, elapsed, successful, failed);
                         }
 
                         if failed > 0 {
@@ -417,12 +419,30 @@ pub async fn retrieve_data(
                     }
                 }
 
-                let is_stable = !minecraft_version.contains("-snapshot-");
-                versions.lock().await.push(daedalus::modded::Version {
-                    id: minecraft_version,
-                    stable: is_stable,
-                    loaders: loaders_versions
-                });
+                // Group loaders by the actual Minecraft version each installer reports
+                // in `profile.minecraft`. The maven-derived `minecraft_version` is only
+                // used as a coarse maven-metadata bucket key — installers may collapse
+                // into a different MC id at install_profile.json read time.
+                let mut by_actual_mc: BTreeMap<String, Vec<LoaderVersion>> = BTreeMap::new();
+                for (actual_mc, loader) in loaders_versions {
+                    by_actual_mc.entry(actual_mc).or_default().push(loader);
+                }
+
+                let mut versions_guard = versions.lock().await;
+                for (actual_mc, loaders) in by_actual_mc {
+                    let is_stable = !(actual_mc.contains("-snapshot-")
+                        || actual_mc.contains("-pre-")
+                        || actual_mc.contains("-rc-"));
+                    if let Some(existing) = versions_guard.iter_mut().find(|v| v.id == actual_mc) {
+                        existing.loaders.extend(loaders);
+                    } else {
+                        versions_guard.push(daedalus::modded::Version {
+                            id: actual_mc,
+                            stable: is_stable,
+                            loaders,
+                        });
+                    }
+                }
 
                 Ok::<(), crate::infrastructure::error::Error>(())
             });
@@ -431,35 +451,17 @@ pub async fn retrieve_data(
 
     {
         let len = version_futures.len();
-        let mut versions = version_futures.into_iter().peekable();
-        let mut chunk_index = 0;
         let mut successful_mc_versions = 0;
         let mut failed_mc_versions = 0;
 
-        while versions.peek().is_some() {
-            let now = Instant::now();
-
-            let chunk: Vec<_> = versions.by_ref().take(1).collect();
-
-            // Process each Minecraft version and handle errors individually
-            for future in chunk {
-                match future.await {
-                    Ok(()) => {
-                        successful_mc_versions += 1;
-                    }
-                    Err(e) => {
-                        warn!("⚠️  NeoForge - Failed to process Minecraft version: {}", e);
-                        failed_mc_versions += 1;
-                        // Continue processing other Minecraft versions
-                    }
+        for (idx, result) in futures::future::join_all(version_futures).await.into_iter().enumerate() {
+            match result {
+                Ok(()) => successful_mc_versions += 1,
+                Err(e) => {
+                    warn!("⚠️  NeoForge - Failed to process Minecraft version {}/{len}: {}", idx + 1, e);
+                    failed_mc_versions += 1;
                 }
             }
-
-            chunk_index += 1;
-
-            let elapsed = now.elapsed();
-            info!("Chunk {}/{len} Elapsed: {:.2?} ({} MC versions succeeded, {} failed)",
-                chunk_index, elapsed, successful_mc_versions, failed_mc_versions);
         }
 
         if failed_mc_versions > 0 {
