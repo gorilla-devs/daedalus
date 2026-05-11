@@ -270,10 +270,9 @@ pub async fn retrieve_data(
                         )
                         .await?;
 
-                    let base_url = dotenvy::var("BASE_URL").unwrap();
                     version_info.asset_index.url = format!(
                         "{}/v{}/objects/{}/{}",
-                        base_url,
+                        crate::common::BASE_URL.as_str(),
                         crate::services::cas::CAS_VERSION,
                         &asset_hash[..2],
                         &asset_hash[2..]
@@ -300,10 +299,9 @@ pub async fn retrieve_data(
                         .map(|orig| orig + *inserts_count);
 
                     if let Some(position) = position {
-                        let base_url = dotenvy::var("BASE_URL").unwrap();
-                        cloned_manifest.versions[position].url = format!(
+                            cloned_manifest.versions[position].url = format!(
                             "{}/v{}/objects/{}/{}",
-                            base_url,
+                            crate::common::BASE_URL.as_str(),
                             crate::services::cas::CAS_VERSION,
                             &version_hash[..2],
                             &version_hash[2..]
@@ -321,7 +319,6 @@ pub async fn retrieve_data(
                         cloned_manifest.versions[position].sha1 = version_hash.clone();
                         cloned_manifest.versions[position].original_sha1 = Some(upstream_sha1.clone());
                     } else {
-                        let base_url = dotenvy::var("BASE_URL").unwrap();
                         cloned_manifest.versions.insert(
                             0,
                             daedalus::minecraft::Version {
@@ -329,7 +326,7 @@ pub async fn retrieve_data(
                                 type_: version_info.type_.clone(),
                                 url: format!(
                                     "{}/v{}/objects/{}/{}",
-                                    base_url,
+                                    crate::common::BASE_URL.as_str(),
                                     crate::services::cas::CAS_VERSION,
                                     &version_hash[..2],
                                     &version_hash[2..]

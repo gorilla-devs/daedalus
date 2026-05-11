@@ -486,10 +486,9 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                 let guard = cycle_uploaded_paths.lock().await;
                                 guard.clone()
                             };
-                            let base_url = dotenvy::var("BASE_URL").unwrap();
                             let uploaded_manifest_urls: Vec<String> = uploaded_paths
                                 .into_iter()
-                                .map(|p| format!("{}/{}", base_url, p))
+                                .map(|p| format!("{}/{}", crate::common::BASE_URL.as_str(), p))
                                 .collect();
 
                             if !uploaded_manifest_urls.is_empty() {
@@ -678,8 +677,7 @@ pub async fn upload_file_to_bucket(
 }
 
 pub fn format_url(path: &str) -> String {
-    let base_url = &*dotenvy::var("BASE_URL").unwrap();
-    let full_url = format!("{}/{}", base_url, path);
+    let full_url = format!("{}/{}", crate::common::BASE_URL.as_str(), path);
     info!(path = %path, url = %full_url, "Formatted URL");
     full_url
 }

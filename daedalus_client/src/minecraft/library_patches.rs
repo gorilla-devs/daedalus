@@ -93,10 +93,7 @@ pub async fn get_library_patches(
 /// Pre-process a patch by replacing ${BASE_URL} placeholders
 fn pre_process_patch(patch: &LibraryPatch) -> LibraryPatch {
     fn patch_url(url: &mut String) {
-        *url = url.replace(
-            "${BASE_URL}",
-            &dotenvy::var("BASE_URL").expect("BASE_URL must be set"),
-        );
+        *url = url.replace("${BASE_URL}", crate::common::BASE_URL.as_str());
     }
 
     fn patch_downloads(downloads: &mut LibraryDownloads) {

@@ -3,6 +3,18 @@
 //! This module provides common functions for working with the CAS system,
 //! including URL building and hash extraction.
 
+use std::sync::LazyLock;
+
+/// Cached BASE_URL — fetched once at first access from the environment.
+///
+/// Centralising this avoids the ~10 scattered `dotenvy::var("BASE_URL").unwrap()`
+/// hot-path calls and surfaces a missing env var with a clear panic at startup
+/// rather than at the first concurrent task that happens to format a URL.
+pub static BASE_URL: LazyLock<String> = LazyLock::new(|| {
+    dotenvy::var("BASE_URL")
+        .expect("BASE_URL environment variable must be set (checked at startup via check_env_vars)")
+});
+
 /// Extract the content hash from a CAS URL
 ///
 /// CAS URLs have the format: `{base}/v{version}/objects/{hash_prefix}/{hash_suffix}`
@@ -64,10 +76,9 @@ pub fn build_cas_url(hash: &str) -> Result<String, crate::infrastructure::error:
             hash
         )));
     }
-    let base_url = dotenvy::var("BASE_URL").expect("BASE_URL must be set");
     Ok(format!(
         "{}/v{}/objects/{}/{}",
-        base_url,
+        BASE_URL.as_str(),
         crate::services::cas::CAS_VERSION,
         &hash[..2],
         &hash[2..]
