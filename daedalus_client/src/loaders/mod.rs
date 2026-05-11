@@ -37,6 +37,11 @@ pub trait LoaderStrategy: Send + Sync {
     fn maven_fallback(&self) -> &str;
     fn manifest_path_prefix(&self) -> &str;
     fn is_stable(&self, loader: &dyn LoaderVersionInfo) -> bool;
+    /// Whether to skip a specific loader version entirely (known-broken upstream artifact).
+    /// Default: never skip.
+    fn should_skip(&self, _loader_version: &str) -> bool {
+        false
+    }
 }
 
 pub trait LoaderVersionInfo: Send + Sync {
@@ -131,9 +136,21 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
 
         let dummy_entry = versions.iter().find(|x| x.id == dummy_replace_string);
 
+        let mut skipped = 0usize;
         for loader in list.loader() {
-            let stable = self.strategy.is_stable(loader as &dyn LoaderVersionInfo);
             let version_id = loader.version().to_string();
+
+            if self.strategy.should_skip(&version_id) {
+                info!(
+                    "⏭️  {} - Skipping excluded loader version: {}",
+                    self.strategy.name(),
+                    version_id
+                );
+                skipped += 1;
+                continue;
+            }
+
+            let stable = self.strategy.is_stable(loader as &dyn LoaderVersionInfo);
 
             let cached = dummy_entry
                 .and_then(|x| x.loaders.iter().find(|l| l.id == version_id))
@@ -148,6 +165,13 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             } else {
                 to_fetch.push((stable, version_id));
             }
+        }
+        if skipped > 0 {
+            info!(
+                "⏭️  {} - Skipped {} known-broken loader version(s)",
+                self.strategy.name(),
+                skipped
+            );
         }
 
         info!(

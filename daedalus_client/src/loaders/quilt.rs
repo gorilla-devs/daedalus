@@ -1,6 +1,16 @@
 use super::{GameVersionInfo, LoaderStrategy, LoaderVersionInfo, LoaderVersionsList};
 use serde::{Deserialize, Serialize};
 
+/// Quilt loader versions known to be broken upstream.
+///
+/// Mirrors Modrinth daedalus's Quilt blacklist. Each entry has a real upstream
+/// problem (missing artifact, malformed coordinates, etc.) that makes the loader
+/// version impossible to process; better to skip cleanly than to log a fetch
+/// failure on every cycle.
+const QUILT_SKIP_LIST: &[&str] = &[
+    "0.17.5-beta.4", // Broken coordinate publication on Quilt's maven
+];
+
 /// Quilt loader strategy implementation
 pub struct QuiltStrategy;
 
@@ -25,6 +35,10 @@ impl LoaderStrategy for QuiltStrategy {
         // Quilt API does not include stability information
         // Default to false (unstable)
         false
+    }
+
+    fn should_skip(&self, loader_version: &str) -> bool {
+        QUILT_SKIP_LIST.contains(&loader_version)
     }
 }
 
