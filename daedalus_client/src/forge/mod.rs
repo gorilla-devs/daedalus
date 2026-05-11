@@ -15,8 +15,9 @@ pub use types::{
 use crate::{
     download_file, download_file_mirrors, format_url,
 };
+use crate::common::manifest_merge::{merge_loader_versions, sort_by_minecraft_order, sort_loaders_by_metadata};
 use crate::services::upload::BatchUploader;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use daedalus::minecraft::{
     Argument, ArgumentType, Library, VersionManifest,
 };
@@ -85,6 +86,8 @@ pub async fn retrieve_data(
     let versions = Arc::new(Mutex::new(Vec::new()));
 
     let visited_assets = Arc::new(DashSet::new());
+    // Cache CAS hash per artifact for the V1 path so dedup can produce a real CAS URL.
+    let visited_v1_hashes: Arc<DashMap<GradleSpecifier, String>> = Arc::new(DashMap::new());
 
     let mut version_futures = Vec::new();
 
@@ -92,15 +95,10 @@ pub async fn retrieve_data(
         let mut loaders = Vec::new();
 
         for loader_version_full in loader_versions {
-
-            let is_snapshot = minecraft_version.contains('w') ||
-                              minecraft_version.contains("-pre") ||
-                              minecraft_version.contains("-rc");
-
-            if is_snapshot {
-                info!("Skipping snapshot version: {}", loader_version_full);
-                continue;
-            }
+            // Don't filter by minecraft_version snapshot pattern — Forge does ship
+            // installers for some pre-releases (e.g. 1.13-pre7) and `1.7.10_pre4`
+            // uses an underscore that the rename below depends on. Use FORGE_SKIP_LIST
+            // for known-broken specific versions instead.
 
             let loader_version = loader_version_full.split('-').nth(1);
 
@@ -138,6 +136,7 @@ pub async fn retrieve_data(
                         let mc_library_cache_mutex = Arc::clone(&mc_library_cache_mutex);
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets);
+                        let visited_v1_hashes = Arc::clone(&visited_v1_hashes);
                         let semaphore = Arc::clone(&semaphore);
                         let minecraft_version = minecraft_version.clone();
 
@@ -199,6 +198,7 @@ pub async fn retrieve_data(
                                     let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| {
                                         let semaphore = semaphore.clone();
                                         let visited_assets = visited_assets.clone();
+                                        let visited_v1_hashes = visited_v1_hashes.clone();
                                         let forge_universal_bytes = forge_universal_bytes.clone();
                                         let forge_universal_path = forge_universal_path.clone();
                                         let minecraft_libs_filter = minecraft_libs_filter.clone();
@@ -208,18 +208,16 @@ pub async fn retrieve_data(
                                             return Ok::<Option<Library>, crate::infrastructure::error::Error>(None);
                                         }
 
-                                        // let mut repo_url
                                         if let Some(url) = lib.url {
                                             // Check if we've already processed this artifact (lock-free)
                                             if !visited_assets.insert(lib.name.clone()) {
-                                                // Already processed, skip download
-                                                let base_url = dotenvy::var("BASE_URL").unwrap();
-                                                lib.url = Some(format!(
-                                                    "{}/v{}/objects/",
-                                                    base_url,
-                                                    crate::services::cas::CAS_VERSION
-                                                ));
-                                                return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
+                                                // Already processed: produce the real CAS URL from the cached hash.
+                                                if let Some(hash_entry) = visited_v1_hashes.get(&lib.name) {
+                                                    lib.url = Some(crate::common::cas::build_cas_url(hash_entry.value())?);
+                                                    return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
+                                                }
+                                                // No cached hash means the previous attempt failed before recording it
+                                                // — fall through and try uploading again rather than emit a broken URL.
                                             }
 
                                             let artifact_path = lib.name.path();
@@ -244,15 +242,11 @@ pub async fn retrieve_data(
                                                 semaphore.clone(),
                                             ).await?;
 
+                                            // Cache hash for future dedup hits.
+                                            visited_v1_hashes.insert(lib.name.clone(), hash.clone());
+
                                             // Store full CAS URL
-                                            let base_url = dotenvy::var("BASE_URL").unwrap();
-                                            lib.url = Some(format!(
-                                                "{}/v{}/objects/{}/{}",
-                                                base_url,
-                                                crate::services::cas::CAS_VERSION,
-                                                &hash[..2],
-                                                &hash[2..]
-                                            ));
+                                            lib.url = Some(crate::common::cas::build_cas_url(&hash)?);
                                         } else if lib.downloads.is_none() {
                                             lib.url = Some(String::from("https://libraries.minecraft.net/"));
                                         }
@@ -648,42 +642,27 @@ pub async fn retrieve_data(
 
                     {
                         let len = loaders_futures.len();
-                        let mut versions = loaders_futures.into_iter().peekable();
-                        let mut chunk_index = 0;
                         let mut successful = 0;
                         let mut failed = 0;
 
-                        while versions.peek().is_some() {
-                            let now = Instant::now();
-
-                            let chunk: Vec<_> = versions.by_ref().take(1).collect();
-
-                            // Handle each future individually to prevent crashing on errors
-                            for future in chunk {
-                                match future.await {
-                                    Ok(result) => {
-                                        if let Some(loader_version) = result {
-                                            loaders_versions.push(loader_version);
-                                            successful += 1;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!("⚠️  Forge - Failed to process version: {}", e);
-                                        failed += 1;
-                                        // Continue processing other versions
-                                    }
+                        // The downloads inside each future already gate on `semaphore`; running
+                        // these futures concurrently lets the semaphore actually do its job.
+                        for (idx, result) in futures::future::join_all(loaders_futures).await.into_iter().enumerate() {
+                            match result {
+                                Ok(Some(loader_version)) => {
+                                    loaders_versions.push(loader_version);
+                                    successful += 1;
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    warn!("⚠️  Forge - Failed to process version {}/{len}: {}", idx + 1, e);
+                                    failed += 1;
                                 }
                             }
-
-                            chunk_index += 1;
-
-                            let elapsed = now.elapsed();
-                            info!("Loader Chunk {}/{len} Elapsed: {:.2?} (✓ {} ✗ {})", chunk_index, elapsed, successful, failed);
                         }
 
                         info!("📊 Forge - Loader processing complete: {} successful, {} failed", successful, failed);
                     }
-                    //futures::future::try_join_all(loaders_futures).await?;
                 }
 
                 versions.lock().await.push(daedalus::modded::Version {
@@ -699,39 +678,21 @@ pub async fn retrieve_data(
 
     {
         let len = version_futures.len();
-        let mut versions = version_futures.into_iter().peekable();
-        let mut chunk_index = 0;
         let mut successful = 0;
         let mut failed = 0;
 
-        while versions.peek().is_some() {
-            let now = Instant::now();
-
-            let chunk: Vec<_> = versions.by_ref().take(1).collect();
-
-            // Handle each future individually to prevent crashing on errors
-            for future in chunk {
-                match future.await {
-                    Ok(_) => {
-                        successful += 1;
-                    }
-                    Err(e) => {
-                        warn!("⚠️  Forge - Failed to process Minecraft version: {}", e);
-                        failed += 1;
-                        // Continue processing other versions
-                    }
+        for (idx, result) in futures::future::join_all(version_futures).await.into_iter().enumerate() {
+            match result {
+                Ok(_) => successful += 1,
+                Err(e) => {
+                    warn!("⚠️  Forge - Failed to process Minecraft version {}/{len}: {}", idx + 1, e);
+                    failed += 1;
                 }
             }
-
-            chunk_index += 1;
-
-            let elapsed = now.elapsed();
-            info!("Chunk {}/{len} Elapsed: {:.2?} (✓ {} ✗ {})", chunk_index, elapsed, successful, failed);
         }
 
         info!("📊 Forge - Minecraft version processing complete: {} successful, {} failed", successful, failed);
     }
-    //futures::future::try_join_all(version_futures).await?;
 
     // Extract versions by locking the mutex instead of try_unwrap
     // This avoids silent failures when Arc still has strong references from async closures
@@ -746,63 +707,15 @@ pub async fn retrieve_data(
     };
 
     // Merge new versions with old ones to preserve existing data
-    let mut final_versions = old_manifest_versions;
+    let mut final_versions = merge_loader_versions(old_manifest_versions, new_versions, "Forge");
 
-    for new_version in new_versions {
-        if let Some(existing) = final_versions.iter_mut().find(|v| v.id == new_version.id) {
-            // Merge loaders: keep old loaders + add/update new ones
-            for new_loader in new_version.loaders {
-                if let Some(existing_loader) = existing.loaders.iter_mut().find(|l| l.id == new_loader.id) {
-                    let loader_id = new_loader.id.clone();
-                    *existing_loader = new_loader;
-                    info!("✅ Forge - Updated loader: {}/{}", existing.id, loader_id);
-                } else {
-                    info!("✅ Forge - Added new loader: {}/{}", existing.id, new_loader.id);
-                    existing.loaders.push(new_loader);
-                }
-            }
-        } else {
-            info!("✅ Forge - Added new Minecraft version: {}", new_version.id);
-            final_versions.push(new_version);
-        }
-    }
+    // Sort versions by Minecraft version order (handles 1.7.10_pre4 rename + usize::MAX fallback)
+    sort_by_minecraft_order(&mut final_versions, minecraft_versions);
 
-    // Sort versions
-    final_versions.sort_by(|x, y| {
-        minecraft_versions
-            .versions
-            .iter()
-            .position(|z| {
-                x.id.replace("1.7.10_pre4", "1.7.10-pre4") == z.id
-            })
-            .unwrap_or_default()
-            .cmp(
-                &minecraft_versions
-                    .versions
-                    .iter()
-                    .position(|z| {
-                        y.id.replace("1.7.10_pre4", "1.7.10-pre4") == z.id
-                    })
-                    .unwrap_or_default(),
-            )
-    });
-
-    // Sort loaders within each version
+    // Sort loaders within each version using metadata order
     for version in &mut final_versions {
-        let loader_versions = maven_metadata.get(&version.id);
-        if let Some(loader_versions) = loader_versions {
-            version.loaders.sort_by(|x, y| {
-                loader_versions
-                    .iter()
-                    .position(|z| &y.id == z)
-                    .unwrap_or_default()
-                    .cmp(
-                        &loader_versions
-                            .iter()
-                            .position(|z| &x.id == z)
-                            .unwrap_or_default(),
-                    )
-            })
+        if let Some(loader_versions) = maven_metadata.get(&version.id) {
+            sort_loaders_by_metadata(version, loader_versions);
         }
     }
 
