@@ -122,25 +122,37 @@ impl MinecraftJavaProfile {
     }
 }
 
+impl MinecraftJavaProfile {
+    /// Whether this is one of the known/recognised Java profile names.
+    ///
+    /// Returns `false` for the catch-all `Unknown(...)` variant. Useful for callers
+    /// that want to skip processing when Mojang ships a new profile id we haven't
+    /// taught the launcher about yet.
+    pub fn is_known(&self) -> bool {
+        !matches!(self, MinecraftJavaProfile::Unknown(_))
+    }
+}
+
 impl TryFrom<&str> for MinecraftJavaProfile {
     type Error = Error;
 
+    /// Parse a Java profile name. Unknown strings produce `Unknown(...)` (matching
+    /// what the serde deserializer does for unknown values via the untagged
+    /// `Unknown(String)` variant) — call `is_known()` to distinguish.
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "jre-legacy" => Ok(MinecraftJavaProfile::JreLegacy),
-            "java-runtime-alpha" => Ok(MinecraftJavaProfile::JavaRuntimeAlpha),
-            "java-runtime-beta" => Ok(MinecraftJavaProfile::JavaRuntimeBeta),
-            "java-runtime-gamma" => Ok(MinecraftJavaProfile::JavaRuntimeGamma),
+        Ok(match value {
+            "jre-legacy" => MinecraftJavaProfile::JreLegacy,
+            "java-runtime-alpha" => MinecraftJavaProfile::JavaRuntimeAlpha,
+            "java-runtime-beta" => MinecraftJavaProfile::JavaRuntimeBeta,
+            "java-runtime-gamma" => MinecraftJavaProfile::JavaRuntimeGamma,
             "java-runtime-gamma-snapshot" => {
-                Ok(MinecraftJavaProfile::JavaRuntimeGammaSnapshot)
+                MinecraftJavaProfile::JavaRuntimeGammaSnapshot
             }
-            "java-runtime-delta" => Ok(MinecraftJavaProfile::JavaRuntimeDelta),
-            "java-runtime-epsilon" => {
-                Ok(MinecraftJavaProfile::JavaRuntimeEpsilon)
-            }
-            "minecraft-java-exe" => Ok(MinecraftJavaProfile::MinecraftJavaExe),
-            _ => Err(Error::InvalidMinecraftJavaProfile(value.to_string())),
-        }
+            "java-runtime-delta" => MinecraftJavaProfile::JavaRuntimeDelta,
+            "java-runtime-epsilon" => MinecraftJavaProfile::JavaRuntimeEpsilon,
+            "minecraft-java-exe" => MinecraftJavaProfile::MinecraftJavaExe,
+            other => MinecraftJavaProfile::Unknown(other.to_string()),
+        })
     }
 }
 

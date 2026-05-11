@@ -201,26 +201,33 @@ pub async fn retrieve_data(
                 // Patch java version
                 version_info.java_version = {
                     if let Some(java_version) = &version_info.java_version {
-                        match MinecraftJavaProfile::try_from(&*java_version.component) {
-                            Ok(java_version) => Some(JavaVersion {
-                                component: java_version.as_str().expect("MinecraftJavaProfile::try_from is not handling unknown variant as error").to_string(),
+                        // try_from is now infallible — unknown strings come back as
+                        // MinecraftJavaProfile::Unknown(...). Branch on is_known()
+                        // and handle the unknown case the same way the old Err arm did.
+                        let parsed = MinecraftJavaProfile::try_from(&*java_version.component)
+                            .expect("MinecraftJavaProfile::try_from is infallible");
+                        if parsed.is_known() {
+                            Some(JavaVersion {
+                                component: parsed
+                                    .as_str()
+                                    .expect("known variants always have an as_str")
+                                    .to_string(),
                                 major_version: 0,
-                            }),
-                            Err(err) => {
-                                #[cfg(feature = "sentry")]
-                                sentry::capture_message(
-                                    &format!(
-                                        "Unknown java version \"{}\": {}",
-                                        java_version.component, err
-                                    ),
-                                    sentry::Level::Warning,
-                                );
-                                println!(
-                                    "Unknown java version \"{}\": {}",
-                                    java_version.component, err
-                                );
-                                None
-                            }
+                            })
+                        } else {
+                            #[cfg(feature = "sentry")]
+                            sentry::capture_message(
+                                &format!(
+                                    "Unknown java version \"{}\"",
+                                    java_version.component
+                                ),
+                                sentry::Level::Warning,
+                            );
+                            warn!(
+                                java_version = %java_version.component,
+                                "Unknown java version, omitting from manifest"
+                            );
+                            None
                         }
                     } else {
                         Some(JavaVersion {
@@ -312,9 +319,8 @@ pub async fn retrieve_data(
                             Some(format_url(&assets_path));
                         cloned_manifest.versions[position].java_profile =
                             version_info.java_version.as_ref().map(|x| {
-                                MinecraftJavaProfile::try_from(&*x.component).expect(
-                                    "Safe to unwrap since we ensure it's valid in version_json already",
-                                )
+                                MinecraftJavaProfile::try_from(&*x.component)
+                                    .expect("MinecraftJavaProfile::try_from is infallible")
                             });
                         cloned_manifest.versions[position].sha1 = version_hash.clone();
                         cloned_manifest.versions[position].original_sha1 = Some(upstream_sha1.clone());
