@@ -235,6 +235,24 @@ impl GradleSpecifier {
     }
 }
 
+/// Reject components that would let a maven coordinate escape its directory when
+/// joined with a trusted base via `into_path()` or written to disk by a launcher.
+fn validate_path_safe(specifier: &str, kind: &str, value: &str) -> Result<(), Error> {
+    if value.is_empty() {
+        return Err(Error::ParseError(format!(
+            "Empty {} in library {}",
+            kind, specifier
+        )));
+    }
+    if value.contains('/') || value.contains('\\') || value.contains('\0') {
+        return Err(Error::ParseError(format!(
+            "{} in library {} contains path separator or null",
+            kind, specifier
+        )));
+    }
+    Ok(())
+}
+
 impl FromStr for GradleSpecifier {
     type Err = Error;
 
@@ -258,6 +276,7 @@ impl FromStr for GradleSpecifier {
                 &specifier
             )));
         }
+        validate_path_safe(specifier, "extension", &extension)?;
 
         let package = name_items
             .next()
@@ -268,6 +287,18 @@ impl FromStr for GradleSpecifier {
                 ))
             })?
             .to_string();
+        // Validate every dot-segment of the package path: no empty segments
+        // (e.g. `foo..bar`), no `.` or `..` (path traversal), no separators.
+        for segment in package.split('.') {
+            validate_path_safe(specifier, "package segment", segment)?;
+            if segment == "." || segment == ".." {
+                return Err(Error::ParseError(format!(
+                    "Package segment '{}' in library {} is a path traversal",
+                    segment, specifier
+                )));
+            }
+        }
+
         let artifact = name_items
             .next()
             .ok_or_else(|| {
@@ -277,6 +308,14 @@ impl FromStr for GradleSpecifier {
                 ))
             })?
             .to_string();
+        validate_path_safe(specifier, "artifact", &artifact)?;
+        if artifact == "." || artifact == ".." {
+            return Err(Error::ParseError(format!(
+                "Artifact '{}' in library {} is a path traversal",
+                artifact, specifier
+            )));
+        }
+
         let version = name_items
             .next()
             .ok_or_else(|| {
@@ -286,12 +325,21 @@ impl FromStr for GradleSpecifier {
                 ))
             })?
             .to_string();
+        validate_path_safe(specifier, "version", &version)?;
+        if version == "." || version == ".." {
+            return Err(Error::ParseError(format!(
+                "Version '{}' in library {} is a path traversal",
+                version, specifier
+            )));
+        }
 
         let remaining_parts = name_items.collect::<Vec<&str>>();
         let identifier = if remaining_parts.is_empty() {
             None
         } else {
-            Some(remaining_parts.join("-"))
+            let joined = remaining_parts.join("-");
+            validate_path_safe(specifier, "identifier", &joined)?;
+            Some(joined)
         };
 
         Ok(GradleSpecifier {
@@ -509,6 +557,29 @@ mod tests {
         assert!(!is_maven_coordinates("com.example@:example:1.0.0"));
         assert!(!is_maven_coordinates("com.example:example:1.0.0@"));
         assert!(!is_maven_coordinates("justsometext"));
+    }
+
+    #[test]
+    fn test_rejects_path_traversal() {
+        // Package segment is `..`
+        assert!(!is_maven_coordinates("..:foo:1.0"));
+        // Package contains a path separator
+        assert!(!is_maven_coordinates("foo/bar:art:1.0"));
+        assert!(!is_maven_coordinates("foo\\bar:art:1.0"));
+        // Empty package segment via consecutive dots
+        assert!(!is_maven_coordinates("foo..bar:art:1.0"));
+        // Leading dot → empty first segment
+        assert!(!is_maven_coordinates(".foo:art:1.0"));
+        // `..` artifact
+        assert!(!is_maven_coordinates("foo:..:1.0"));
+        // `..` version
+        assert!(!is_maven_coordinates("foo:art:.."));
+        // Slash in artifact
+        assert!(!is_maven_coordinates("foo:art/sub:1.0"));
+        // Slash in version
+        assert!(!is_maven_coordinates("foo:art:1.0/etc"));
+        // Null byte
+        assert!(!is_maven_coordinates("foo:art:1.0\0bad"));
     }
 
     #[test]
