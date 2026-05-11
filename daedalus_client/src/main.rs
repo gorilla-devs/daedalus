@@ -94,7 +94,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
             };
 
             let betterstack_token = dotenvy::var("BETTERSTACK_TOKEN").ok();
-            let _betterstack_handle = if let Some(ref token) = betterstack_token {
+            let betterstack_handle = if let Some(ref token) = betterstack_token {
                 let betterstack_url = dotenvy::var("BETTERSTACK_URL")
                     .unwrap_or_else(|_| "https://in.logs.betterstack.com".to_string());
 
@@ -516,6 +516,11 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                 }
                 .instrument(loop_span)
                 .await;
+            }
+
+            // Drain Betterstack buffer and ship one final batch before process exit.
+            if let Some(handle) = betterstack_handle {
+                handle.shutdown().await;
             }
 
             info!("Application shutdown complete");

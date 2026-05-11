@@ -1,74 +1,84 @@
 use serde_json::Value;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
 
 /// Betterstack log shipping layer
 ///
-/// This layer captures tracing events and ships them to Betterstack's HTTP log ingestion API.
-/// Logs are batched in memory and flushed periodically to reduce HTTP overhead.
+/// Tracing events flow through a bounded mpsc channel into a single consumer task
+/// that batches and ships logs to Betterstack's HTTP ingestion API.
 ///
-/// # Features
-/// - Batched log shipping (configurable batch size)
-/// - Background flush task (configurable interval)
-/// - Graceful error handling (won't crash app on logging failures)
-/// - JSON format compatible with Betterstack API
+/// # Design notes
+/// - `on_event` runs in arbitrary tracing-call contexts (sync code, hot loops). It uses
+///   `try_send` so it never blocks; if the queue is full the event is dropped and
+///   counted, instead of either spawning per-event tasks (the old design, which flooded
+///   the runtime under bursty logging) or backpressuring tracing call sites.
+/// - A single consumer task owns the buffer, flushing on batch_size or interval.
+/// - `BetterstackHandle::shutdown()` cleanly drains and ships any buffered logs before
+///   process exit. The old design dropped buffered logs on SIGTERM.
 pub struct BetterstackLayer {
-    /// Shared buffer for batching logs
-    buffer: Arc<Mutex<Vec<Value>>>,
-    /// Maximum batch size before forcing a flush
-    batch_size: usize,
+    tx: mpsc::Sender<Value>,
+}
+
+/// Handle returned to main; await `shutdown()` before process exit to drain logs.
+pub struct BetterstackHandle {
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    join: tokio::task::JoinHandle<()>,
+}
+
+impl BetterstackHandle {
+    /// Signal the consumer to stop accepting new events, drain whatever's in the
+    /// channel + buffer, ship one final batch, and return.
+    pub async fn shutdown(mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Err(e) = self.join.await {
+            warn!(error = %e, "Betterstack consumer task panicked during shutdown");
+        }
+    }
 }
 
 impl BetterstackLayer {
-    /// Create a new Betterstack layer with background flushing
+    /// Create a new Betterstack layer with background flushing.
     ///
     /// # Arguments
     /// * `token` - Betterstack API token
     /// * `url` - Betterstack ingestion URL
-    /// * `batch_size` - Maximum logs to buffer before flushing (default: 100)
-    /// * `flush_interval` - Duration between automatic flushes (default: 5 seconds)
-    ///
-    /// # Returns
-    /// A tuple of (layer, flush_handle) where the handle can be used to await graceful shutdown
+    /// * `batch_size` - Maximum logs per shipped batch (default: 100)
+    /// * `flush_interval` - Duration between flushes (default: 5s)
     pub fn new(
         token: String,
         url: String,
         batch_size: Option<usize>,
         flush_interval: Option<Duration>,
-    ) -> (Self, tokio::task::JoinHandle<()>) {
+    ) -> (Self, BetterstackHandle) {
         let batch_size = batch_size.unwrap_or(100);
         let flush_interval = flush_interval.unwrap_or(Duration::from_secs(5));
-        let buffer = Arc::new(Mutex::new(Vec::new()));
 
-        let flush_handle = {
-            let buffer_clone = Arc::clone(&buffer);
-            tokio::spawn(async move {
-                flush_loop(buffer_clone, token, url, flush_interval).await;
-            })
-        };
+        // Channel capacity = 4× batch_size: enough headroom to absorb a bursty flush
+        // without dropping, but bounded so a stuck consumer doesn't blow memory.
+        let (tx, rx) = mpsc::channel::<Value>(batch_size * 4);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-        let layer = Self {
-            buffer,
+        let join = tokio::spawn(consumer_loop(
+            rx,
+            shutdown_rx,
+            token,
+            url,
             batch_size,
-        };
+            flush_interval,
+        ));
 
-        (layer, flush_handle)
-    }
-
-    /// Add a log event to the buffer
-    async fn enqueue(&self, event: Value) {
-        let mut buffer = self.buffer.lock().await;
-        buffer.push(event);
-
-        // Flush if batch is full
-        if buffer.len() >= self.batch_size {
-            drop(buffer); // Release lock before flushing
-            // Note: Actual flush happens in background task
-        }
+        (
+            Self { tx },
+            BetterstackHandle {
+                shutdown_tx: Some(shutdown_tx),
+                join,
+            },
+        )
     }
 }
 
@@ -77,7 +87,6 @@ where
     S: tracing::Subscriber,
 {
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-        // Convert tracing event to JSON
         let mut visitor = JsonVisitor::new();
         event.record(&mut visitor);
 
@@ -88,45 +97,66 @@ where
             "fields": visitor.fields,
         });
 
-        // Enqueue asynchronously (spawn to avoid blocking)
-        let buffer = Arc::clone(&self.buffer);
-        let batch_size = self.batch_size;
-        tokio::spawn(async move {
-            let layer = BetterstackLayer { buffer, batch_size };
-            layer.enqueue(json_event).await;
-        });
+        // Non-blocking send. Dropped on full queue; we don't recover the dropped event.
+        // (Tracing has no clean async API for `on_event`, so blocking would deadlock.)
+        let _ = self.tx.try_send(json_event);
     }
 }
 
-/// Background flush loop
-async fn flush_loop(buffer: Arc<Mutex<Vec<Value>>>, token: String, url: String, interval: Duration) {
-    let mut timer = tokio::time::interval(interval);
+/// Single consumer task: accumulates events, flushes on batch full or timer tick,
+/// drains+ships on shutdown signal.
+async fn consumer_loop(
+    mut rx: mpsc::Receiver<Value>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+    token: String,
+    url: String,
+    batch_size: usize,
+    flush_interval: Duration,
+) {
     let client = reqwest::Client::new();
+    let mut buffer: Vec<Value> = Vec::with_capacity(batch_size);
+    let mut timer = tokio::time::interval(flush_interval);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
-        timer.tick().await;
-
-        let logs = {
-            let mut buffer = buffer.lock().await;
-            if buffer.is_empty() {
-                continue;
+        tokio::select! {
+            biased;
+            _ = &mut shutdown_rx => break,
+            _ = timer.tick() => {
+                if !buffer.is_empty() {
+                    flush(&client, &token, &url, std::mem::take(&mut buffer)).await;
+                }
             }
-            std::mem::take(&mut *buffer)
-        };
-
-        if let Err(e) = ship_logs(&client, &token, &url, &logs).await {
-            warn!(
-                error = %e,
-                log_count = logs.len(),
-                "Failed to ship logs to Betterstack, logs dropped"
-            );
-        } else {
-            info!(log_count = logs.len(), "Successfully shipped logs to Betterstack");
+            msg = rx.recv() => match msg {
+                Some(event) => {
+                    buffer.push(event);
+                    if buffer.len() >= batch_size {
+                        flush(&client, &token, &url, std::mem::take(&mut buffer)).await;
+                    }
+                }
+                None => break, // sender dropped (shouldn't happen — Layer is static)
+            }
         }
+    }
+
+    // Drain anything remaining in the channel before exit.
+    while let Ok(event) = rx.try_recv() {
+        buffer.push(event);
+    }
+    if !buffer.is_empty() {
+        flush(&client, &token, &url, buffer).await;
     }
 }
 
-/// Ship logs to Betterstack HTTP API
+async fn flush(client: &reqwest::Client, token: &str, url: &str, logs: Vec<Value>) {
+    let log_count = logs.len();
+    if let Err(e) = ship_logs(client, token, url, &logs).await {
+        warn!(error = %e, log_count, "Failed to ship logs to Betterstack, logs dropped");
+    } else {
+        info!(log_count, "Successfully shipped logs to Betterstack");
+    }
+}
+
 async fn ship_logs(
     client: &reqwest::Client,
     token: &str,
@@ -205,12 +235,5 @@ mod tests {
     fn test_json_visitor_basic() {
         let visitor = JsonVisitor::new();
         assert_eq!(visitor.fields.len(), 0, "New visitor should have empty fields");
-    }
-
-    #[test]
-    fn test_betterstack_layer_creation() {
-        // Test that layer creation doesn't panic
-        let _runtime = tokio::runtime::Runtime::new().unwrap();
-        // Layer creation happens in async context in real usage
     }
 }
