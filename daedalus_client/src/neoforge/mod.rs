@@ -103,7 +103,7 @@ pub async fn retrieve_data(
 
                             info!("Neoforge - Installer Start {}", loader_version_full.clone());
 
-                            let download_url = format!("https://maven.neoforged.net/net/neoforged/{1}/{0}/{1}-{0}-installer.jar", loader_version_full, if &*new_forge == "true" { "neoforge" } else { "forge" });
+                            let download_url = format!("https://maven.neoforged.net/releases/net/neoforged/{1}/{0}/{1}-{0}-installer.jar", loader_version_full, if &*new_forge == "true" { "neoforge" } else { "forge" });
 
                             let bytes = download_file(&download_url, None, semaphore.clone()).await?;
                             let reader = std::io::Cursor::new(bytes);
@@ -509,9 +509,9 @@ pub async fn retrieve_data(
 }
 
 const DEFAULT_MAVEN_METADATA_URL_1: &str =
-    "https://maven.neoforged.net/net/neoforged/forge/maven-metadata.xml";
+    "https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml";
 const DEFAULT_MAVEN_METADATA_URL_2: &str =
-    "https://maven.neoforged.net/net/neoforged/neoforge/maven-metadata.xml";
+    "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml";
 
 #[derive(Debug, Deserialize)]
 struct Metadata {
