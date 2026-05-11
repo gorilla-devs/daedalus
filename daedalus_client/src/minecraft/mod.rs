@@ -25,6 +25,7 @@ pub mod log4j;
 pub mod types;
 
 // Re-export commonly used types
+pub use library_patches::LibraryPatchIndex;
 pub use types::LibraryPatch;
 
 use crate::download_file;
@@ -33,6 +34,7 @@ use crate::services::upload::BatchUploader;
 use dashmap::DashSet;
 use daedalus::minecraft::{JavaVersion, MinecraftJavaProfile, VersionManifest};
 use futures::future::join_all;
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Instant;
@@ -84,11 +86,23 @@ pub async fn retrieve_data(
 
     let mut manifest = daedalus::minecraft::fetch_version_manifest(None).await?;
 
-    let cloned_manifest = Arc::new(Mutex::new(manifest.clone()));
+    // Pre-build an id → original-index map so the per-version mutex section can do an
+    // O(1) lookup instead of an O(N) `position(...)` scan. New versions inserted at the
+    // front of the Vec shift original indices forward by `inserts_count`, which we track
+    // alongside the manifest while holding the mutex.
+    let id_to_original_index: Arc<HashMap<String, usize>> = Arc::new(
+        manifest
+            .versions
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (v.id.clone(), i))
+            .collect(),
+    );
+    let cloned_manifest = Arc::new(Mutex::new((manifest.clone(), 0usize)));
 
-    // Own the patches and share as an Arc slice to avoid borrowed refs in futures
-    let patches: Arc<[LibraryPatch]> =
-        Arc::from(library_patches::get_library_patches().await?.into_boxed_slice());
+    // Own the prebuilt patch index and share as an Arc to avoid borrowed refs in futures.
+    let patches: Arc<LibraryPatchIndex> =
+        Arc::new(library_patches::get_library_patches().await?);
 
     let visited_assets = Arc::new(DashSet::new());
 
@@ -104,14 +118,28 @@ pub async fn retrieve_data(
                 None
             };
 
+            // Compare upstream Mojang SHA1 (`version.sha1` straight from the manifest)
+            // against the `original_sha1` we stored in our previous publish. Comparing
+            // against `old_version.sha1` was wrong: that value is the hash of OUR
+            // post-processed JSON, which never matches Mojang's upstream sha1, so every
+            // version was reprocessed every run.
             if let Some(old_version) = old_version {
-                if old_version.sha1 == version.sha1 {
+                if old_version
+                    .original_sha1
+                    .as_deref()
+                    .map(|orig| orig == version.sha1)
+                    .unwrap_or(false)
+                {
                     return Ok(());
                 }
             }
 
+            // Capture upstream sha1 before we mutate `version.sha1` later in the loop.
+            let upstream_sha1 = version.sha1.clone();
+
             let visited_assets = Arc::clone(&visited_assets);
             let cloned_manifest_mutex = Arc::clone(&cloned_manifest);
+            let id_to_original_index = Arc::clone(&id_to_original_index);
             let semaphore = Arc::clone(&semaphore);
             let patches = Arc::clone(&patches);
 
@@ -153,7 +181,7 @@ pub async fn retrieve_data(
                             // Mark for traceability and run through patcher for consistency
                             replacement_library.patched = true;
                             let mut libs = library_patches::patch_library(
-                                Arc::as_ref(&patches),
+                                &patches,
                                 replacement_library,
                             );
                             new_libraries.append(&mut libs);
@@ -163,7 +191,7 @@ pub async fn retrieve_data(
                     } else {
                         // Apply library patches to ALL libraries (including LWJGL!)
                         // Patches handle: ARM64 natives, missing tinyfd, bad LWJGL variants, etc.
-                        let mut libs = library_patches::patch_library(Arc::as_ref(&patches), library.clone());
+                        let mut libs = library_patches::patch_library(&patches, library.clone());
                         new_libraries.append(&mut libs);
                     }
                 }
@@ -264,13 +292,14 @@ pub async fn retrieve_data(
 
                 // Update manifest with CAS URL
                 {
-                    let mut cloned_manifest = cloned_manifest_mutex.lock().await;
+                    let mut guard = cloned_manifest_mutex.lock().await;
+                    let (cloned_manifest, inserts_count) = &mut *guard;
 
-                    if let Some(position) = cloned_manifest
-                        .versions
-                        .iter()
-                        .position(|x| version.id == x.id)
-                    {
+                    let position = id_to_original_index
+                        .get(&version.id)
+                        .map(|orig| orig + *inserts_count);
+
+                    if let Some(position) = position {
                         let base_url = dotenvy::var("BASE_URL").unwrap();
                         cloned_manifest.versions[position].url = format!(
                             "{}/v{}/objects/{}/{}",
@@ -290,6 +319,7 @@ pub async fn retrieve_data(
                                 )
                             });
                         cloned_manifest.versions[position].sha1 = version_hash.clone();
+                        cloned_manifest.versions[position].original_sha1 = Some(upstream_sha1.clone());
                     } else {
                         let base_url = dotenvy::var("BASE_URL").unwrap();
                         cloned_manifest.versions.insert(
@@ -307,6 +337,7 @@ pub async fn retrieve_data(
                                 time: version_info.time,
                                 release_time: version_info.release_time,
                                 sha1: version_hash.clone(),
+                                original_sha1: Some(upstream_sha1.clone()),
                                 java_profile: version_info.java_version.as_ref().map(|x| {
                                     MinecraftJavaProfile::try_from(&*x.component).expect(
                                         "Safe to unwrap since we ensure it's valid in version_json already",
@@ -316,7 +347,8 @@ pub async fn retrieve_data(
                                 assets_index_url: Some(format_url(&assets_path)),
                                 assets_index_sha1: Some(version_info.asset_index.sha1.clone()),
                             },
-                        )
+                        );
+                        *inserts_count += 1;
                     }
                 }
 
@@ -378,11 +410,12 @@ pub async fn retrieve_data(
     let final_manifest = Arc::try_unwrap(cloned_manifest)
         .map_err(|err| {
             crate::infrastructure::error::invalid_input(format!(
-                "Failed to unwrap Arc<Mutex<VersionManifest>>: {:?}",
+                "Failed to unwrap Arc<Mutex<(VersionManifest, _)>>: {:?}",
                 err
             ))
         })?
-        .into_inner();
+        .into_inner()
+        .0;
 
     // Set the full Minecraft versions JSON in manifest_builder
     // This preserves rich metadata (type, url, time, releaseTime, sha1, complianceLevel, etc.)

@@ -5,7 +5,36 @@
 
 use crate::minecraft::types::LibraryPatch;
 use daedalus::minecraft::{merge_partial_library, Library, LibraryDownloads};
+use std::collections::HashMap;
 use tracing::info;
+
+/// A patch list pre-indexed by the library coordinates each patch matches.
+///
+/// Patches list maven coordinates in their `match` field. Looking patches up by
+/// coord directly avoids scanning the whole patch list for every library.
+pub struct LibraryPatchIndex {
+    by_match: HashMap<String, Vec<usize>>,
+    patches: Vec<LibraryPatch>,
+}
+
+impl LibraryPatchIndex {
+    pub fn new(patches: Vec<LibraryPatch>) -> Self {
+        let mut by_match: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, patch) in patches.iter().enumerate() {
+            for matched_coord in &patch.match_ {
+                by_match.entry(matched_coord.clone()).or_default().push(idx);
+            }
+        }
+        Self { by_match, patches }
+    }
+
+    fn patches_for(&self, coord: &str) -> Vec<&LibraryPatch> {
+        self.by_match
+            .get(coord)
+            .map(|indices| indices.iter().map(|&i| &self.patches[i]).collect())
+            .unwrap_or_default()
+    }
+}
 
 /// Apply library patches recursively
 ///
@@ -13,13 +42,10 @@ use tracing::info;
 /// - Override library properties
 /// - Add additional libraries
 /// - Recursively patch the additional libraries
-pub fn patch_library(patches: &[LibraryPatch], mut library: Library) -> Vec<Library> {
+pub fn patch_library(patches: &LibraryPatchIndex, mut library: Library) -> Vec<Library> {
     let mut val = Vec::new();
 
-    let actual_patches = patches
-        .iter()
-        .filter(|x| x.match_.contains(&library.name.to_string()))
-        .collect::<Vec<_>>();
+    let actual_patches = patches.patches_for(&library.name.to_string());
 
     if !actual_patches.is_empty() {
         for patch in actual_patches {
@@ -57,10 +83,11 @@ pub fn patch_library(patches: &[LibraryPatch], mut library: Library) -> Vec<Libr
 
 /// Fetch library patches from embedded JSON file
 pub async fn get_library_patches(
-) -> Result<Vec<LibraryPatch>, crate::infrastructure::error::Error> {
+) -> Result<LibraryPatchIndex, crate::infrastructure::error::Error> {
     let patches = include_bytes!("../../patched-library-patches.json");
     let unprocessed_patches: Vec<LibraryPatch> = serde_json::from_slice(patches)?;
-    Ok(unprocessed_patches.iter().map(pre_process_patch).collect())
+    let processed: Vec<LibraryPatch> = unprocessed_patches.iter().map(pre_process_patch).collect();
+    Ok(LibraryPatchIndex::new(processed))
 }
 
 /// Pre-process a patch by replacing ${BASE_URL} placeholders
