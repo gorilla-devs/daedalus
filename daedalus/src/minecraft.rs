@@ -725,7 +725,7 @@ pub struct LibraryGroup {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// libraries that conflict with this group
     pub conflicts: Option<Vec<Dependency>>,
-    #[serde(skip_serializing)]
+    #[serde(default, skip_serializing)]
     /// group has libs with split natives
     pub has_split_natives: Option<bool>,
 }
