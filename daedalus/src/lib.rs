@@ -393,7 +393,11 @@ pub async fn download_file(
     sha1: Option<&str>,
 ) -> Result<bytes::Bytes, Error> {
     (|| async {
-        let result = HTTP_CLIENT.get(url).send().await;
+        let result = HTTP_CLIENT
+            .get(url)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status());
 
         match result {
             Ok(x) => {
