@@ -9,7 +9,6 @@ edition = "2024"
 [dependencies]
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["ansi", "env-filter", "json"] }
-tracing-error = "0.2"
 thiserror = "1"
 daedalus = { path = "../daedalus" }
 tokio = { version = "1", features = ["full"] }
@@ -18,7 +17,6 @@ dotenvy = "0.15.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dashmap = "6"
-anyhow = "1.0"
 reqwest = { version = "0.11.13", default-features = false, features = [
     "json",
     "rustls-tls",

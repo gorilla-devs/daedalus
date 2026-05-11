@@ -92,24 +92,13 @@ pub enum ErrorKind {
     },
 }
 
-/// Main error type
+/// Main error type alias.
 ///
-/// Currently just wraps ErrorKind directly. Span context can be added
-/// by using tracing spans around operations that produce errors.
+/// Span context is captured implicitly via `#[tracing::instrument]` on the
+/// functions that produce errors — error sites are wrapped in instrumented
+/// spans, so a tracing-error subscriber (if enabled) can attach the span
+/// trace at observation time.
 pub type Error = ErrorKind;
-
-/// Bridge from anyhow::Error to our structured errors
-///
-/// This allows gradual migration from anyhow to structured errors.
-/// Eventually all anyhow usage will be replaced with specific error types.
-impl From<anyhow::Error> for ErrorKind {
-    fn from(error: anyhow::Error) -> Self {
-        ErrorKind::Generic {
-            context: "Legacy anyhow error".to_string(),
-            source: error.into(),
-        }
-    }
-}
 
 /// Error classification helpers
 impl ErrorKind {
