@@ -23,10 +23,13 @@ const MAX_CONCURRENT_UPLOADS: usize = 10;
 const CIRCUIT_BREAKER_FAILURE_THRESHOLD: u32 = 5;
 /// Circuit breaker: duration to wait before retrying (5 minutes)
 const CIRCUIT_BREAKER_RESET_TIMEOUT_SECS: u64 = 300;
-/// Maximum number of retry attempts for uploads
-const MAX_UPLOAD_RETRIES: usize = 10;
-/// Maximum delay between retries (30 minutes)
-const MAX_RETRY_DELAY_SECS: u64 = 1800;
+/// Maximum number of retry attempts for uploads.
+/// Combined with the should_retry classifier, transient S3 errors get a few
+/// fast retries; permanent errors (auth/4xx) error out immediately.
+const MAX_UPLOAD_RETRIES: usize = 5;
+/// Maximum delay between retries (1 minute). Previous 30-minute cap meant a
+/// doomed upload could block for hours.
+const MAX_RETRY_DELAY_SECS: u64 = 60;
 
 mod common;
 mod fabric;

@@ -158,9 +158,10 @@ async fn upload_single_file(
         }
     })
     .retry(
+        // Mirror the main.rs upload retry tuning: 5 attempts, 60s cap.
         ExponentialBuilder::default()
-            .with_max_times(10)
-            .with_max_delay(Duration::from_secs(1800)),
+            .with_max_times(5)
+            .with_max_delay(Duration::from_secs(60)),
     )
     .when(|e: &crate::infrastructure::error::Error| e.should_retry())
     .await

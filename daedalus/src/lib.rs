@@ -429,9 +429,11 @@ pub async fn download_file(
         }
     })
     .retry(
+        // 5 attempts capped at 60s. The previous (10 × 1800s) blocked doomed URLs
+        // for hours and caused operational pain on the metadata-generator's wide fan-out.
         ExponentialBuilder::default()
-            .with_max_times(10)
-            .with_max_delay(Duration::from_secs(1800)),
+            .with_max_times(5)
+            .with_max_delay(Duration::from_secs(60)),
     )
     .await
 }
