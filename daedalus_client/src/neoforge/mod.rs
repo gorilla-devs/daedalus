@@ -49,6 +49,18 @@ pub async fn retrieve_data(
 ) -> Result<(), crate::infrastructure::error::Error> {
     info!("Retrieving NeoForge data ...");
 
+    // Build a fast lookup of MC version ids from the published manifest. Any
+    // NeoForge installer whose profile.minecraft doesn't appear in this set
+    // would publish a Version entry that no MC version can `inherits_from`,
+    // so the launcher couldn't actually use it. Skip those.
+    let valid_mc_versions: Arc<HashSet<String>> = Arc::new(
+        minecraft_versions
+            .versions
+            .iter()
+            .map(|v| v.id.clone())
+            .collect(),
+    );
+
     let maven_metadata = fetch_maven_metadata(semaphore.clone()).await?;
     let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
         "neoforge/v{}/manifest.json",
@@ -84,7 +96,12 @@ pub async fn retrieve_data(
         }
 
         if !loaders.is_empty() {
-            version_futures.push(async {
+            let valid_mc_versions = Arc::clone(&valid_mc_versions);
+            let versions = Arc::clone(&versions);
+            let old_versions = Arc::clone(&old_versions);
+            let visited_assets = Arc::clone(&visited_assets);
+            let semaphore = semaphore.clone();
+            version_futures.push(async move {
                 let mut loaders_versions = Vec::new();
 
                 {
@@ -419,8 +436,27 @@ pub async fn retrieve_data(
                 // used as a coarse maven-metadata bucket key — installers may collapse
                 // into a different MC id at install_profile.json read time.
                 let mut by_actual_mc: BTreeMap<String, Vec<LoaderVersion>> = BTreeMap::new();
+                let mut dropped_unknown_mc = 0usize;
                 for (actual_mc, loader) in loaders_versions {
+                    if !valid_mc_versions.contains(&actual_mc) {
+                        // Mojang doesn't (yet) publish this MC version, so the
+                        // launcher would have nothing to inherit_from. Drop the
+                        // entry rather than emit a manifest reference that
+                        // can't resolve.
+                        warn!(
+                            "⚠️  NeoForge - Dropping loader {} for unknown MC version '{}'",
+                            loader.id, actual_mc
+                        );
+                        dropped_unknown_mc += 1;
+                        continue;
+                    }
                     by_actual_mc.entry(actual_mc).or_default().push(loader);
+                }
+                if dropped_unknown_mc > 0 {
+                    warn!(
+                        "⚠️  NeoForge - Dropped {} loader(s) referencing unpublished MC versions",
+                        dropped_unknown_mc
+                    );
                 }
 
                 let mut versions_guard = versions.lock().await;
