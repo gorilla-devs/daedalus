@@ -372,7 +372,8 @@ pub struct Library {
     /// Maps minecraft_version → SHA256 hash of the artifact
     /// e.g., {"1.16.5": "abc123...", "1.17.1": "def456..."}
     /// When present, clients should look up their game version and construct CAS URL from hash
-    pub version_hashes: Option<HashMap<String, String>>,
+    /// Uses BTreeMap for deterministic key ordering (output is hashed downstream).
+    pub version_hashes: Option<BTreeMap<String, String>>,
 }
 
 impl Library {
@@ -395,7 +396,7 @@ impl Library {
     /// ```
     /// # use daedalus::minecraft::Library;
     /// # use daedalus::GradleSpecifier;
-    /// # use std::collections::HashMap;
+    /// # use std::collections::BTreeMap;
     /// let mut library = Library {
     ///     name: "net.fabricmc:intermediary:1.16.5".parse().unwrap(),
     ///     url: None,
@@ -407,7 +408,7 @@ impl Library {
     ///     include_in_classpath: true,
     ///     patched: false,
     ///     version_hashes: Some({
-    ///         let mut map = HashMap::new();
+    ///         let mut map = BTreeMap::new();
     ///         map.insert("1.16.5".to_string(), "abc123def456".to_string());
     ///         map
     ///     }),
