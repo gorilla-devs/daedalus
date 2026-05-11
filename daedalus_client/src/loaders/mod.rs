@@ -460,10 +460,23 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                 lib.name = coord_with_placeholder.parse()?;
                 let artifact_path = lib.name.path();
 
+                // Hardcode: net.minecraft:launchwrapper:1.12 ships on Mojang's maven,
+                // not Fabric's. Older Fabric loaders (1.13/1.14-era) reference it with
+                // a null url field; without this override we'd 404 on the Fabric maven
+                // fallback. Matches Modrinth daedalus's fabric.rs.
+                let coord = lib.name.to_string();
+                let mojang_libs_override = if coord == "net.minecraft:launchwrapper:1.12" {
+                    Some("https://libraries.minecraft.net/")
+                } else {
+                    None
+                };
+
                 let artifact = download_file(
                     &format!(
                         "{}{}",
-                        lib.url.as_deref().unwrap_or(&maven_fallback),
+                        mojang_libs_override
+                            .or(lib.url.as_deref())
+                            .unwrap_or(&maven_fallback),
                         artifact_path
                     ),
                     None,
