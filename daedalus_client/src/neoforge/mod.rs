@@ -76,12 +76,10 @@ pub async fn retrieve_data(
         let mut loaders = Vec::new();
 
         for (loader_version, new_forge) in loader_versions {
-            // Validate version format using lenient_semver (handles 4+ component versions like "26.1.0.0-alpha.1")
-            if let Err(e) = lenient_semver::parse(&loader_version) {
-                warn!("Skipping NeoForge version '{}' with invalid format: {}", loader_version, e);
-                continue;
-            }
-
+            // No upfront version-format validation: lenient_semver accepts essentially
+            // any string (including non-semver garbage), so the gate previously here
+            // was misleading. Trust the maven-metadata XML and let downstream
+            // processing surface real errors per version.
             loaders.push((loader_version, new_forge.to_string()))
         }
 
