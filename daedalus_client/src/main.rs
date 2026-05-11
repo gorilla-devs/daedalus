@@ -206,7 +206,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
             {
                 let uploaded_files = Arc::new(Mutex::new(Vec::new()));
 
-                match upload_static_files(&uploaded_files, semaphore.clone())
+                match upload_static_files(uploaded_files.clone(), semaphore.clone())
                     .await
                 {
                     Ok(()) => {}
@@ -382,11 +382,14 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                             .await;
                         }
 
-                        // All CAS objects have been uploaded immediately during processing
-                        // Now we upload the loader manifests and root manifest atomically
+                        // All CAS objects have been uploaded immediately during processing.
+                        // Now we upload the loader manifests and root manifest atomically.
+                        // A single shared `cycle_uploaded_paths` collects every path uploaded by
+                        // this cycle's manifest writes so we can purge them from the CDN below.
                         let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
                         let mut loader_references = std::collections::HashMap::new();
-                        let mut uploaded_manifest_urls = Vec::new();
+                        let cycle_uploaded_paths: Arc<tokio::sync::Mutex<Vec<String>>> =
+                            Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
                         let all_loaders = manifest_builder.get_loaders();
                         info!(loader_count = all_loaders.len(), "Building loader manifests");
@@ -408,7 +411,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                             manifest_path.clone(),
                                             manifest_bytes,
                                             Some("application/json".to_string()),
-                                            &tokio::sync::Mutex::new(Vec::new()),
+                                            cycle_uploaded_paths.clone(),
                                             semaphore.clone(),
                                         ).await {
                                             Ok(_) => {
@@ -417,7 +420,6 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                                     loader.clone(),
                                                     services::cas::LoaderReference::new(loader, loader_manifest.timestamp.clone())
                                                 );
-                                                uploaded_manifest_urls.push(format!("{}/{}", dotenvy::var("BASE_URL").unwrap(), manifest_path));
                                             }
                                             Err(e) => {
                                                 error!(loader = %loader, error = %e, "Failed to upload loader manifest");
@@ -443,12 +445,11 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                         root_path.clone(),
                                         root_bytes.clone(),
                                         Some("application/json".to_string()),
-                                        &tokio::sync::Mutex::new(Vec::new()),
+                                        cycle_uploaded_paths.clone(),
                                         semaphore.clone(),
                                     ).await {
                                         Ok(_) => {
                                             info!("Root manifest uploaded successfully - all changes are now live");
-                                            uploaded_manifest_urls.push(format!("{}/{}", dotenvy::var("BASE_URL").unwrap(), root_path));
                                         }
                                         Err(e) => {
                                             error!(error = %e, "Failed to upload root manifest - changes NOT committed");
@@ -462,7 +463,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                                         backup_path,
                                         root_bytes,
                                         Some("application/json".to_string()),
-                                        &tokio::sync::Mutex::new(Vec::new()),
+                                        cycle_uploaded_paths.clone(),
                                         semaphore.clone(),
                                     ).await {
                                         Ok(_) => info!("Backup created successfully"),
@@ -475,6 +476,21 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                             }
 
                             info!("Processing cycle completed successfully");
+
+                            // Build absolute URLs from every path uploaded by this cycle.
+                            // (CAS objects are immutable hash-keyed and bypass this purge by
+                            // design — the BatchUploader path doesn't go through
+                            // upload_file_to_bucket. Manifests + root + backup do, and those
+                            // are the URLs Cloudflare needs to invalidate.)
+                            let uploaded_paths: Vec<String> = {
+                                let guard = cycle_uploaded_paths.lock().await;
+                                guard.clone()
+                            };
+                            let base_url = dotenvy::var("BASE_URL").unwrap();
+                            let uploaded_manifest_urls: Vec<String> = uploaded_paths
+                                .into_iter()
+                                .map(|p| format!("{}/{}", base_url, p))
+                                .collect();
 
                             if !uploaded_manifest_urls.is_empty() {
                                 let cloudflare_enabled = dotenvy::var("CLOUDFLARE_INTEGRATION")
@@ -614,7 +630,7 @@ pub async fn upload_file_to_bucket(
     path: String,
     bytes: Vec<u8>,
     content_type: Option<String>,
-    uploaded_files: &tokio::sync::Mutex<Vec<String>>,
+    uploaded_files: Arc<tokio::sync::Mutex<Vec<String>>>,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), crate::infrastructure::error::Error> {
     let _permit = semaphore.acquire().await?;
@@ -672,7 +688,7 @@ pub use services::download::{download_file, download_file_mirrors};
 
 #[instrument(skip(uploaded_files, semaphore))]
 pub async fn upload_static_files(
-    uploaded_files: &tokio::sync::Mutex<Vec<String>>,
+    uploaded_files: Arc<tokio::sync::Mutex<Vec<String>>>,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), crate::infrastructure::error::Error> {
     use path_slash::PathExt as _;
@@ -725,7 +741,7 @@ pub async fn upload_static_files(
                 upload_path.to_string(), // NOTE: if path is non utf8 this will not be a pretty path
                 std::fs::read(entry.path())?,
                 content_type,
-                uploaded_files,
+                uploaded_files.clone(),
                 semaphore.clone(),
             )
             .await?;
