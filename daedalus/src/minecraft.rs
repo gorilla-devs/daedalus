@@ -49,10 +49,18 @@ pub struct Version {
     pub time: DateTime<Utc>,
     /// The time this version was released
     pub release_time: DateTime<Utc>,
-    /// The SHA1 hash of the additional information about the version
+    /// The SHA1 hash of the additional information about the version.
+    /// For published manifests this is the hash of the post-processed JSON we serve,
+    /// so it changes whenever our processing pipeline tweaks the file. Compare against
+    /// `original_sha1` to detect upstream changes from Mojang.
     pub sha1: String,
     /// Whether the version supports the latest player safety features
     pub compliance_level: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// (GDLauncher Provided) The Mojang-provided SHA1 of the upstream version JSON,
+    /// preserved across our processing so we can detect upstream changes between runs
+    /// without re-downloading every version.
+    pub original_sha1: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// (GDLauncher Provided) The link to the assets index for this version
     /// This is only available when using the GDLauncher mirror
