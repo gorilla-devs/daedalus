@@ -327,6 +327,12 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
     let uploader = services::upload::BatchUploader::new();
     let manifest_builder = services::cas::ManifestBuilder::new();
 
+    // §1.4: run-state spans the whole cycle. Loaded up front so retrieval-phase
+    // outcomes (a loader that is circuit-open or fails before we ever reach the
+    // publish loop) get recorded, and saved once at the end regardless of which
+    // path the cycle takes.
+    let mut run_state = services::run_state::load(&CLIENT).await;
+
     let versions = {
         let span = tracing::info_span!("minecraft_processing");
         async {
@@ -348,10 +354,16 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                 }
                 Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
                     warn!("Minecraft circuit breaker is open, skipping");
+                    run_state
+                        .loader_mut("minecraft")
+                        .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
                     None
                 }
                 Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
                     error!(error = %err, "Minecraft processing failed");
+                    run_state
+                        .loader_mut("minecraft")
+                        .record_failure(services::run_state::LoaderOutcome::FetchFailure);
                     None
                 }
             }
@@ -379,9 +391,15 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                     Ok(_) => info!("Fabric processing completed"),
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
                         warn!("Fabric circuit breaker is open, skipping");
+                        run_state
+                            .loader_mut("fabric")
+                            .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
                     }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
                         error!(error = %err, "Fabric processing failed");
+                        run_state
+                            .loader_mut("fabric")
+                            .record_failure(services::run_state::LoaderOutcome::FetchFailure);
                     }
                 }
             }
@@ -407,9 +425,15 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                     Ok(_) => info!("Forge processing completed"),
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
                         warn!("Forge circuit breaker is open, skipping");
+                        run_state
+                            .loader_mut("forge")
+                            .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
                     }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
                         error!(error = %err, "Forge processing failed");
+                        run_state
+                            .loader_mut("forge")
+                            .record_failure(services::run_state::LoaderOutcome::FetchFailure);
                     }
                 }
             }
@@ -435,9 +459,15 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                     Ok(_) => info!("Quilt processing completed"),
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
                         warn!("Quilt circuit breaker is open, skipping");
+                        run_state
+                            .loader_mut("quilt")
+                            .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
                     }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
                         error!(error = %err, "Quilt processing failed");
+                        run_state
+                            .loader_mut("quilt")
+                            .record_failure(services::run_state::LoaderOutcome::FetchFailure);
                     }
                 }
             }
@@ -463,9 +493,15 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                     Ok(_) => info!("NeoForge processing completed"),
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
                         warn!("NeoForge circuit breaker is open, skipping");
+                        run_state
+                            .loader_mut("neoforge")
+                            .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
                     }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
                         error!(error = %err, "NeoForge processing failed");
+                        run_state
+                            .loader_mut("neoforge")
+                            .record_failure(services::run_state::LoaderOutcome::FetchFailure);
                     }
                 }
             }
@@ -477,8 +513,7 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
         // Now we upload the loader manifests and root manifest atomically.
         // A single shared `cycle_uploaded_paths` collects every path uploaded by
         // this cycle's manifest writes so we can purge them from the CDN below.
-        let timestamp =
-            chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+        let timestamp = services::cas::now_timestamp();
         let cycle_uploaded_paths: Arc<tokio::sync::Mutex<Vec<String>>> =
             Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
@@ -489,7 +524,7 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
         // would stop seeing Forge support entirely), which directly violates
         // the "if Forge breaks, everything else keeps updating" contract.
         let previous_root_manifest = fetch_previous_root_manifest().await;
-        let mut loader_references: std::collections::HashMap<
+        let mut loader_references: std::collections::BTreeMap<
             String,
             services::cas::LoaderReference,
         > = previous_root_manifest
@@ -498,9 +533,9 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
             .unwrap_or_default();
         let mut upload_failures: Vec<String> = Vec::new();
 
-        // §1.4: Load persisted run-state and §1.6: load pins — both once
-        // per cycle from S3. Missing files are treated as empty/default.
-        let mut run_state = services::run_state::load(&CLIENT).await;
+        // §1.6: load pins once per cycle from S3. Missing file is treated as
+        // empty. (run-state was loaded at the top of the cycle so retrieval-
+        // phase outcomes could be recorded.)
         let pins = services::pins::load(&CLIENT).await;
 
         // §1.6: Warn about pins that have been active for too long so
@@ -614,31 +649,16 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                                     &manifest_path,
                                 );
 
-                                // §1.6: Choose which timestamp goes into the
-                                // root manifest. If the loader is pinned, use
-                                // the pinned timestamp; otherwise use the fresh
-                                // one. Either way, the fresh manifest was
-                                // uploaded above so devs can inspect it.
-                                let root_timestamp = if let Some(pin) =
-                                    pins.get(loader)
-                                {
-                                    info!(
-                                        loader = %loader,
-                                        fresh = %loader_manifest.timestamp,
-                                        pinned_to = %pin.pinned_to,
-                                        reason = %pin.reason,
-                                        "Loader is pinned — root manifest will reference pinned timestamp, not the fresh build"
-                                    );
-                                    pin.pinned_to.clone()
-                                } else {
-                                    loader_manifest.timestamp.clone()
-                                };
-
+                                // §1.6: Record the fresh build's timestamp in
+                                // the root reference. Pins are applied uniformly
+                                // after the loop (see below) so they also cover
+                                // loaders whose fresh build tripped the sanity
+                                // gate, failed to upload, or was circuit-open.
                                 loader_references.insert(
                                     loader.clone(),
                                     services::cas::LoaderReference::new(
                                         loader,
-                                        root_timestamp,
+                                        loader_manifest.timestamp.clone(),
                                     ),
                                 );
                             }
@@ -666,6 +686,28 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
             warn!(
                 loaders = ?upload_failures,
                 "Some loader manifests failed to upload this cycle; their previous references stay live in the root manifest"
+            );
+        }
+
+        // §1.6: Apply pins uniformly. A pinned loader's root reference always
+        // uses `pinned_to`, regardless of whether this cycle's fresh build
+        // succeeded, tripped the sanity gate, failed to upload, or was
+        // circuit-open. The fresh manifest (if any) was still uploaded above
+        // for inspection; only the root pointer is overridden. This matches the
+        // documented pin contract in services/pins.rs.
+        for (loader, pin) in pins.iter() {
+            info!(
+                loader = %loader,
+                pinned_to = %pin.pinned_to,
+                reason = %pin.reason,
+                "Loader is pinned — root manifest references the pinned timestamp"
+            );
+            loader_references.insert(
+                loader.clone(),
+                services::cas::LoaderReference::new(
+                    loader,
+                    pin.pinned_to.clone(),
+                ),
             );
         }
 
@@ -794,9 +836,6 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                 }
             }
 
-            // §1.4: Persist run-state after each cycle so the admin server
-            // can read it on the next request even after a process restart.
-            services::run_state::save(&CLIENT, &mut run_state).await;
         } else {
             // No fresh loader manifests AND no carry-forward from the previous
             // root manifest — emit `error!` (not warn!) so this is visible in
@@ -807,6 +846,12 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
             );
         }
     }
+
+    // §1.4: Persist run-state once at the end of the cycle — including cycles
+    // where minecraft was circuit-open/failed and the publish block was
+    // skipped — so the admin server always reflects the latest attempt even
+    // after a process restart.
+    services::run_state::save(&CLIENT, &mut run_state).await;
 }
 
 fn check_env_vars() -> bool {

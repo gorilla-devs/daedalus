@@ -16,9 +16,11 @@
 //!   dependency-fetch logic.  A comment in the ack records the specific loader
 //!   that was requested so the operator can see it fired.
 //!
-//! * `rollback_request` — 8-step rollback lifted from the deleted
-//!   `admin/handlers/rollback.rs` (minus the pin-write step, which enderium
-//!   now owns; minus axum response wrapping).
+//! * `rollback_request` — restore a historical root manifest to the live
+//!   `v{CAS_VERSION}/manifest.json`. Loaders that should stay on the
+//!   rolled-back build are pinned via `pins.json` (written by enderium before
+//!   it submits the intent) so the next publish cycle doesn't move them
+//!   forward; unpinned loaders resume updating on the next cycle.
 //!
 //! ## Idempotency
 //!
@@ -233,18 +235,41 @@ fn acks_s3_path() -> String {
     format!("v{CAS_VERSION}/admin/control_acks.json")
 }
 
-/// Load `control.json` from S3.  Returns `ControlFile::default()` on 404 or
-/// any parse/fetch error so a missing file is not treated as an error.
+/// The control-file schema version this build understands. A `control.json`
+/// declaring a higher version is refused (its intents are not run) so a
+/// forward-incompatible file from a newer enderium surfaces loudly instead of
+/// being silently treated as empty.
+const SUPPORTED_CONTROL_SCHEMA: u32 = 1;
+
+/// Load `control.json` from S3.  Returns `ControlFile::default()` (empty — no
+/// intents) on 404 or any parse/fetch error.
+///
+/// Unlike the advisory pins/run-state files, a *parse* failure or an
+/// unsupported `schema_version` here means real operator intents (rollback /
+/// force-run) would be silently dropped, so those cases are logged at `error!`
+/// (which the Discord layer forwards) rather than `warn!`. A 404 (no file yet)
+/// and a transient fetch error stay quiet.
 pub async fn load(bucket: &s3::Bucket) -> ControlFile {
     let path = control_s3_path();
     match bucket.get_object(&path).await {
         Ok(resp) => match serde_json::from_slice::<ControlFile>(resp.bytes()) {
             Ok(cf) => {
+                if cf.schema_version > SUPPORTED_CONTROL_SCHEMA {
+                    error!(
+                        path = %path,
+                        schema_version = cf.schema_version,
+                        supported = SUPPORTED_CONTROL_SCHEMA,
+                        "control.json declares a newer schema_version than this daedalus \
+                         supports; refusing to process its intents (upgrade daedalus). Any \
+                         pending rollback/force-run will NOT run until then."
+                    );
+                    return ControlFile::default();
+                }
                 info!(path = %path, "Loaded control file from S3");
                 cf
             }
             Err(e) => {
-                warn!(path = %path, error = %e, "Failed to parse control.json; treating as empty");
+                error!(path = %path, error = %e, "Failed to parse control.json; operator intents (rollback/force-run) will NOT be processed this poll");
                 ControlFile::default()
             }
         },
@@ -253,7 +278,7 @@ pub async fn load(bucket: &s3::Bucket) -> ControlFile {
             ControlFile::default()
         }
         Err(e) => {
-            warn!(path = %path, error = %e, "Failed to fetch control.json; treating as empty");
+            warn!(path = %path, error = %e, "Failed to fetch control.json; treating as empty this poll");
             ControlFile::default()
         }
     }
@@ -262,28 +287,13 @@ pub async fn load(bucket: &s3::Bucket) -> ControlFile {
 /// Load `control_acks.json` from S3.  Returns `ControlAcks::new()` on 404 or
 /// any parse/fetch error.
 pub async fn load_acks(bucket: &s3::Bucket) -> ControlAcks {
-    let path = acks_s3_path();
-    match bucket.get_object(&path).await {
-        Ok(resp) => match serde_json::from_slice::<ControlAcks>(resp.bytes()) {
-            Ok(acks) => {
-                info!(
-                    path = %path,
-                    count = acks.processed.len(),
-                    "Loaded control acks from S3"
-                );
-                acks
-            }
-            Err(e) => {
-                warn!(path = %path, error = %e, "Failed to parse control_acks.json; starting fresh");
-                ControlAcks::new()
-            }
-        },
-        Err(s3::error::S3Error::Http(404, _)) => ControlAcks::new(),
-        Err(e) => {
-            warn!(path = %path, error = %e, "Failed to fetch control_acks.json; starting fresh");
-            ControlAcks::new()
-        }
-    }
+    crate::services::s3_json::load_or_else(
+        bucket,
+        &acks_s3_path(),
+        "control acks",
+        ControlAcks::new,
+    )
+    .await
 }
 
 /// Persist `control_acks.json` to S3.
@@ -292,13 +302,21 @@ pub async fn save_acks(
     acks: &ControlAcks,
 ) -> Result<(), crate::infrastructure::error::Error> {
     let path = acks_s3_path();
-    let bytes = serde_json::to_vec_pretty(acks)?;
-    bucket
-        .put_object_with_content_type(&path, &bytes, "application/json")
-        .await
-        .map_err(|e| crate::infrastructure::error::s3_error(e, path.clone()))?;
+    crate::services::s3_json::save_json(bucket, &path, acks).await?;
     info!(path = %path, count = acks.processed.len(), "Saved control acks to S3");
     Ok(())
+}
+
+/// Prune old entries and persist the ack log to S3.
+///
+/// Called after **each** processed intent so a crash mid-batch cannot lose the
+/// ack of an intent whose side effects already committed (which would otherwise
+/// re-execute it on the next poll). A failed write is logged, not fatal.
+async fn persist_acks(bucket: &s3::Bucket, acks: &mut ControlAcks) {
+    acks.prune(Duration::days(30));
+    if let Err(e) = save_acks(bucket, acks).await {
+        error!(error = %e, "Failed to save control_acks.json — outcome may be re-attempted on next poll");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -325,8 +343,6 @@ pub async fn process_pending(bucket: &s3::Bucket) {
         .into_iter()
         .map(str::to_string)
         .collect::<HashSet<_>>();
-
-    let mut any_new = false;
 
     // ------------------------------------------------------------------
     // Force-run intents
@@ -362,7 +378,7 @@ pub async fn process_pending(bucket: &s3::Bucket) {
                 "note": "full publish cycle executed (all loaders)"
             }),
         });
-        any_new = true;
+        persist_acks(bucket, &mut acks).await;
 
         info!(request_id = %req.request_id, loader = %req.loader, "Force-run intent processed");
     }
@@ -404,17 +420,14 @@ pub async fn process_pending(bucket: &s3::Bucket) {
                 }
                 Err(e) => {
                     let msg = e.to_string();
+                    // `error!` is auto-forwarded to Discord by DiscordTracingLayer,
+                    // so this single log both records and alerts — no separate
+                    // notify_discord_error call (which would double-report).
                     error!(
                         request_id = %req.request_id,
+                        history_timestamp = %req.history_timestamp,
                         error = %msg,
                         "Rollback intent failed"
-                    );
-                    notify_discord_error(
-                        &format!("rollback_failed_{}", req.request_id),
-                        &format!(
-                            "Rollback to `{}` failed (request_id={}): {}",
-                            req.history_timestamp, req.request_id, msg
-                        ),
                     );
                     acks.push(AckEntry {
                         request_id: req.request_id.clone(),
@@ -427,33 +440,30 @@ pub async fn process_pending(bucket: &s3::Bucket) {
                     });
                 }
             }
-            any_new = true;
+            persist_acks(bucket, &mut acks).await;
         }
-    }
-
-    if !any_new {
-        // Nothing new to process — skip the S3 write.
-        return;
-    }
-
-    // Prune entries older than 30 days before writing.
-    acks.prune(Duration::days(30));
-
-    if let Err(e) = save_acks(bucket, &acks).await {
-        error!(error = %e, "Failed to save control_acks.json — outcomes may be re-attempted on next poll");
     }
 }
 
 // ---------------------------------------------------------------------------
 // Rollback executor (§2.5)
-//
-// Lifted from the deleted `daedalus_client/src/admin/handlers/rollback.rs:61-370`.
-// Changes from the original:
-// - Dropped axum response wrapping; returns `Result<RollbackOutcome, Error>`.
-// - Dropped step 5 (pin-write) — enderium now writes pins.json BEFORE
-//   submitting the rollback intent.  The remaining 8 steps are numbered
-//   to match §2.5 in the plan.
 // ---------------------------------------------------------------------------
+
+/// Reject a `history_timestamp` that is not the timestamp grammar daedalus
+/// itself emits, before it is interpolated into an S3 object key. rust-s3 signs
+/// requests through the `url` crate, which performs RFC 3986 dot-segment
+/// removal, so an unvalidated value such as `"/../../manifest"` would normalise
+/// to a key outside the intended `v{CAS}/history/` prefix (e.g. onto the live
+/// root). Restricting to digits, `-`, `T`, and `Z` makes any `/`, `.`, `%`, or
+/// `\` impossible. The millisecond component is optional so older
+/// second-resolution history entries stay rollback-targetable.
+fn is_valid_history_timestamp(ts: &str) -> bool {
+    !ts.is_empty()
+        && ts.len() <= 32
+        && ts
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'-' || b == b'T' || b == b'Z')
+}
 
 async fn execute_rollback(
     bucket: &s3::Bucket,
@@ -461,6 +471,13 @@ async fn execute_rollback(
     request_id: &str,
 ) -> Result<RollbackOutcome, crate::infrastructure::error::Error> {
     use crate::services::cas::RootManifest;
+
+    // Validate before the value reaches any `format!`-built S3 key.
+    if !is_valid_history_timestamp(ts) {
+        return Err(crate::infrastructure::error::invalid_input(format!(
+            "invalid history_timestamp '{ts}': expected YYYY-MM-DDTHH-MM-SS[-mmm]Z"
+        )));
+    }
 
     // ------------------------------------------------------------------
     // Step 1: fetch history entry bytes.
@@ -534,7 +551,7 @@ async fn execute_rollback(
         }
     };
 
-    let now_str = Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+    let now_str = crate::services::cas::now_timestamp();
     let backup_path = format!("v{CAS_VERSION}/history/manifest-{now_str}.json");
     let meta_path =
         format!("v{CAS_VERSION}/history/manifest-{now_str}.meta.json");
@@ -572,7 +589,6 @@ async fn execute_rollback(
 
     // ------------------------------------------------------------------
     // Step 5: PUT history bytes to live root under ROOT_WRITE_LOCK.
-    // (Plan §2.5 step 5; old step 6 after the deleted pin-write.)
     // ------------------------------------------------------------------
     {
         let _guard = crate::ROOT_WRITE_LOCK.lock().await;
@@ -636,11 +652,10 @@ async fn execute_rollback(
     // Step 7: Discord notification.
     // ------------------------------------------------------------------
     let msg = format!(
-        "Rollback performed (request_id=`{request_id}`): root manifest restored \
-         to history entry `{ts}`. Pre-rollback backup written to `{backup_path}`. \
-         Pins for affected loaders were written by enderium before this intent \
-         was submitted; those loaders will keep referencing the rolled-back \
-         timestamp until unpinned."
+        "Rollback performed (request_id=`{request_id}`): root manifest restored to \
+         history entry `{ts}`. Pre-rollback backup written to `{backup_path}`. Loaders \
+         pinned via pins.json keep referencing the rolled-back timestamp until \
+         unpinned; unpinned loaders resume updating on the next publish cycle."
     );
     notify_discord_error("rollback_performed", &msg);
 
@@ -735,6 +750,30 @@ mod tests {
         let rb = cf.rollback_request.unwrap();
         assert_eq!(rb.request_id, "req-1");
         assert_eq!(rb.history_timestamp, "2026-05-13T10-00-00Z");
+    }
+
+    #[test]
+    fn test_is_valid_history_timestamp_accepts_real_formats() {
+        assert!(is_valid_history_timestamp("2026-05-13T10-00-00Z"));
+        assert!(is_valid_history_timestamp("2026-05-13T10-00-00-123Z"));
+    }
+
+    #[test]
+    fn test_is_valid_history_timestamp_rejects_traversal_and_junk() {
+        for bad in [
+            "",
+            "/../../manifest",
+            "../../admin/control",
+            "2026-05-13T10-00-00Z/../manifest",
+            "a.b",         // '.' blocked
+            "x/y",         // '/' blocked
+            "ab%2e%2e",    // '%' blocked
+            "back\\slash", // '\\' blocked
+        ] {
+            assert!(!is_valid_history_timestamp(bad), "should reject {bad:?}");
+        }
+        // length cap
+        assert!(!is_valid_history_timestamp(&"1".repeat(40)));
     }
 
     #[test]

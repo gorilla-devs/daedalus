@@ -13,7 +13,7 @@
 use crate::services::cas::CAS_VERSION;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use tracing::{info, warn};
 
 /// S3 path where the pins file lives.
@@ -67,11 +67,11 @@ impl PinEntry {
 ///
 /// Keyed by loader name (e.g. `"forge"`, `"fabric"`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub struct Pins(pub HashMap<String, PinEntry>);
+pub struct Pins(pub BTreeMap<String, PinEntry>);
 
 impl Pins {
     pub fn new() -> Self {
-        Self(HashMap::new())
+        Self(BTreeMap::new())
     }
 
     /// Returns the pin for `loader`, if one exists.
@@ -117,27 +117,13 @@ impl Pins {
 /// error.  A missing pins file is not an error — it just means no pins are
 /// active.
 pub async fn load(bucket: &s3::Bucket) -> Pins {
-    let path = pins_s3_path();
-    match bucket.get_object(&path).await {
-        Ok(resp) => match serde_json::from_slice::<Pins>(resp.bytes()) {
-            Ok(pins) => {
-                info!(path = %path, count = pins.len(), "Loaded pins from S3");
-                pins
-            }
-            Err(e) => {
-                warn!(path = %path, error = %e, "Failed to parse pins.json; treating as empty");
-                Pins::new()
-            }
-        },
-        Err(s3::error::S3Error::Http(404, _)) => {
-            info!(path = %path, "No pins file found (none set yet)");
-            Pins::new()
-        }
-        Err(e) => {
-            warn!(path = %path, error = %e, "Failed to fetch pins.json; treating as empty");
-            Pins::new()
-        }
-    }
+    crate::services::s3_json::load_or_else(
+        bucket,
+        &pins_s3_path(),
+        "pins",
+        Pins::new,
+    )
+    .await
 }
 
 /// Persist pins to S3.
@@ -150,11 +136,7 @@ pub async fn save(
     pins: &Pins,
 ) -> Result<(), crate::infrastructure::error::Error> {
     let path = pins_s3_path();
-    let bytes = serde_json::to_vec_pretty(pins)?;
-    bucket
-        .put_object_with_content_type(&path, &bytes, "application/json")
-        .await
-        .map_err(|e| crate::infrastructure::error::s3_error(e, path.clone()))?;
+    crate::services::s3_json::save_json(bucket, &path, pins).await?;
     info!(path = %path, count = pins.len(), "Saved pins to S3");
     Ok(())
 }

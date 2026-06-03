@@ -193,6 +193,38 @@ pub async fn retrieve_data(
                     .map(|orig| orig == version.sha1)
                     .unwrap_or(false)
                 {
+                    // Content is unchanged since our last publish, so reuse the
+                    // previously-processed entry — CAS url, original_sha1,
+                    // assets-index, and java-profile — instead of leaving the
+                    // raw upstream Mojang entry in the published manifest. This
+                    // mirrors the non-skip write-back below; without it a
+                    // skipped version would ship Mojang's piston-meta URL with
+                    // original_sha1 cleared, and would flip-flop every other
+                    // cycle because the cleared original_sha1 forces a reprocess.
+                    let new_url = old_version.url.clone();
+                    let new_sha1 = old_version.sha1.clone();
+                    let new_original_sha1 = old_version.original_sha1.clone();
+                    let new_assets_index_url =
+                        old_version.assets_index_url.clone();
+                    let new_assets_index_sha1 =
+                        old_version.assets_index_sha1.clone();
+                    let new_java_profile = old_version.java_profile.clone();
+
+                    let mut guard = cloned_manifest.lock().await;
+                    let (cm, inserts_count) = &mut *guard;
+                    if let Some(position) = id_to_original_index
+                        .get(&version.id)
+                        .map(|orig| orig + *inserts_count)
+                    {
+                        let entry = &mut cm.versions[position];
+                        entry.url = new_url;
+                        entry.sha1 = new_sha1;
+                        entry.original_sha1 = new_original_sha1;
+                        entry.assets_index_url = new_assets_index_url;
+                        entry.assets_index_sha1 = new_assets_index_sha1;
+                        entry.java_profile = new_java_profile;
+                    }
+
                     return Ok(());
                 }
             }

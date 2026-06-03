@@ -248,6 +248,16 @@ where
             return;
         }
 
+        // Don't forward events emitted by the notifier transports themselves.
+        // A Discord/Betterstack ship failure logs a `warn!`/`error!`, which
+        // would otherwise be re-enqueued here — a feedback loop that floods the
+        // bounded channel and crowds out real alerts during an outage.
+        if target.starts_with("daedalus_client::services::discord")
+            || target.starts_with("daedalus_client::services::betterstack")
+        {
+            return;
+        }
+
         let Some(notifier) = DISCORD.get().cloned() else {
             return;
         };
@@ -296,6 +306,22 @@ fn is_app_target(target: &str) -> bool {
         || target == "daedalus"
         || target.starts_with("daedalus_client::")
         || target.starts_with("daedalus::")
+}
+
+/// Truncate `s` to at most `max` Unicode characters, appending `…` when
+/// truncated. Slicing by byte index (`&s[..max]`) panics when `max` lands
+/// inside a multi-byte UTF-8 character, so we truncate on char boundaries.
+fn truncate_for_discord(s: String, max: usize) -> String {
+    // Byte length is an upper bound on the char count, so this fast path is
+    // correct and avoids walking the string for the common short case.
+    if s.len() <= max {
+        return s;
+    }
+    if s.chars().count() <= max {
+        return s;
+    }
+    let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
 }
 
 fn build_fingerprint(
@@ -538,11 +564,7 @@ fn event_to_embed(event: DiscordEvent) -> Embed {
             message,
             fields,
         } => {
-            let truncated = if message.len() > DISCORD_DESC_MAX {
-                format!("{}…", &message[..DISCORD_DESC_MAX.saturating_sub(1)])
-            } else {
-                message
-            };
+            let truncated = truncate_for_discord(message, DISCORD_DESC_MAX);
             let mut embed_fields = vec![EmbedField {
                 name: "Target".to_string(),
                 value: target,
@@ -552,11 +574,7 @@ fn event_to_embed(event: DiscordEvent) -> Embed {
                 if k == "message" {
                     continue;
                 }
-                let value = if v.len() > 1000 {
-                    format!("{}…", &v[..1000])
-                } else {
-                    v
-                };
+                let value = truncate_for_discord(v, 1000);
                 embed_fields.push(EmbedField {
                     name: k,
                     value,
@@ -641,5 +659,34 @@ mod tests {
         assert!(notifier.should_send_error("boom"));
         assert!(!notifier.should_send_error("boom"));
         assert!(notifier.should_send_error("different"));
+    }
+
+    #[test]
+    fn test_truncate_for_discord_short_passthrough() {
+        assert_eq!(truncate_for_discord("hello".to_string(), 4000), "hello");
+    }
+
+    #[test]
+    fn test_truncate_for_discord_multibyte_no_panic() {
+        // 5000 multi-byte chars = 10_000 bytes. Byte-slicing near the 4000
+        // boundary used to panic ("byte index is not a char boundary").
+        let out = truncate_for_discord("é".repeat(5000), 4000);
+        assert!(out.chars().count() <= 4000);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn test_error_embed_long_multibyte_message_does_not_panic() {
+        // Regression: an Error event whose message + field values straddle the
+        // byte cutoff on a multi-byte char must produce an embed, not panic.
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("detail".to_string(), "ü".repeat(5000));
+        let embed = event_to_embed(DiscordEvent::Error {
+            level: "error".to_string(),
+            target: "daedalus_client::x".to_string(),
+            message: "字".repeat(5000),
+            fields,
+        });
+        assert!(embed.description.contains('…'));
     }
 }

@@ -214,8 +214,14 @@ pub async fn retrieve_data(
                                                 let value_clone = $value.clone();
                                                 // Validate path has content after the leading slash
                                                 if value_clone.len() <= 1 {
-                                                    warn!("Skipping invalid NeoForge data path '{}' (key: {}, side: {})", value_clone, key, $side);
-                                                } else {
+                                                    return Err(crate::infrastructure::error::invalid_input(
+                                                        format!(
+                                                            "Invalid data path in NeoForge installer: '{}' (key: {}, side: {})",
+                                                            value_clone, key, $side
+                                                        ),
+                                                    ));
+                                                }
+                                                {
                                                     let lib_bytes = tokio::task::spawn_blocking(move || {
                                                         let mut lib_file = archive_clone.by_name(&value_clone[1..])?;
                                                         let mut lib_bytes =  Vec::new();

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use tracing::{info, instrument};
 
 /// Current CAS (Content-Addressable Storage) version
@@ -13,6 +13,18 @@ use tracing::{info, instrument};
 /// - v4: Previous version
 /// - v5: Optimized Fabric/Quilt processing - only intermediary libraries are downloaded per game version
 pub const CAS_VERSION: u32 = 5;
+
+/// Produce a timestamp string for use as an S3 path component and manifest
+/// field, e.g. `2026-06-04T12-30-45-123Z`.
+///
+/// Uses millisecond precision (`-%3f`) so two writes that land in the same
+/// wall-clock second — e.g. a publish cycle and an operator force-run or
+/// rollback — do not collide on the same object key and silently overwrite a
+/// loader manifest or a history backup. Colons are rendered as dashes so the
+/// value is safe in object keys and filenames.
+pub fn now_timestamp() -> String {
+    Utc::now().format("%Y-%m-%dT%H-%M-%S-%3fZ").to_string()
+}
 
 /// Content-Addressable Storage (CAS) system
 ///
@@ -75,12 +87,12 @@ pub struct RootManifest {
     pub created_at: DateTime<Utc>,
     /// Map of loader name to its manifest reference
     /// Example: "minecraft" -> { timestamp: "2024-01-15T10-30-00Z", url: "v{CAS_VERSION}/manifests/minecraft/2024-01-15T10-30-00Z.json" }
-    pub loaders: HashMap<String, LoaderReference>,
+    pub loaders: BTreeMap<String, LoaderReference>,
 }
 
 impl RootManifest {
     /// Create a new root manifest
-    pub fn new(loaders: HashMap<String, LoaderReference>) -> Self {
+    pub fn new(loaders: BTreeMap<String, LoaderReference>) -> Self {
         Self {
             schema_version: 1,
             created_at: Utc::now(),
@@ -91,7 +103,7 @@ impl RootManifest {
     /// Create an empty root manifest
     #[cfg(test)]
     pub fn empty() -> Self {
-        Self::new(HashMap::new())
+        Self::new(BTreeMap::new())
     }
 
     /// Add or update a loader reference
@@ -134,7 +146,7 @@ pub struct LoaderManifest {
 impl LoaderManifest {
     /// Create a new loader manifest with custom JSON for versions
     pub fn new(loader: String, versions: serde_json::Value) -> Self {
-        let timestamp = Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+        let timestamp = now_timestamp();
         Self {
             schema_version: 1,
             loader,
@@ -375,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_root_manifest_creation() {
-        let mut loaders = HashMap::new();
+        let mut loaders = BTreeMap::new();
         loaders.insert(
             "minecraft".to_string(),
             LoaderReference::new(
@@ -409,6 +421,19 @@ mod tests {
                 CAS_VERSION
             )
         );
+    }
+
+    #[test]
+    fn test_now_timestamp_format() {
+        let ts = now_timestamp();
+        // e.g. "2026-06-04T12-30-45-123Z": fixed 24 chars, only the safe
+        // S3-key character class, millisecond precision.
+        assert_eq!(ts.len(), 24, "unexpected timestamp: {ts}");
+        assert!(ts.ends_with('Z'));
+        assert!(ts.contains('T'));
+        assert!(ts
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'-' || b == b'T' || b == b'Z'));
     }
 
     #[test]

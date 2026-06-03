@@ -6,5 +6,6 @@ pub mod discord;
 pub mod download;
 pub mod pins;
 pub mod run_state;
+pub mod s3_json;
 pub mod sanity;
 pub mod upload;

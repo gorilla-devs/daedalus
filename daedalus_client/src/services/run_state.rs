@@ -12,7 +12,7 @@
 use crate::services::cas::CAS_VERSION;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use tracing::{info, warn};
 
 /// Path on S3 where the run-state file lives.
@@ -103,7 +103,7 @@ pub struct RunState {
     /// When this snapshot was written.
     pub written_at: Option<DateTime<Utc>>,
     /// Per-loader records keyed by loader name (e.g. `"minecraft"`, `"forge"`).
-    pub loaders: HashMap<String, LoaderRunState>,
+    pub loaders: BTreeMap<String, LoaderRunState>,
 }
 
 impl RunState {
@@ -111,7 +111,7 @@ impl RunState {
         Self {
             schema_version: 1,
             written_at: None,
-            loaders: HashMap::new(),
+            loaders: BTreeMap::new(),
         }
     }
 
@@ -131,27 +131,13 @@ impl RunState {
 /// Returns an empty `RunState` on 404 (first deploy) or any parse error —
 /// the file is treated as purely advisory observability data.
 pub async fn load(bucket: &s3::Bucket) -> RunState {
-    let path = run_state_s3_path();
-    match bucket.get_object(&path).await {
-        Ok(resp) => match serde_json::from_slice::<RunState>(resp.bytes()) {
-            Ok(state) => {
-                info!(path = %path, "Loaded run state from S3");
-                state
-            }
-            Err(e) => {
-                warn!(path = %path, error = %e, "Failed to parse run state; starting fresh");
-                RunState::new()
-            }
-        },
-        Err(s3::error::S3Error::Http(404, _)) => {
-            info!(path = %path, "Run state not found (first deploy?); starting fresh");
-            RunState::new()
-        }
-        Err(e) => {
-            warn!(path = %path, error = %e, "Failed to fetch run state; starting fresh");
-            RunState::new()
-        }
-    }
+    crate::services::s3_json::load_or_else(
+        bucket,
+        &run_state_s3_path(),
+        "run state",
+        RunState::new,
+    )
+    .await
 }
 
 /// Persist run state to S3.
@@ -161,20 +147,10 @@ pub async fn load(bucket: &s3::Bucket) -> RunState {
 pub async fn save(bucket: &s3::Bucket, state: &mut RunState) {
     state.written_at = Some(Utc::now());
     let path = run_state_s3_path();
-    match serde_json::to_vec_pretty(state) {
-        Ok(bytes) => {
-            match bucket
-                .put_object_with_content_type(&path, &bytes, "application/json")
-                .await
-            {
-                Ok(_) => info!(path = %path, "Run state saved to S3"),
-                Err(e) => {
-                    warn!(path = %path, error = %e, "Failed to save run state (non-fatal)")
-                }
-            }
-        }
+    match crate::services::s3_json::save_json(bucket, &path, state).await {
+        Ok(_) => info!(path = %path, "Run state saved to S3"),
         Err(e) => {
-            warn!(error = %e, "Failed to serialize run state (non-fatal)")
+            warn!(path = %path, error = %e, "Failed to save run state (non-fatal)")
         }
     }
 }

@@ -93,7 +93,9 @@ pub fn check_loader_health(
 
     // Invariant 1: version count ≥ 90% of previous.
     if prev_count > 0 {
-        let minimum = floor_90_percent(prev_count);
+        // `.max(1)` closes the low-end hole: floor(0.9 * 1) == 0, which would
+        // otherwise let a 1-version loader silently collapse to zero versions.
+        let minimum = floor_90_percent(prev_count).max(1);
         if new_count < minimum {
             return Err(SanityViolation::VersionCountDrop {
                 loader: loader.to_string(),
@@ -305,6 +307,18 @@ mod tests {
         let prev = make_manifest("fabric", json!([]));
         let new = make_manifest("fabric", json!([]));
         assert_eq!(check_loader_health("fabric", &new, Some(&prev)), Ok(()));
+    }
+
+    #[test]
+    fn test_single_version_cannot_drop_to_zero() {
+        // prev has 1 version; floor(0.9 * 1) == 0, but `.max(1)` must still
+        // block a collapse to zero versions.
+        let prev = make_manifest("forge", json!([{"id": "1.20.1"}]));
+        let new = make_manifest("forge", json!([]));
+        assert!(matches!(
+            check_loader_health("forge", &new, Some(&prev)),
+            Err(SanityViolation::VersionCountDrop { current: 0, .. })
+        ));
     }
 
     // ── no previous → always ok ───────────────────────────────────────────────
