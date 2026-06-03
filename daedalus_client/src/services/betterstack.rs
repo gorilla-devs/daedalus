@@ -2,8 +2,8 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
-use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
 
 /// Betterstack log shipping layer
 ///
@@ -148,7 +148,12 @@ async fn consumer_loop(
     }
 }
 
-async fn flush(client: &reqwest::Client, token: &str, url: &str, logs: Vec<Value>) {
+async fn flush(
+    client: &reqwest::Client,
+    token: &str,
+    url: &str,
+    logs: Vec<Value>,
+) {
     let log_count = logs.len();
     if let Err(e) = ship_logs(client, token, url, &logs).await {
         warn!(error = %e, log_count, "Failed to ship logs to Betterstack, logs dropped");
@@ -179,7 +184,9 @@ async fn ship_logs(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_else(|_| "".to_string());
-        return Err(format!("Betterstack API error {}: {}", status, body).into());
+        return Err(
+            format!("Betterstack API error {}: {}", status, body).into()
+        );
     }
 
     Ok(())
@@ -199,7 +206,11 @@ impl JsonVisitor {
 }
 
 impl tracing::field::Visit for JsonVisitor {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+    fn record_debug(
+        &mut self,
+        field: &tracing::field::Field,
+        value: &dyn std::fmt::Debug,
+    ) {
         self.fields.insert(
             field.name().to_string(),
             Value::String(format!("{:?}", value)),
@@ -234,6 +245,10 @@ mod tests {
     #[test]
     fn test_json_visitor_basic() {
         let visitor = JsonVisitor::new();
-        assert_eq!(visitor.fields.len(), 0, "New visitor should have empty fields");
+        assert_eq!(
+            visitor.fields.len(),
+            0,
+            "New visitor should have empty fields"
+        );
     }
 }

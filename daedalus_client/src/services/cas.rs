@@ -56,7 +56,8 @@ pub struct LoaderReference {
 impl LoaderReference {
     /// Create a new loader reference
     pub fn new(loader: &str, timestamp: String) -> Self {
-        let url = format!("v{}/manifests/{}/{}.json", CAS_VERSION, loader, timestamp);
+        let url =
+            format!("v{}/manifests/{}/{}.json", CAS_VERSION, loader, timestamp);
         Self { timestamp, url }
     }
 }
@@ -96,10 +97,8 @@ impl RootManifest {
     /// Add or update a loader reference
     #[cfg(test)]
     pub fn add_loader(&mut self, loader: String, timestamp: String) {
-        self.loaders.insert(
-            loader.clone(),
-            LoaderReference::new(&loader, timestamp),
-        );
+        self.loaders
+            .insert(loader.clone(), LoaderReference::new(&loader, timestamp));
     }
 }
 
@@ -148,7 +147,10 @@ impl LoaderManifest {
     ///
     /// This is a convenience method for simple loaders (forge, neoforge) that use
     /// the standard LoaderManifestEntry schema (id, hash, size, updated_at).
-    pub fn from_entries(loader: String, entries: Vec<LoaderManifestEntry>) -> Self {
+    pub fn from_entries(
+        loader: String,
+        entries: Vec<LoaderManifestEntry>,
+    ) -> Self {
         let versions = serde_json::to_value(&entries)
             .expect("LoaderManifestEntry should always serialize to JSON");
         Self::new(loader, versions)
@@ -215,12 +217,15 @@ impl ManifestBuilder {
     /// * `hash` - SHA256 hash of the version's content
     /// * `size` - Size of the content in bytes
     #[instrument(skip(self), level = "debug")]
-    pub fn add_version(&self, loader: &str, version_id: String, hash: String, size: u64) {
+    pub fn add_version(
+        &self,
+        loader: &str,
+        version_id: String,
+        hash: String,
+        size: u64,
+    ) {
         // Get or create the version map for this loader
-        let loader_map = self
-            .versions
-            .entry(loader.to_string())
-            .or_default();
+        let loader_map = self.versions.entry(loader.to_string()).or_default();
 
         // Add the version entry
         loader_map.insert(version_id, (hash, size));
@@ -257,7 +262,11 @@ impl ManifestBuilder {
     /// builder.set_loader_versions("minecraft", minecraft_versions);
     /// ```
     #[instrument(skip(self, versions), level = "debug")]
-    pub fn set_loader_versions(&self, loader: &str, versions: serde_json::Value) {
+    pub fn set_loader_versions(
+        &self,
+        loader: &str,
+        versions: serde_json::Value,
+    ) {
         self.custom_versions.insert(loader.to_string(), versions);
     }
 
@@ -273,7 +282,10 @@ impl ManifestBuilder {
     ///
     /// * `loader` - Loader name to build manifest for
     #[instrument(skip(self))]
-    pub fn build_loader_manifest(&self, loader: &str) -> Option<LoaderManifest> {
+    pub fn build_loader_manifest(
+        &self,
+        loader: &str,
+    ) -> Option<LoaderManifest> {
         // Check if we have custom versions JSON (complex loaders)
         if let Some(custom) = self.custom_versions.get(loader) {
             let versions_json = custom.value().clone();
@@ -283,7 +295,10 @@ impl ManifestBuilder {
                 "Built loader manifest from custom versions JSON"
             );
 
-            return Some(LoaderManifest::new(loader.to_string(), versions_json));
+            return Some(LoaderManifest::new(
+                loader.to_string(),
+                versions_json,
+            ));
         }
 
         // Fall back to building from simple version entries (forge, neoforge, etc.)
@@ -318,7 +333,8 @@ impl ManifestBuilder {
     ///
     /// Returns a sorted vector of loader names from both simple and custom versions.
     pub fn get_loaders(&self) -> Vec<String> {
-        let mut loaders: Vec<String> = self.versions.iter().map(|e| e.key().clone()).collect();
+        let mut loaders: Vec<String> =
+            self.versions.iter().map(|e| e.key().clone()).collect();
 
         // Add loaders from custom_versions that aren't already in the list
         for entry in self.custom_versions.iter() {
@@ -337,10 +353,7 @@ impl ManifestBuilder {
     /// Returns 0 if the loader doesn't exist.
     #[cfg(test)]
     pub fn version_count(&self, loader: &str) -> usize {
-        self.versions
-            .get(loader)
-            .map(|m| m.len())
-            .unwrap_or(0)
+        self.versions.get(loader).map(|m| m.len()).unwrap_or(0)
     }
 
     /// Get the total number of loaders
@@ -365,7 +378,10 @@ mod tests {
         let mut loaders = HashMap::new();
         loaders.insert(
             "minecraft".to_string(),
-            LoaderReference::new("minecraft", "2024-01-15T10-30-00Z".to_string()),
+            LoaderReference::new(
+                "minecraft",
+                "2024-01-15T10-30-00Z".to_string(),
+            ),
         );
         loaders.insert(
             "forge".to_string(),
@@ -380,24 +396,42 @@ mod tests {
 
     #[test]
     fn test_loader_reference_creation() {
-        let reference = LoaderReference::new("minecraft", "2024-01-15T10-30-00Z".to_string());
+        let reference = LoaderReference::new(
+            "minecraft",
+            "2024-01-15T10-30-00Z".to_string(),
+        );
 
         assert_eq!(reference.timestamp, "2024-01-15T10-30-00Z");
-        assert_eq!(reference.url, format!("v{}/manifests/minecraft/2024-01-15T10-30-00Z.json", CAS_VERSION));
+        assert_eq!(
+            reference.url,
+            format!(
+                "v{}/manifests/minecraft/2024-01-15T10-30-00Z.json",
+                CAS_VERSION
+            )
+        );
     }
 
     #[test]
     fn test_root_manifest_add_loader() {
         let mut root = RootManifest::empty();
 
-        root.add_loader("minecraft".to_string(), "2024-01-15T10-30-00Z".to_string());
+        root.add_loader(
+            "minecraft".to_string(),
+            "2024-01-15T10-30-00Z".to_string(),
+        );
 
         assert_eq!(root.loaders.len(), 1);
         assert!(root.loaders.contains_key("minecraft"));
 
         let reference = &root.loaders["minecraft"];
         assert_eq!(reference.timestamp, "2024-01-15T10-30-00Z");
-        assert_eq!(reference.url, format!("v{}/manifests/minecraft/2024-01-15T10-30-00Z.json", CAS_VERSION));
+        assert_eq!(
+            reference.url,
+            format!(
+                "v{}/manifests/minecraft/2024-01-15T10-30-00Z.json",
+                CAS_VERSION
+            )
+        );
     }
 
     #[test]
@@ -438,19 +472,24 @@ mod tests {
             },
         ];
 
-        let manifest = LoaderManifest::from_entries("minecraft".to_string(), entries.clone());
+        let manifest = LoaderManifest::from_entries(
+            "minecraft".to_string(),
+            entries.clone(),
+        );
 
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(manifest.loader, "minecraft");
         // versions is now serde_json::Value, so deserialize to check
-        let versions: Vec<LoaderManifestEntry> = serde_json::from_value(manifest.versions).unwrap();
+        let versions: Vec<LoaderManifestEntry> =
+            serde_json::from_value(manifest.versions).unwrap();
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].id, "1.20.4");
     }
 
     #[test]
     fn test_loader_manifest_serialization() {
-        let manifest = LoaderManifest::from_entries("forge".to_string(), vec![]);
+        let manifest =
+            LoaderManifest::from_entries("forge".to_string(), vec![]);
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: LoaderManifest = serde_json::from_str(&json).unwrap();
 
@@ -469,7 +508,12 @@ mod tests {
     fn test_manifest_builder_add_version() {
         let builder = ManifestBuilder::new();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
+        builder.add_version(
+            "minecraft",
+            "1.20.4".to_string(),
+            "abc123".to_string(),
+            1024,
+        );
 
         assert_eq!(builder.loader_count(), 1);
         assert_eq!(builder.version_count("minecraft"), 1);
@@ -479,9 +523,24 @@ mod tests {
     fn test_manifest_builder_multiple_loaders() {
         let builder = ManifestBuilder::new();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
-        builder.add_version("forge", "49.0.3".to_string(), "def456".to_string(), 2048);
-        builder.add_version("fabric", "0.15.0".to_string(), "ghi789".to_string(), 512);
+        builder.add_version(
+            "minecraft",
+            "1.20.4".to_string(),
+            "abc123".to_string(),
+            1024,
+        );
+        builder.add_version(
+            "forge",
+            "49.0.3".to_string(),
+            "def456".to_string(),
+            2048,
+        );
+        builder.add_version(
+            "fabric",
+            "0.15.0".to_string(),
+            "ghi789".to_string(),
+            512,
+        );
 
         assert_eq!(builder.loader_count(), 3);
         assert_eq!(builder.version_count("minecraft"), 1);
@@ -496,9 +555,24 @@ mod tests {
     fn test_manifest_builder_multiple_versions() {
         let builder = ManifestBuilder::new();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
-        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048);
-        builder.add_version("minecraft", "1.20.2".to_string(), "ghi789".to_string(), 512);
+        builder.add_version(
+            "minecraft",
+            "1.20.4".to_string(),
+            "abc123".to_string(),
+            1024,
+        );
+        builder.add_version(
+            "minecraft",
+            "1.20.3".to_string(),
+            "def456".to_string(),
+            2048,
+        );
+        builder.add_version(
+            "minecraft",
+            "1.20.2".to_string(),
+            "ghi789".to_string(),
+            512,
+        );
 
         assert_eq!(builder.loader_count(), 1);
         assert_eq!(builder.version_count("minecraft"), 3);
@@ -508,15 +582,26 @@ mod tests {
     fn test_manifest_builder_build_manifest() {
         let builder = ManifestBuilder::new();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
-        builder.add_version("minecraft", "1.20.3".to_string(), "def456".to_string(), 2048);
+        builder.add_version(
+            "minecraft",
+            "1.20.4".to_string(),
+            "abc123".to_string(),
+            1024,
+        );
+        builder.add_version(
+            "minecraft",
+            "1.20.3".to_string(),
+            "def456".to_string(),
+            2048,
+        );
 
         let manifest = builder.build_loader_manifest("minecraft").unwrap();
 
         assert_eq!(manifest.loader, "minecraft");
 
         // Deserialize versions to check them
-        let versions: Vec<LoaderManifestEntry> = serde_json::from_value(manifest.versions).unwrap();
+        let versions: Vec<LoaderManifestEntry> =
+            serde_json::from_value(manifest.versions).unwrap();
         assert_eq!(versions.len(), 2);
 
         // Check versions are sorted by ID
@@ -528,7 +613,12 @@ mod tests {
     fn test_manifest_builder_nonexistent_loader() {
         let builder = ManifestBuilder::new();
 
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
+        builder.add_version(
+            "minecraft",
+            "1.20.4".to_string(),
+            "abc123".to_string(),
+            1024,
+        );
 
         assert!(builder.build_loader_manifest("forge").is_none());
         assert_eq!(builder.version_count("forge"), 0);
@@ -539,15 +629,26 @@ mod tests {
         let builder = ManifestBuilder::new();
 
         // Add same version twice with different hashes
-        builder.add_version("minecraft", "1.20.4".to_string(), "abc123".to_string(), 1024);
-        builder.add_version("minecraft", "1.20.4".to_string(), "def456".to_string(), 2048);
+        builder.add_version(
+            "minecraft",
+            "1.20.4".to_string(),
+            "abc123".to_string(),
+            1024,
+        );
+        builder.add_version(
+            "minecraft",
+            "1.20.4".to_string(),
+            "def456".to_string(),
+            2048,
+        );
 
         assert_eq!(builder.version_count("minecraft"), 1); // Still 1, overwritten
 
         let manifest = builder.build_loader_manifest("minecraft").unwrap();
 
         // Deserialize versions to check them
-        let versions: Vec<LoaderManifestEntry> = serde_json::from_value(manifest.versions).unwrap();
+        let versions: Vec<LoaderManifestEntry> =
+            serde_json::from_value(manifest.versions).unwrap();
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].hash, "def456"); // Latest hash
         assert_eq!(versions[0].size, 2048); // Latest size

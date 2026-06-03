@@ -28,7 +28,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!("Usage: cargo run --example lwjgl_hash -- <version_id> [version_id...]");
+        eprintln!(
+            "Usage: cargo run --example lwjgl_hash -- <version_id> [version_id...]"
+        );
         eprintln!("Example: cargo run --example lwjgl_hash -- 26.1 1.21.4");
         std::process::exit(1);
     }
@@ -41,14 +43,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .versions
             .iter()
             .find(|v| v.id == *version_id)
-            .ok_or_else(|| format!("Version {} not found in manifest", version_id))?;
+            .ok_or_else(|| {
+                format!("Version {} not found in manifest", version_id)
+            })?;
 
         eprintln!("Fetching version info for {}...", version_id);
         let mut version_info = fetch_version_info(version).await?;
 
         let has_split_natives = version_has_split_natives(&version_info);
         let mut _is_lwjgl_3 = false;
-        let mut lwjgl_buckets: HashMap<Option<Vec<Rule>>, LibraryGroup> = HashMap::new();
+        let mut lwjgl_buckets: HashMap<Option<Vec<Rule>>, LibraryGroup> =
+            HashMap::new();
 
         for library in version_info.libraries.iter_mut() {
             // Merge split native identifiers into artifact name (same as daedalus_client)
@@ -72,9 +77,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 rules = library.rules.clone();
                 library.rules = None;
-                if spec.package == "org.lwjgl.lwjgl" && spec.artifact == "lwjgl" {
+                if spec.package == "org.lwjgl.lwjgl" && spec.artifact == "lwjgl"
+                {
                     Some(spec.version.clone())
-                } else if spec.package == "org.lwjgl" && spec.artifact == "lwjgl" {
+                } else if spec.package == "org.lwjgl"
+                    && spec.artifact == "lwjgl"
+                {
                     _is_lwjgl_3 = true;
                     Some(spec.version.clone())
                 } else {
@@ -83,9 +91,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let bucket =
-                lwjgl_buckets
-                    .entry(rules.clone())
-                    .or_insert_with(|| LibraryGroup {
+                lwjgl_buckets.entry(rules.clone()).or_insert_with(|| {
+                    LibraryGroup {
                         id: "LWJGL".to_string(),
                         version: "undetermined".to_string(),
                         uid: "org.lwjgl".to_string(),
@@ -95,7 +102,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         conflicts: None,
                         type_: VersionType::Release,
                         has_split_natives: Some(has_split_natives),
-                    });
+                    }
+                });
             bucket.has_split_natives = Some(has_split_natives);
 
             if let Some(version) = set_version {

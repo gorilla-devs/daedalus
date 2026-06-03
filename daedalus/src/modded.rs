@@ -1,4 +1,4 @@
-use crate::{download_file, Error, BRANDING};
+use crate::{BRANDING, Error, download_file};
 
 use crate::minecraft::{
     Argument, ArgumentType, Library, LoggingConfig, LoggingConfigName,
@@ -7,7 +7,6 @@ use crate::minecraft::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
-
 
 /// A data variable entry that depends on the side of the installation
 #[derive(Serialize, Deserialize, Debug, Clone)]

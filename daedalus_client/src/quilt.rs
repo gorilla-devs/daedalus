@@ -1,5 +1,5 @@
-use crate::loaders::quilt::{QuiltStrategy, QuiltVersions};
 use crate::loaders::LoaderProcessor;
+use crate::loaders::quilt::{QuiltStrategy, QuiltVersions};
 use crate::services::upload::BatchUploader;
 use daedalus::minecraft::VersionManifest;
 use std::sync::Arc;
@@ -19,6 +19,12 @@ pub async fn retrieve_data(
 ) -> Result<(), crate::infrastructure::error::Error> {
     let processor = LoaderProcessor::new(QuiltStrategy);
     processor
-        .retrieve_data::<QuiltVersions>(minecraft_versions, uploader, manifest_builder, s3_client, semaphore)
+        .retrieve_data::<QuiltVersions>(
+            minecraft_versions,
+            uploader,
+            manifest_builder,
+            s3_client,
+            semaphore,
+        )
         .await
 }

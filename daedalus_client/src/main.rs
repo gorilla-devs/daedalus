@@ -1,18 +1,29 @@
 use backon::{ExponentialBuilder, Retryable};
 use daedalus::Branding;
-use tracing::{error, info, warn, instrument, Instrument};
 use s3::creds::Credentials;
 use s3::{Bucket, Region};
 use std::ffi::OsStr;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
+use tracing::{Instrument, error, info, instrument, warn};
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
+
+/// Shared mutex guarding the live-root PUT so the publish loop and the control
+/// executor (§2.4) never write `v{CAS_VERSION}/manifest.json` concurrently.
+/// The control executor acquires this before its rollback PUT; the publish loop
+/// acquires it just before the live-root PUT below.
+pub static ROOT_WRITE_LOCK: LazyLock<Arc<tokio::sync::Mutex<()>>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(())));
+
+/// Stale-pin reminder threshold — warn in Discord once per cycle for any pin
+/// older than this.
+const PIN_STALE_THRESHOLD_HOURS: i64 = 6;
 
 #[cfg(unix)]
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 
 /// Configuration constants
 /// Update interval for fetching new metadata (1 hour)
@@ -31,10 +42,14 @@ const MAX_UPLOAD_RETRIES: usize = 5;
 /// doomed upload could block for hours.
 const MAX_RETRY_DELAY_SECS: u64 = 60;
 
+/// How often to poll the control file for pending operator actions.
+/// Default 30 s; override via `CONTROL_POLL_INTERVAL_SECS` env var.
+const DEFAULT_CONTROL_POLL_INTERVAL_SECS: u64 = 30;
+
 mod common;
 mod fabric;
-mod infrastructure;
 mod forge;
+mod infrastructure;
 mod loaders;
 mod minecraft;
 mod neoforge;
@@ -43,18 +58,30 @@ mod services;
 
 /// Create a future that completes when a shutdown signal is received (SIGTERM or Ctrl+C)
 async fn shutdown_signal() {
+    // Both branches log+fall-through to `pending::<()>` if signal handler
+    // installation fails — a panic here would kill the main loop, which is
+    // the exact opposite of the "never crash" contract this service has.
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {}
+            Err(e) => {
+                warn!(error = %e, "Failed to install Ctrl+C handler; ignoring");
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal(SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
+        match signal(SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to install SIGTERM handler; ignoring");
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]
@@ -71,14 +98,23 @@ async fn shutdown_signal() {
 }
 
 fn main() -> Result<(), crate::infrastructure::error::Error> {
+    // Sentry init is optional even with the feature compiled in — missing
+    // DSN logs a warning and skips, rather than panicking the process
+    // before logging is even initialized.
     #[cfg(feature = "sentry")]
-    let _guard = sentry::init((
-        dotenvy::var("SENTRY_DSN").unwrap(),
-        sentry::ClientOptions {
-            release: sentry::release_name!(),
-            ..Default::default()
-        },
-    ));
+    let _guard = match dotenvy::var("SENTRY_DSN") {
+        Ok(dsn) if !dsn.is_empty() => Some(sentry::init((
+            dsn,
+            sentry::ClientOptions {
+                release: sentry::release_name!(),
+                ..Default::default()
+            },
+        ))),
+        _ => {
+            eprintln!("SENTRY_DSN not set; Sentry reporting disabled");
+            None
+        }
+    };
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -95,6 +131,12 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
             } else {
                 EnvFilter::new("daedalus_client=info")
             };
+
+            // Initialize Discord notifier before subscriber init so the
+            // tracing layer can forward error events from this point on.
+            // try_init_from_env() is a no-op if DISCORD_WEBHOOK_URL is unset.
+            let discord_handle = services::discord::try_init_from_env();
+            let discord_layer = services::discord::DiscordTracingLayer::new();
 
             let betterstack_token = dotenvy::var("BETTERSTACK_TOKEN").ok();
             let betterstack_handle = if let Some(ref token) = betterstack_token {
@@ -120,6 +162,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                     tracing_subscriber::registry()
                         .with(json_layer)
                         .with(betterstack_layer)
+                        .with(discord_layer)
                         .with(filter)
                         .init();
 
@@ -139,6 +182,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                     tracing_subscriber::registry()
                         .with(pretty_layer)
                         .with(betterstack_layer)
+                        .with(discord_layer)
                         .with(filter)
                         .init();
 
@@ -163,6 +207,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
                     tracing_subscriber::registry()
                         .with(json_layer)
+                        .with(discord_layer)
                         .with(filter)
                         .init();
 
@@ -180,6 +225,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
                     tracing_subscriber::registry()
                         .with(pretty_layer)
+                        .with(discord_layer)
                         .with(filter)
                         .init();
 
@@ -197,13 +243,28 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                 return Err(crate::infrastructure::error::invalid_input("Some environment variables are missing!"));
             }
 
-            Branding::set_branding(Branding::new(
-                dotenvy::var("BRAND_NAME").unwrap(),
-                dotenvy::var("SUPPORT_EMAIL").unwrap(),
-            ))
-            .unwrap();
+            // Propagate env / set_branding errors as Result so any future refactor
+            // moving this into a hot path can't accidentally panic the loop.
+            let brand_name = dotenvy::var("BRAND_NAME")
+                .map_err(|_| crate::infrastructure::error::ErrorKind::EnvVarMissing("BRAND_NAME".into()))?;
+            let support_email = dotenvy::var("SUPPORT_EMAIL")
+                .map_err(|_| crate::infrastructure::error::ErrorKind::EnvVarMissing("SUPPORT_EMAIL".into()))?;
+            Branding::set_branding(Branding::new(brand_name, support_email))
+                .map_err(|e| crate::infrastructure::error::invalid_input(format!("Branding init failed: {e}")))?;
 
-            let mut timer = tokio::time::interval(Duration::from_secs(UPDATE_INTERVAL_SECS));
+            // Env-tunable control-poll interval; default 30 s.
+            let control_poll_interval_secs: u64 = dotenvy::var("CONTROL_POLL_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_CONTROL_POLL_INTERVAL_SECS);
+
+            let mut publish_timer = tokio::time::interval(Duration::from_secs(UPDATE_INTERVAL_SECS));
+            let mut control_timer = tokio::time::interval(Duration::from_secs(control_poll_interval_secs));
+            // MissedTickBehavior::Delay: if a control tick is missed (e.g. because
+            // a publish cycle was running), just schedule the next tick relative to
+            // now rather than firing immediately N times to catch up.
+            control_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
             let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS));
 
             {
@@ -222,328 +283,530 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
             let mut is_first_run = true;
 
             loop {
-                // Wait for either timer tick or shutdown signal
-                info!("Waiting for next update timer or shutdown signal");
+                info!("Waiting for next publish timer, control poll, or shutdown signal");
+
                 tokio::select! {
-                    _ = timer.tick() => {
-                        // Timer ticked - continue with processing cycle
+                    _ = publish_timer.tick() => {
+                        let loop_span = tracing::info_span!("processing_cycle", is_first_run);
+                        run_publish_cycle(is_first_run, semaphore.clone())
+                            .instrument(loop_span)
+                            .await;
+                        is_first_run = false;
+                    }
+                    _ = control_timer.tick() => {
+                        // §2.3: poll control.json for pending operator intents.
+                        services::control::process_pending(&CLIENT).await;
                     }
                     _ = shutdown_signal() => {
                         info!("Shutdown signal received - exiting gracefully");
                         break;
                     }
                 }
-
-                let loop_span = tracing::info_span!("processing_cycle", is_first_run);
-                async {
-                    let uploader = services::upload::BatchUploader::new();
-                    let manifest_builder = services::cas::ManifestBuilder::new();
-
-                    let versions = {
-                        let span = tracing::info_span!("minecraft_processing");
-                        async {
-                            match MINECRAFT_BREAKER.call(async {
-                                minecraft::retrieve_data(
-                                    &uploader,
-                                    &manifest_builder,
-                                    &CLIENT,
-                                    semaphore.clone(),
-                                    is_first_run,
-                                )
-                                .await
-                            })
-                            .await
-                            {
-                                Ok(res) => {
-                                    info!(version_count = res.versions.len(), "Minecraft data retrieved");
-                                    Some(res)
-                                }
-                                Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
-                                    warn!("Minecraft circuit breaker is open, skipping");
-                                    None
-                                }
-                                Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
-                                    error!(error = %err, "Minecraft processing failed");
-                                    None
-                                }
-                            }
-                        }
-                        .instrument(span)
-                        .await
-                    };
-
-                    if let Some(manifest) = versions {
-                        if cfg!(feature = "fabric") {
-                            let span = tracing::info_span!("fabric_processing");
-                            async {
-                                match FABRIC_BREAKER.call(async {
-                                    fabric::retrieve_data(
-                                        &manifest,
-                                        &uploader,
-                                        &manifest_builder,
-                                        &CLIENT,
-                                        semaphore.clone(),
-                                    )
-                                    .await
-                                })
-                                .await
-                                {
-                                    Ok(_) => info!("Fabric processing completed"),
-                                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
-                                        warn!("Fabric circuit breaker is open, skipping");
-                                    }
-                                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
-                                        error!(error = %err, "Fabric processing failed");
-                                    }
-                                }
-                            }
-                            .instrument(span)
-                            .await;
-                        }
-
-                        if cfg!(feature = "forge") {
-                            let span = tracing::info_span!("forge_processing");
-                            async {
-                                match FORGE_BREAKER.call(async {
-                                    forge::retrieve_data(
-                                        &manifest,
-                                        &uploader,
-                                        &manifest_builder,
-                                        &CLIENT,
-                                        semaphore.clone(),
-                                    )
-                                    .await
-                                })
-                                .await
-                                {
-                                    Ok(_) => info!("Forge processing completed"),
-                                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
-                                        warn!("Forge circuit breaker is open, skipping");
-                                    }
-                                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
-                                        error!(error = %err, "Forge processing failed");
-                                    }
-                                }
-                            }
-                            .instrument(span)
-                            .await;
-                        }
-
-                        if cfg!(feature = "quilt") {
-                            let span = tracing::info_span!("quilt_processing");
-                            async {
-                                match QUILT_BREAKER.call(async {
-                                    quilt::retrieve_data(
-                                        &manifest,
-                                        &uploader,
-                                        &manifest_builder,
-                                        &CLIENT,
-                                        semaphore.clone(),
-                                    )
-                                    .await
-                                })
-                                .await
-                                {
-                                    Ok(_) => info!("Quilt processing completed"),
-                                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
-                                        warn!("Quilt circuit breaker is open, skipping");
-                                    }
-                                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
-                                        error!(error = %err, "Quilt processing failed");
-                                    }
-                                }
-                            }
-                            .instrument(span)
-                            .await;
-                        }
-
-                        if cfg!(feature = "neoforge") {
-                            let span = tracing::info_span!("neoforge_processing");
-                            async {
-                                match NEOFORGE_BREAKER.call(async {
-                                    neoforge::retrieve_data(
-                                        &manifest,
-                                        &uploader,
-                                        &manifest_builder,
-                                        &CLIENT,
-                                        semaphore.clone(),
-                                    )
-                                    .await
-                                })
-                                .await
-                                {
-                                    Ok(_) => info!("NeoForge processing completed"),
-                                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
-                                        warn!("NeoForge circuit breaker is open, skipping");
-                                    }
-                                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
-                                        error!(error = %err, "NeoForge processing failed");
-                                    }
-                                }
-                            }
-                            .instrument(span)
-                            .await;
-                        }
-
-                        // All CAS objects have been uploaded immediately during processing.
-                        // Now we upload the loader manifests and root manifest atomically.
-                        // A single shared `cycle_uploaded_paths` collects every path uploaded by
-                        // this cycle's manifest writes so we can purge them from the CDN below.
-                        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
-                        let mut loader_references = std::collections::HashMap::new();
-                        let cycle_uploaded_paths: Arc<tokio::sync::Mutex<Vec<String>>> =
-                            Arc::new(tokio::sync::Mutex::new(Vec::new()));
-
-                        let all_loaders = manifest_builder.get_loaders();
-                        info!(loader_count = all_loaders.len(), "Building loader manifests");
-
-                        for loader in &all_loaders {
-                            if let Some(loader_manifest) = manifest_builder.build_loader_manifest(loader) {
-                                let manifest_path = format!("v{}/manifests/{}/{}.json", crate::services::cas::CAS_VERSION, loader, loader_manifest.timestamp);
-
-                                info!(
-                                    loader = %loader,
-                                    version_count = loader_manifest.versions.as_array().map(|a| a.len()).unwrap_or(0),
-                                    path = %manifest_path,
-                                    "Uploading loader manifest"
-                                );
-
-                                match serde_json::to_vec_pretty(&loader_manifest) {
-                                    Ok(manifest_bytes) => {
-                                        match upload_file_to_bucket(
-                                            manifest_path.clone(),
-                                            manifest_bytes,
-                                            Some("application/json".to_string()),
-                                            cycle_uploaded_paths.clone(),
-                                            semaphore.clone(),
-                                        ).await {
-                                            Ok(_) => {
-                                                info!(loader = %loader, "Loader manifest uploaded successfully");
-                                                loader_references.insert(
-                                                    loader.clone(),
-                                                    services::cas::LoaderReference::new(loader, loader_manifest.timestamp.clone())
-                                                );
-                                            }
-                                            Err(e) => {
-                                                error!(loader = %loader, error = %e, "Failed to upload loader manifest");
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!(loader = %loader, error = %e, "Failed to serialize loader manifest");
-                                    }
-                                }
-                            }
-                        }
-
-                        if !loader_references.is_empty() {
-                            let root_manifest = services::cas::RootManifest::new(loader_references);
-                            let root_path = format!("v{}/manifest.json", crate::services::cas::CAS_VERSION);
-
-                            info!("Uploading root manifest (atomic commit point)");
-
-                            match serde_json::to_vec_pretty(&root_manifest) {
-                                Ok(root_bytes) => {
-                                    match upload_file_to_bucket(
-                                        root_path.clone(),
-                                        root_bytes.clone(),
-                                        Some("application/json".to_string()),
-                                        cycle_uploaded_paths.clone(),
-                                        semaphore.clone(),
-                                    ).await {
-                                        Ok(_) => {
-                                            info!("Root manifest uploaded successfully - all changes are now live");
-                                        }
-                                        Err(e) => {
-                                            error!(error = %e, "Failed to upload root manifest - changes NOT committed");
-                                        }
-                                    }
-
-                                    let backup_path = format!("v{}/history/manifest-{}.json", crate::services::cas::CAS_VERSION, timestamp);
-                                    info!(backup_path = %backup_path, "Creating backup of root manifest");
-
-                                    match upload_file_to_bucket(
-                                        backup_path,
-                                        root_bytes,
-                                        Some("application/json".to_string()),
-                                        cycle_uploaded_paths.clone(),
-                                        semaphore.clone(),
-                                    ).await {
-                                        Ok(_) => info!("Backup created successfully"),
-                                        Err(e) => warn!(error = %e, "Failed to create backup (non-fatal)"),
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(error = %e, "Failed to serialize root manifest");
-                                }
-                            }
-
-                            info!("Processing cycle completed successfully");
-
-                            // Build absolute URLs from every path uploaded by this cycle.
-                            // (CAS objects are immutable hash-keyed and bypass this purge by
-                            // design — the BatchUploader path doesn't go through
-                            // upload_file_to_bucket. Manifests + root + backup do, and those
-                            // are the URLs Cloudflare needs to invalidate.)
-                            let uploaded_paths: Vec<String> = {
-                                let guard = cycle_uploaded_paths.lock().await;
-                                guard.clone()
-                            };
-                            let uploaded_manifest_urls: Vec<String> = uploaded_paths
-                                .into_iter()
-                                .map(|p| format!("{}/{}", crate::common::BASE_URL.as_str(), p))
-                                .collect();
-
-                            if !uploaded_manifest_urls.is_empty() {
-                                let cloudflare_enabled = dotenvy::var("CLOUDFLARE_INTEGRATION")
-                                    .map(|v| v == "true")
-                                    .unwrap_or(false);
-
-                                if cloudflare_enabled {
-                                    match (
-                                        dotenvy::var("CLOUDFLARE_TOKEN"),
-                                        dotenvy::var("CLOUDFLARE_ZONE_ID"),
-                                    ) {
-                                        (Ok(token), Ok(zone_id)) => {
-                                            match services::cloudflare::purge_cloudflare_cache(&token, &zone_id, &uploaded_manifest_urls).await {
-                                                Ok(_) => {
-                                                    info!("Cloudflare cache purge successful");
-                                                }
-                                                Err(e) => {
-                                                    warn!(error = %e, "Cloudflare cache purge failed, but continuing");
-                                                }
-                                            }
-                                        }
-                                        _ => {
-                                            warn!(
-                                                "CLOUDFLARE_INTEGRATION is enabled but CLOUDFLARE_TOKEN or \
-                                                 CLOUDFLARE_ZONE_ID is missing"
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    info!("Cloudflare cache purging disabled (set CLOUDFLARE_INTEGRATION=true to enable)");
-                                }
-                            }
-                        } else {
-                            warn!("No loader manifests were built - skipping root manifest upload");
-                        }
-                    }
-
-                    is_first_run = false;
-                }
-                .instrument(loop_span)
-                .await;
             }
 
-            // Drain Betterstack buffer and ship one final batch before process exit.
+            // Drain Betterstack + Discord buffers and ship one final batch
+            // before process exit.
             if let Some(handle) = betterstack_handle {
+                handle.shutdown().await;
+            }
+            if let Some(handle) = discord_handle {
                 handle.shutdown().await;
             }
 
             info!("Application shutdown complete");
             Ok(())
         })
+}
+
+/// Execute one full publish cycle (all loaders).
+///
+/// Extracted from the select! branch so the publish branch stays short and
+/// readable.  `is_first_run` controls whether first-cycle-specific behaviour
+/// fires (currently passed through to `minecraft::retrieve_data`).
+async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
+    let uploader = services::upload::BatchUploader::new();
+    let manifest_builder = services::cas::ManifestBuilder::new();
+
+    let versions = {
+        let span = tracing::info_span!("minecraft_processing");
+        async {
+            match MINECRAFT_BREAKER.call(async {
+                minecraft::retrieve_data(
+                    &uploader,
+                    &manifest_builder,
+                    &CLIENT,
+                    semaphore.clone(),
+                    is_first_run,
+                )
+                .await
+            })
+            .await
+            {
+                Ok(res) => {
+                    info!(version_count = res.versions.len(), "Minecraft data retrieved");
+                    Some(res)
+                }
+                Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
+                    warn!("Minecraft circuit breaker is open, skipping");
+                    None
+                }
+                Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
+                    error!(error = %err, "Minecraft processing failed");
+                    None
+                }
+            }
+        }
+        .instrument(span)
+        .await
+    };
+
+    if let Some(manifest) = versions {
+        if cfg!(feature = "fabric") {
+            let span = tracing::info_span!("fabric_processing");
+            async {
+                match FABRIC_BREAKER.call(async {
+                    fabric::retrieve_data(
+                        &manifest,
+                        &uploader,
+                        &manifest_builder,
+                        &CLIENT,
+                        semaphore.clone(),
+                    )
+                    .await
+                })
+                .await
+                {
+                    Ok(_) => info!("Fabric processing completed"),
+                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
+                        warn!("Fabric circuit breaker is open, skipping");
+                    }
+                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
+                        error!(error = %err, "Fabric processing failed");
+                    }
+                }
+            }
+            .instrument(span)
+            .await;
+        }
+
+        if cfg!(feature = "forge") {
+            let span = tracing::info_span!("forge_processing");
+            async {
+                match FORGE_BREAKER.call(async {
+                    forge::retrieve_data(
+                        &manifest,
+                        &uploader,
+                        &manifest_builder,
+                        &CLIENT,
+                        semaphore.clone(),
+                    )
+                    .await
+                })
+                .await
+                {
+                    Ok(_) => info!("Forge processing completed"),
+                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
+                        warn!("Forge circuit breaker is open, skipping");
+                    }
+                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
+                        error!(error = %err, "Forge processing failed");
+                    }
+                }
+            }
+            .instrument(span)
+            .await;
+        }
+
+        if cfg!(feature = "quilt") {
+            let span = tracing::info_span!("quilt_processing");
+            async {
+                match QUILT_BREAKER.call(async {
+                    quilt::retrieve_data(
+                        &manifest,
+                        &uploader,
+                        &manifest_builder,
+                        &CLIENT,
+                        semaphore.clone(),
+                    )
+                    .await
+                })
+                .await
+                {
+                    Ok(_) => info!("Quilt processing completed"),
+                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
+                        warn!("Quilt circuit breaker is open, skipping");
+                    }
+                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
+                        error!(error = %err, "Quilt processing failed");
+                    }
+                }
+            }
+            .instrument(span)
+            .await;
+        }
+
+        if cfg!(feature = "neoforge") {
+            let span = tracing::info_span!("neoforge_processing");
+            async {
+                match NEOFORGE_BREAKER.call(async {
+                    neoforge::retrieve_data(
+                        &manifest,
+                        &uploader,
+                        &manifest_builder,
+                        &CLIENT,
+                        semaphore.clone(),
+                    )
+                    .await
+                })
+                .await
+                {
+                    Ok(_) => info!("NeoForge processing completed"),
+                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
+                        warn!("NeoForge circuit breaker is open, skipping");
+                    }
+                    Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
+                        error!(error = %err, "NeoForge processing failed");
+                    }
+                }
+            }
+            .instrument(span)
+            .await;
+        }
+
+        // All CAS objects have been uploaded immediately during processing.
+        // Now we upload the loader manifests and root manifest atomically.
+        // A single shared `cycle_uploaded_paths` collects every path uploaded by
+        // this cycle's manifest writes so we can purge them from the CDN below.
+        let timestamp =
+            chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+        let cycle_uploaded_paths: Arc<tokio::sync::Mutex<Vec<String>>> =
+            Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
+        // Seed `loader_references` from the PREVIOUSLY-published root manifest so
+        // any loader whose manifest upload fails this cycle stays referenced at
+        // its last known-good timestamp. Otherwise a single Forge S3 failure
+        // would silently drop Forge from the published root manifest (clients
+        // would stop seeing Forge support entirely), which directly violates
+        // the "if Forge breaks, everything else keeps updating" contract.
+        let previous_root_manifest = fetch_previous_root_manifest().await;
+        let mut loader_references: std::collections::HashMap<
+            String,
+            services::cas::LoaderReference,
+        > = previous_root_manifest
+            .as_ref()
+            .map(|r| r.loaders.clone())
+            .unwrap_or_default();
+        let mut upload_failures: Vec<String> = Vec::new();
+
+        // §1.4: Load persisted run-state and §1.6: load pins — both once
+        // per cycle from S3. Missing files are treated as empty/default.
+        let mut run_state = services::run_state::load(&CLIENT).await;
+        let pins = services::pins::load(&CLIENT).await;
+
+        // §1.6: Warn about pins that have been active for too long so
+        // they aren't silently forgotten (the DiscordTracingLayer forwards
+        // warn! events automatically).
+        services::pins::warn_stale_pins(
+            &pins,
+            chrono::Duration::hours(PIN_STALE_THRESHOLD_HOURS),
+        );
+
+        let all_loaders = manifest_builder.get_loaders();
+        info!(
+            loader_count = all_loaders.len(),
+            "Building loader manifests"
+        );
+
+        for loader in &all_loaders {
+            if let Some(loader_manifest) =
+                manifest_builder.build_loader_manifest(loader)
+            {
+                let manifest_path = format!(
+                    "v{}/manifests/{}/{}.json",
+                    crate::services::cas::CAS_VERSION,
+                    loader,
+                    loader_manifest.timestamp
+                );
+
+                info!(
+                    loader = %loader,
+                    version_count = loader_manifest.versions.as_array().map(|a| a.len()).unwrap_or(0),
+                    path = %manifest_path,
+                    "Uploading loader manifest"
+                );
+
+                // §1.1: Fetch the previous loader manifest for this loader (if
+                // any) and run the sanity gate before uploading.
+                let previous_loader_manifest: Option<
+                    services::cas::LoaderManifest,
+                > = if let Some(prev_ref) = previous_root_manifest
+                    .as_ref()
+                    .and_then(|r| r.loaders.get(loader.as_str()))
+                {
+                    let prev_url = format_url(&prev_ref.url);
+                    match reqwest::Client::new()
+                        .get(&prev_url)
+                        .timeout(std::time::Duration::from_secs(30))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) if resp.status().is_success() => resp
+                            .json::<services::cas::LoaderManifest>()
+                            .await
+                            .ok(),
+                        Ok(resp) if resp.status().as_u16() == 404 => None,
+                        Ok(resp) => {
+                            warn!(loader = %loader, status = %resp.status(), "Unexpected status fetching previous loader manifest; skipping sanity check");
+                            None
+                        }
+                        Err(e) => {
+                            warn!(loader = %loader, error = %e, "Failed to fetch previous loader manifest; skipping sanity check");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                // Run the sanity gate (pure function — no I/O).
+                match services::sanity::check_loader_health(
+                    loader,
+                    &loader_manifest,
+                    previous_loader_manifest.as_ref(),
+                ) {
+                    Ok(()) => {
+                        // Gate passed — proceed with upload.
+                    }
+                    Err(violation) => {
+                        // §1.1: Gate tripped. Skip this loader's upload for
+                        // this cycle. The carry-forward in `loader_references`
+                        // (seeded from the previous root manifest above) keeps
+                        // the previous reference live — no extra work needed.
+                        error!(
+                            loader = %loader,
+                            violation = %violation,
+                            "Sanity gate tripped — skipping upload; previous manifest kept live in root"
+                        );
+                        // §1.4: Record outcome.
+                        run_state.loader_mut(loader)
+                            .record_failure(services::run_state::LoaderOutcome::SanityGateBlocked);
+                        continue;
+                    }
+                }
+
+                match serde_json::to_vec_pretty(&loader_manifest) {
+                    Ok(manifest_bytes) => {
+                        match upload_file_to_bucket(
+                            manifest_path.clone(),
+                            manifest_bytes,
+                            Some("application/json".to_string()),
+                            cycle_uploaded_paths.clone(),
+                            semaphore.clone(),
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                info!(loader = %loader, "Loader manifest uploaded successfully");
+
+                                // §1.4: Record successful build.
+                                run_state.loader_mut(loader).record_success(
+                                    &loader_manifest.timestamp,
+                                    &manifest_path,
+                                );
+
+                                // §1.6: Choose which timestamp goes into the
+                                // root manifest. If the loader is pinned, use
+                                // the pinned timestamp; otherwise use the fresh
+                                // one. Either way, the fresh manifest was
+                                // uploaded above so devs can inspect it.
+                                let root_timestamp = if let Some(pin) =
+                                    pins.get(loader)
+                                {
+                                    info!(
+                                        loader = %loader,
+                                        fresh = %loader_manifest.timestamp,
+                                        pinned_to = %pin.pinned_to,
+                                        reason = %pin.reason,
+                                        "Loader is pinned — root manifest will reference pinned timestamp, not the fresh build"
+                                    );
+                                    pin.pinned_to.clone()
+                                } else {
+                                    loader_manifest.timestamp.clone()
+                                };
+
+                                loader_references.insert(
+                                    loader.clone(),
+                                    services::cas::LoaderReference::new(
+                                        loader,
+                                        root_timestamp,
+                                    ),
+                                );
+                            }
+                            Err(e) => {
+                                error!(loader = %loader, error = %e, "Failed to upload loader manifest; keeping previous reference if any");
+                                upload_failures.push(loader.clone());
+                                // §1.4: Record fetch/upload failure.
+                                run_state.loader_mut(loader)
+                                    .record_failure(services::run_state::LoaderOutcome::FetchFailure);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(loader = %loader, error = %e, "Failed to serialize loader manifest; keeping previous reference if any");
+                        upload_failures.push(loader.clone());
+                        run_state.loader_mut(loader).record_failure(
+                            services::run_state::LoaderOutcome::FetchFailure,
+                        );
+                    }
+                }
+            }
+        }
+
+        if !upload_failures.is_empty() {
+            warn!(
+                loaders = ?upload_failures,
+                "Some loader manifests failed to upload this cycle; their previous references stay live in the root manifest"
+            );
+        }
+
+        if !loader_references.is_empty() {
+            let root_manifest =
+                services::cas::RootManifest::new(loader_references);
+            let root_path =
+                format!("v{}/manifest.json", crate::services::cas::CAS_VERSION);
+
+            info!("Uploading root manifest (atomic commit point)");
+
+            match serde_json::to_vec_pretty(&root_manifest) {
+                Ok(root_bytes) => {
+                    // Write history backup FIRST so it always
+                    // covers any root we publish — previously
+                    // the backup ran after the root, leaving
+                    // a published manifest with no history
+                    // entry if the process was killed in
+                    // between.
+                    let backup_path = format!(
+                        "v{}/history/manifest-{}.json",
+                        crate::services::cas::CAS_VERSION,
+                        timestamp
+                    );
+                    info!(backup_path = %backup_path, "Creating backup of root manifest");
+                    match upload_file_to_bucket(
+                        backup_path,
+                        root_bytes.clone(),
+                        Some("application/json".to_string()),
+                        cycle_uploaded_paths.clone(),
+                        semaphore.clone(),
+                    )
+                    .await
+                    {
+                        Ok(_) => info!("Backup created successfully"),
+                        Err(e) => {
+                            warn!(error = %e, "Failed to create backup (non-fatal)")
+                        }
+                    }
+
+                    // §1.5: Acquire the shared root-write mutex so this PUT
+                    // cannot race with the control executor rollback handler
+                    // writing to the same path.
+                    let _root_write_guard = ROOT_WRITE_LOCK.lock().await;
+
+                    match upload_file_to_bucket(
+                        root_path.clone(),
+                        root_bytes,
+                        Some("application/json".to_string()),
+                        cycle_uploaded_paths.clone(),
+                        semaphore.clone(),
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!(
+                                "Root manifest uploaded successfully - all changes are now live"
+                            );
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to upload root manifest - changes NOT committed");
+                        }
+                    }
+
+                    // Release the root-write mutex before saving run-state.
+                    drop(_root_write_guard);
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to serialize root manifest");
+                }
+            }
+
+            info!("Processing cycle completed successfully");
+
+            // Build absolute URLs from every path uploaded by this cycle.
+            // (CAS objects are immutable hash-keyed and bypass this purge by
+            // design — the BatchUploader path doesn't go through
+            // upload_file_to_bucket. Manifests + root + backup do, and those
+            // are the URLs Cloudflare needs to invalidate.)
+            let uploaded_paths: Vec<String> = {
+                let guard = cycle_uploaded_paths.lock().await;
+                guard.clone()
+            };
+            let uploaded_manifest_urls: Vec<String> = uploaded_paths
+                .into_iter()
+                .map(|p| format!("{}/{}", crate::common::BASE_URL.as_str(), p))
+                .collect();
+
+            if !uploaded_manifest_urls.is_empty() {
+                let cloudflare_enabled = dotenvy::var("CLOUDFLARE_INTEGRATION")
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+
+                if cloudflare_enabled {
+                    match (
+                        dotenvy::var("CLOUDFLARE_TOKEN"),
+                        dotenvy::var("CLOUDFLARE_ZONE_ID"),
+                    ) {
+                        (Ok(token), Ok(zone_id)) => {
+                            match services::cloudflare::purge_cloudflare_cache(
+                                &token,
+                                &zone_id,
+                                &uploaded_manifest_urls,
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    info!("Cloudflare cache purge successful");
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "Cloudflare cache purge failed, but continuing");
+                                }
+                            }
+                        }
+                        _ => {
+                            warn!(
+                                "CLOUDFLARE_INTEGRATION is enabled but CLOUDFLARE_TOKEN or \
+                                 CLOUDFLARE_ZONE_ID is missing"
+                            );
+                        }
+                    }
+                } else {
+                    info!(
+                        "Cloudflare cache purging disabled (set CLOUDFLARE_INTEGRATION=true to enable)"
+                    );
+                }
+            }
+
+            // §1.4: Persist run-state after each cycle so the admin server
+            // can read it on the next request even after a process restart.
+            services::run_state::save(&CLIENT, &mut run_state).await;
+        } else {
+            // No fresh loader manifests AND no carry-forward from the previous
+            // root manifest — emit `error!` (not warn!) so this is visible in
+            // Discord and Betterstack. Means every loader failed this cycle on
+            // a brand-new deployment; clients will see no manifest at all.
+            error!(
+                "No loader manifests were built and no previous root manifest exists - skipping root manifest upload"
+            );
+        }
+    }
 }
 
 fn check_env_vars() -> bool {
@@ -607,24 +870,54 @@ static CLIENT: LazyLock<Bucket> = LazyLock::new(|| {
     bucket.with_path_style()
 });
 
-static MINECRAFT_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("minecraft", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
+static MINECRAFT_BREAKER: LazyLock<
+    crate::infrastructure::circuit_breaker::CircuitBreaker,
+> = LazyLock::new(|| {
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new(
+        "minecraft",
+        CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+        Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS),
+    )
 });
 
-static FORGE_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("forge", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
+static FORGE_BREAKER: LazyLock<
+    crate::infrastructure::circuit_breaker::CircuitBreaker,
+> = LazyLock::new(|| {
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new(
+        "forge",
+        CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+        Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS),
+    )
 });
 
-static FABRIC_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("fabric", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
+static FABRIC_BREAKER: LazyLock<
+    crate::infrastructure::circuit_breaker::CircuitBreaker,
+> = LazyLock::new(|| {
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new(
+        "fabric",
+        CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+        Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS),
+    )
 });
 
-static QUILT_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("quilt", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
+static QUILT_BREAKER: LazyLock<
+    crate::infrastructure::circuit_breaker::CircuitBreaker,
+> = LazyLock::new(|| {
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new(
+        "quilt",
+        CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+        Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS),
+    )
 });
 
-static NEOFORGE_BREAKER: LazyLock<crate::infrastructure::circuit_breaker::CircuitBreaker> = LazyLock::new(|| {
-    crate::infrastructure::circuit_breaker::CircuitBreaker::new("neoforge", CIRCUIT_BREAKER_FAILURE_THRESHOLD, Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS))
+static NEOFORGE_BREAKER: LazyLock<
+    crate::infrastructure::circuit_breaker::CircuitBreaker,
+> = LazyLock::new(|| {
+    crate::infrastructure::circuit_breaker::CircuitBreaker::new(
+        "neoforge",
+        CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+        Duration::from_secs(CIRCUIT_BREAKER_RESET_TIMEOUT_SECS),
+    )
 });
 
 #[instrument(skip(bytes, uploaded_files, semaphore), fields(size = bytes.len()))]
@@ -635,11 +928,14 @@ pub async fn upload_file_to_bucket(
     uploaded_files: Arc<tokio::sync::Mutex<Vec<String>>>,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), crate::infrastructure::error::Error> {
-    let _permit = semaphore.acquire().await?;
-
     info!(path = %path, "Started uploading");
 
+    // Acquire the upload permit INSIDE each retry attempt rather than holding
+    // it for the whole retry sequence (up to 5 × 60s). The previous design
+    // could deadlock the pool: all MAX_CONCURRENT_UPLOADS permits held by
+    // retrying uploaders, waiting on downloaders waiting on permits.
     (|| async {
+        let _permit = semaphore.acquire().await?;
         let key = path.clone();
 
         let result = if let Some(ref content_type) = content_type {
@@ -687,6 +983,50 @@ pub fn format_url(path: &str) -> String {
 
 pub use services::download::{download_file, download_file_mirrors};
 
+/// Fetch the previously-published root manifest so we can carry forward
+/// loader references on partial-failure cycles. Failure here is non-fatal
+/// — we just lose carry-forward and the cycle behaves like a cold start.
+async fn fetch_previous_root_manifest() -> Option<services::cas::RootManifest> {
+    let root_url = format_url(&format!(
+        "v{}/manifest.json",
+        crate::services::cas::CAS_VERSION
+    ));
+    match reqwest::Client::new()
+        .get(&root_url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<services::cas::RootManifest>().await {
+                Ok(m) => {
+                    info!(
+                        loader_count = m.loaders.len(),
+                        "Loaded previous root manifest for carry-forward"
+                    );
+                    Some(m)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Previous root manifest exists but couldn't parse; will treat as cold start");
+                    None
+                }
+            }
+        }
+        Ok(resp) if resp.status().as_u16() == 404 => {
+            info!("No previous root manifest at {root_url} (first deploy?)");
+            None
+        }
+        Ok(resp) => {
+            warn!(status = %resp.status(), "Unexpected response fetching previous root manifest; will treat as cold start");
+            None
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to fetch previous root manifest; will treat as cold start");
+            None
+        }
+    }
+}
+
 #[instrument(skip(uploaded_files, semaphore))]
 pub async fn upload_static_files(
     uploaded_files: Arc<tokio::sync::Mutex<Vec<String>>>,
@@ -699,7 +1039,12 @@ pub async fn upload_static_files(
     info!(dir = %cdn_upload_dir, "Uploading static files");
 
     if !std::path::Path::new(&cdn_upload_dir).exists() {
-        panic!("CDN_UPLOAD_DIR does not exist");
+        // Returning Err lets the caller decide; main.rs treats this as
+        // non-fatal so the hourly loop still services Forge/etc. updates
+        // even if the bootstrap static-files directory is missing.
+        return Err(crate::infrastructure::error::invalid_input(format!(
+            "CDN_UPLOAD_DIR '{cdn_upload_dir}' does not exist; skipping static files upload"
+        )));
     }
 
     for entry in walkdir::WalkDir::new(&cdn_upload_dir) {

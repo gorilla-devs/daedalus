@@ -85,7 +85,6 @@ cargo build --release
 | `CLOUDFLARE_TOKEN` | Cloudflare API token (required if integration enabled) | None | `your-cloudflare-token` |
 | `CLOUDFLARE_ZONE_ID` | Cloudflare zone ID (required if integration enabled) | None | `your-zone-id` |
 | `CDN_UPLOAD_DIR` | Local directory for CDN file uploads | `./upload_cdn` | `/path/to/cdn/dir` |
-| `FORCE_REPROCESS` | Force reprocessing of all NeoForge versions | `false` | `true` or `false` |
 
 ### Example .env File
 
@@ -167,14 +166,6 @@ Run with debug logging:
 
 ```bash
 RUST_LOG=debug cargo run
-```
-
-### Force Reprocess
-
-Force reprocessing of all versions (useful for NeoForge):
-
-```bash
-FORCE_REPROCESS=true cargo run --release
 ```
 
 ## Output Structure
@@ -286,7 +277,6 @@ BETTERSTACK_TOKEN=your-token cargo run
 
 - Check source API availability (meta.fabricmc.net, maven.minecraftforge.net, etc.)
 - Review logs for download failures
-- Try `FORCE_REPROCESS=true` for NeoForge
 
 ## License
 

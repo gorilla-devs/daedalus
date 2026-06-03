@@ -1,5 +1,5 @@
-use crate::loaders::fabric::{FabricStrategy, FabricVersions};
 use crate::loaders::LoaderProcessor;
+use crate::loaders::fabric::{FabricStrategy, FabricVersions};
 use crate::services::upload::BatchUploader;
 use daedalus::minecraft::VersionManifest;
 use std::sync::Arc;
@@ -19,6 +19,12 @@ pub async fn retrieve_data(
 ) -> Result<(), crate::infrastructure::error::Error> {
     let processor = LoaderProcessor::new(FabricStrategy);
     processor
-        .retrieve_data::<FabricVersions>(minecraft_versions, uploader, manifest_builder, s3_client, semaphore)
+        .retrieve_data::<FabricVersions>(
+            minecraft_versions,
+            uploader,
+            manifest_builder,
+            s3_client,
+            semaphore,
+        )
         .await
 }

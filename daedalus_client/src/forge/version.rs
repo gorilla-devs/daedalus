@@ -10,7 +10,8 @@ pub use crate::common::cas::extract_hash_from_cas_url;
 /// Fetch generated version info from the CAS
 pub async fn fetch_generated_version_info(
     version_id: &str,
-) -> Result<daedalus::minecraft::VersionInfo, crate::infrastructure::error::Error> {
+) -> Result<daedalus::minecraft::VersionInfo, crate::infrastructure::error::Error>
+{
     let path = format!(
         "minecraft/v{}/versions/{}.json",
         daedalus::minecraft::CURRENT_FORMAT_VERSION,
@@ -26,14 +27,18 @@ pub async fn fetch_generated_version_info(
 /// Returns true if:
 /// - The artifact already exists with the same or higher version in libs
 /// - This prevents downgrading libraries
-pub fn should_ignore_artifact(libs: &HashSet<GradleSpecifier>, name: &GradleSpecifier) -> bool {
+pub fn should_ignore_artifact(
+    libs: &HashSet<GradleSpecifier>,
+    name: &GradleSpecifier,
+) -> bool {
     if let Some(ver) = libs.iter().find(|ver| {
         ver.package == name.package
             && ver.artifact == name.artifact
             && ver.identifier == name.identifier
     }) {
         if ver.version == name.version
-            || lenient_semver::parse(&ver.version) > lenient_semver::parse(&name.version)
+            || lenient_semver::parse(&ver.version)
+                > lenient_semver::parse(&name.version)
         {
             // new version is lower or equal
             true
@@ -57,8 +62,11 @@ mod tests {
         // Create test artifacts
         let create_spec =
             |package: &str, artifact: &str, version: &str| -> GradleSpecifier {
-                GradleSpecifier::from_str(&format!("{}:{}:{}", package, artifact, version))
-                    .expect("Valid GradleSpecifier")
+                GradleSpecifier::from_str(&format!(
+                    "{}:{}:{}",
+                    package, artifact, version
+                ))
+                .expect("Valid GradleSpecifier")
             };
 
         // Test case 1: Identical version (should ignore - already have it)

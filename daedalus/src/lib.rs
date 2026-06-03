@@ -199,10 +199,12 @@ impl GradleSpecifier {
 
     /// Returns if specifier belongs to a lwjgl library
     pub fn is_lwjgl(&self) -> bool {
-        ["org.lwjgl",
+        [
+            "org.lwjgl",
             "org.lwjgl.lwjgl",
             "net.java.jinput",
-            "net.java.jutils"]
+            "net.java.jutils",
+        ]
         .contains(&self.package.as_str())
     }
 
@@ -226,10 +228,13 @@ impl GradleSpecifier {
     /// Returns Ordering::Greater if self is greater than other
     /// Returns Ordering::Less if self is less than other
     pub fn compare_versions(&self, other: &Self) -> Result<Ordering, Error> {
-        let x = lenient_semver::parse(self.version.as_str())
-            .map_err(|_| Error::ParseError("Unable to parse version".to_string()))?;
-        let y = lenient_semver::parse(other.version.as_str())
-            .map_err(|_| Error::ParseError("Unable to parse version".to_string()))?;
+        let x = lenient_semver::parse(self.version.as_str()).map_err(|_| {
+            Error::ParseError("Unable to parse version".to_string())
+        })?;
+        let y =
+            lenient_semver::parse(other.version.as_str()).map_err(|_| {
+                Error::ParseError("Unable to parse version".to_string())
+            })?;
 
         Ok(x.cmp(&y))
     }
@@ -237,7 +242,11 @@ impl GradleSpecifier {
 
 /// Reject components that would let a maven coordinate escape its directory when
 /// joined with a trusted base via `into_path()` or written to disk by a launcher.
-fn validate_path_safe(specifier: &str, kind: &str, value: &str) -> Result<(), Error> {
+fn validate_path_safe(
+    specifier: &str,
+    kind: &str,
+    value: &str,
+) -> Result<(), Error> {
     if value.is_empty() {
         return Err(Error::ParseError(format!(
             "Empty {} in library {}",
@@ -435,55 +444,98 @@ pub async fn download_file_mirrors(
     Err(Error::MirrorsFailed("No mirrors succeeded!".to_string()))
 }
 
-/// Downloads a file with retry and checksum functionality
+/// Should the given error trigger a download retry? Exposed so callers that
+/// roll their own retry loop (e.g. `daedalus_client` releasing a semaphore
+/// between attempts) can apply the same classification daedalus uses.
+pub fn should_retry_download(e: &Error) -> bool {
+    match e {
+        // Only retry on transient failures. A 404 is a final answer
+        // (the artifact was never published / was deleted) — retrying
+        // burns ~5 minutes per missing URL × hundreds of URLs.
+        Error::FetchError { inner, .. } => {
+            if let Some(status) = inner.status() {
+                status.is_server_error()
+                    || status.as_u16() == 429
+                    || status.as_u16() == 408
+            } else {
+                // No status = network-level (DNS, connect, TLS, mid-stream
+                // reset). Retry — matches the S3 retry classifier.
+                inner.is_timeout()
+                    || inner.is_connect()
+                    || inner.is_request()
+                    || inner.is_body()
+            }
+        }
+        Error::ChecksumFailure { .. } => true,
+        _ => false,
+    }
+}
+
+/// One-shot download with checksum check. No retries — exposed for callers
+/// that need to interleave their own per-attempt setup (e.g. acquiring a
+/// shared semaphore permit fresh on each attempt so a slow download can't
+/// hold a permit across the entire retry sequence).
+pub async fn download_file_once(
+    url: &str,
+    sha1: Option<&str>,
+) -> Result<bytes::Bytes, Error> {
+    let result = HTTP_CLIENT
+        .get(url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status());
+
+    match result {
+        Ok(x) => {
+            let bytes = x.bytes().await;
+
+            match bytes {
+                Ok(bytes) => {
+                    if let Some(sha1) = sha1 {
+                        if &*get_hash(bytes.clone()).await? != sha1 {
+                            return Err(Error::ChecksumFailure {
+                                hash: sha1.to_string(),
+                                url: url.to_string(),
+                            });
+                        }
+                    }
+
+                    Ok(bytes)
+                }
+                Err(err) => Err(Error::FetchError {
+                    inner: err,
+                    item: url.to_string(),
+                }),
+            }
+        }
+        Err(err) => Err(Error::FetchError {
+            inner: err,
+            item: url.to_string(),
+        }),
+    }
+}
+
+/// Downloads a file with retry and checksum functionality.
+///
+/// Wraps `download_file_once` in a backoff loop using `should_retry_download`.
+/// Callers that need to release shared resources (e.g. a semaphore permit)
+/// between attempts should write their own retry loop on top of
+/// `download_file_once` instead — otherwise a slow upstream can pin those
+/// resources across the entire retry sequence (~5 minutes worst case).
 pub async fn download_file(
     url: &str,
     sha1: Option<&str>,
 ) -> Result<bytes::Bytes, Error> {
-    (|| async {
-        let result = HTTP_CLIENT
-            .get(url)
-            .send()
-            .await
-            .and_then(|r| r.error_for_status());
-
-        match result {
-            Ok(x) => {
-                let bytes = x.bytes().await;
-
-                match bytes {
-                    Ok(bytes) => {
-                        if let Some(sha1) = sha1 {
-                            if &*get_hash(bytes.clone()).await? != sha1 {
-                                return Err(Error::ChecksumFailure {
-                                    hash: sha1.to_string(),
-                                    url: url.to_string(),
-                                });
-                            }
-                        }
-
-                        Ok(bytes)
-                    }
-                    Err(err) => Err(Error::FetchError {
-                        inner: err,
-                        item: url.to_string(),
-                    }),
-                }
-            }
-            Err(err) => Err(Error::FetchError {
-                inner: err,
-                item: url.to_string(),
-            }),
-        }
-    })
-    .retry(
-        // 5 attempts capped at 60s. The previous (10 × 1800s) blocked doomed URLs
-        // for hours and caused operational pain on the metadata-generator's wide fan-out.
-        ExponentialBuilder::default()
-            .with_max_times(5)
-            .with_max_delay(Duration::from_secs(60)),
-    )
-    .await
+    (|| async { download_file_once(url, sha1).await })
+        .retry(
+            // 5 attempts capped at 60s. The previous (10 × 1800s) blocked doomed URLs
+            // for hours and caused operational pain on the metadata-generator's wide fan-out.
+            ExponentialBuilder::default()
+                .with_max_times(5)
+                .with_max_delay(Duration::from_secs(60)),
+        )
+        .when(should_retry_download)
+        .await
 }
 
 /// Computes a checksum of the input bytes

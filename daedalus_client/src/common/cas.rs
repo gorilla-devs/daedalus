@@ -69,7 +69,9 @@ pub fn extract_hash_from_cas_url(url: &str) -> Option<String> {
 /// let url = build_cas_url(hash)?;
 /// // Returns: "{BASE_URL}/v{CAS_VERSION}/objects/ab/cdef123456"
 /// ```
-pub fn build_cas_url(hash: &str) -> Result<String, crate::infrastructure::error::Error> {
+pub fn build_cas_url(
+    hash: &str,
+) -> Result<String, crate::infrastructure::error::Error> {
     if hash.len() < 2 {
         return Err(crate::infrastructure::error::invalid_input(format!(
             "Hash too short for CAS URL: '{}' (must be at least 2 characters)",

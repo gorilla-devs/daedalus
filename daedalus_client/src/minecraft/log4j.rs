@@ -4,8 +4,8 @@
 //! with patched versions. This is SECURITY-CRITICAL code.
 
 use crate::format_url;
-use daedalus::minecraft::{Library, LibraryDownload, LibraryDownloads};
 use daedalus::GradleSpecifier;
+use daedalus::minecraft::{Library, LibraryDownload, LibraryDownloads};
 use tracing::debug;
 
 /// Determine if a Log4j version needs patching and return the replacement version and Maven URL
@@ -71,30 +71,40 @@ pub fn create_log4j_replacement_library(
     let (sha1, size) = match version_override {
         "2.0-beta9-fixed" => match artifact_name {
             "log4j-api" => ("b61eaf2e64d8b0277e188262a8b771bbfa1502b3", 107347),
-            "log4j-core" => ("677991ea2d7426f76309a73739cecf609679492c", 677588),
+            "log4j-core" => {
+                ("677991ea2d7426f76309a73739cecf609679492c", 677588)
+            }
             _ => {
-                return Err(crate::infrastructure::error::invalid_input(format!(
-                    "Unhandled log4j artifact {} for overridden version {}",
-                    artifact_name, version_override
-                )))
+                return Err(crate::infrastructure::error::invalid_input(
+                    format!(
+                        "Unhandled log4j artifact {} for overridden version {}",
+                        artifact_name, version_override
+                    ),
+                ));
             }
         },
         "2.17.1" => match artifact_name {
             "log4j-api" => ("d771af8e336e372fb5399c99edabe0919aeaf5b2", 301872),
-            "log4j-core" => ("779f60f3844dadc3ef597976fcb1e5127b1f343d", 1790452),
-            "log4j-slf4j18-impl" => ("ca499d751f4ddd8afb016ef698c30be0da1d09f7", 21268),
+            "log4j-core" => {
+                ("779f60f3844dadc3ef597976fcb1e5127b1f343d", 1790452)
+            }
+            "log4j-slf4j18-impl" => {
+                ("ca499d751f4ddd8afb016ef698c30be0da1d09f7", 21268)
+            }
             _ => {
-                return Err(crate::infrastructure::error::invalid_input(format!(
-                    "Unhandled log4j artifact {} for overridden version {}",
-                    artifact_name, version_override
-                )))
+                return Err(crate::infrastructure::error::invalid_input(
+                    format!(
+                        "Unhandled log4j artifact {} for overridden version {}",
+                        artifact_name, version_override
+                    ),
+                ));
             }
         },
         _ => {
             return Err(crate::infrastructure::error::invalid_input(format!(
                 "Unhandled log4j version {}",
                 version_override
-            )))
+            )));
         }
     };
 
@@ -129,27 +139,57 @@ mod tests {
     #[test]
     fn test_lenient_semver_comparison() {
         // Test basic version comparisons
-        assert!(lenient_semver::parse("1.0.0") < lenient_semver::parse("2.0.0"));
-        assert!(lenient_semver::parse("2.0.0") > lenient_semver::parse("1.0.0"));
-        assert!(lenient_semver::parse("2.0.0") == lenient_semver::parse("2.0.0"));
+        assert!(
+            lenient_semver::parse("1.0.0") < lenient_semver::parse("2.0.0")
+        );
+        assert!(
+            lenient_semver::parse("2.0.0") > lenient_semver::parse("1.0.0")
+        );
+        assert!(
+            lenient_semver::parse("2.0.0") == lenient_semver::parse("2.0.0")
+        );
 
         // Test beta/pre-release versions (critical for Log4j patching)
-        assert!(lenient_semver::parse("2.0-beta9") <= lenient_semver::parse("2.0"));
-        assert!(lenient_semver::parse("2.0-beta9") < lenient_semver::parse("2.1.0"));
-        assert!(lenient_semver::parse("2.0-rc2") <= lenient_semver::parse("2.0"));
+        assert!(
+            lenient_semver::parse("2.0-beta9") <= lenient_semver::parse("2.0")
+        );
+        assert!(
+            lenient_semver::parse("2.0-beta9") < lenient_semver::parse("2.1.0")
+        );
+        assert!(
+            lenient_semver::parse("2.0-rc2") <= lenient_semver::parse("2.0")
+        );
 
         // Test Log4j security threshold (CVE-2021-44832 fixed in 2.17.1)
-        assert!(lenient_semver::parse("2.0") <= lenient_semver::parse("2.17.1"));
-        assert!(lenient_semver::parse("2.15.0") <= lenient_semver::parse("2.17.1"));
-        assert!(lenient_semver::parse("2.16.0") <= lenient_semver::parse("2.17.1"));
-        assert!(lenient_semver::parse("2.17.0") <= lenient_semver::parse("2.17.1"));
-        assert!(lenient_semver::parse("2.17.1") <= lenient_semver::parse("2.17.1"));
-        assert!(lenient_semver::parse("2.18.0") > lenient_semver::parse("2.17.1"));
+        assert!(
+            lenient_semver::parse("2.0") <= lenient_semver::parse("2.17.1")
+        );
+        assert!(
+            lenient_semver::parse("2.15.0") <= lenient_semver::parse("2.17.1")
+        );
+        assert!(
+            lenient_semver::parse("2.16.0") <= lenient_semver::parse("2.17.1")
+        );
+        assert!(
+            lenient_semver::parse("2.17.0") <= lenient_semver::parse("2.17.1")
+        );
+        assert!(
+            lenient_semver::parse("2.17.1") <= lenient_semver::parse("2.17.1")
+        );
+        assert!(
+            lenient_semver::parse("2.18.0") > lenient_semver::parse("2.17.1")
+        );
 
         // Test actual Log4j versions that have been patched
-        assert!(lenient_semver::parse("2.0-beta9") <= lenient_semver::parse("2.0"));
-        assert!(lenient_semver::parse("2.12.1") <= lenient_semver::parse("2.17.1"));
-        assert!(lenient_semver::parse("2.14.1") <= lenient_semver::parse("2.17.1"));
+        assert!(
+            lenient_semver::parse("2.0-beta9") <= lenient_semver::parse("2.0")
+        );
+        assert!(
+            lenient_semver::parse("2.12.1") <= lenient_semver::parse("2.17.1")
+        );
+        assert!(
+            lenient_semver::parse("2.14.1") <= lenient_semver::parse("2.17.1")
+        );
     }
 
     #[test]

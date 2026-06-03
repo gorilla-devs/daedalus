@@ -5,15 +5,19 @@
 
 pub mod types;
 
-use crate::{download_file, format_url};
-use crate::services::upload::BatchUploader;
-use crate::common::{change_detection::detect_version_change, manifest_merge::{merge_loader_versions, sort_by_minecraft_order, sort_loaders_by_metadata}};
-use dashmap::DashSet;
-use daedalus::minecraft::{Library, VersionManifest};
-use daedalus::modded::{
-    LoaderVersion, PartialVersionInfo, SidedDataEntry,
+use crate::common::{
+    change_detection::detect_version_change,
+    manifest_merge::{
+        merge_loader_versions, sort_by_minecraft_order,
+        sort_loaders_by_metadata,
+    },
 };
+use crate::services::upload::BatchUploader;
+use crate::{download_file, format_url};
 use daedalus::get_hash;
+use daedalus::minecraft::{Library, VersionManifest};
+use daedalus::modded::{LoaderVersion, PartialVersionInfo, SidedDataEntry};
+use dashmap::DashSet;
 use tracing::{info, warn};
 // Note: Using lenient_semver instead of semver::Version to handle
 // non-standard NeoForge versions like "26.1.0.0-alpha.1+snapshot-1"
@@ -30,15 +34,16 @@ pub use types::NeoForgeInstallerProfile;
 
 /// Skip list for known broken NeoForge/Forge versions
 /// These versions have permanent issues (missing files, corrupted archives, etc.)
-static NEOFORGE_SKIP_LIST: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    vec![
-        // Unreachable / 404 versions (synced from Modrinth daedalus)
-        "1.20.1-47.1.7",
-        "47.1.82",
-    ]
-    .into_iter()
-    .collect()
-});
+static NEOFORGE_SKIP_LIST: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| {
+        vec![
+            // Unreachable / 404 versions (synced from Modrinth daedalus)
+            "1.20.1-47.1.7",
+            "47.1.82",
+        ]
+        .into_iter()
+        .collect()
+    });
 
 pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
@@ -76,7 +81,8 @@ pub async fn retrieve_data(
             Vec::new()
         }));
 
-    let versions: Arc<Mutex<Vec<daedalus::modded::Version>>> = Arc::new(Mutex::new(Vec::new()));
+    let versions: Arc<Mutex<Vec<daedalus::modded::Version>>> =
+        Arc::new(Mutex::new(Vec::new()));
 
     let visited_assets = Arc::new(DashSet::new());
 
@@ -124,7 +130,19 @@ pub async fn retrieve_data(
                             let bytes = download_file(&download_url, None, semaphore.clone()).await?;
                             let reader = std::io::Cursor::new(bytes);
 
-                            if let Ok(archive) = zip::ZipArchive::new(reader) {
+                            let archive = match zip::ZipArchive::new(reader) {
+                                Ok(a) => Some(a),
+                                Err(e) => {
+                                    warn!(
+                                        neoforge_id = %loader_version_full,
+                                        error = %e,
+                                        "NeoForge - installer JAR is not a valid zip (corrupt download or upstream error page); skipping"
+                                    );
+                                    None
+                                }
+                            };
+
+                            if let Some(archive) = archive {
                                 let mut archive_clone = archive.clone();
                                 let mut profile = tokio::task::spawn_blocking(move || {
                                     let mut install_profile = archive_clone.by_name("install_profile.json")?;
@@ -485,19 +503,29 @@ pub async fn retrieve_data(
         let mut successful_mc_versions = 0;
         let mut failed_mc_versions = 0;
 
-        for (idx, result) in futures::future::join_all(version_futures).await.into_iter().enumerate() {
+        for (idx, result) in futures::future::join_all(version_futures)
+            .await
+            .into_iter()
+            .enumerate()
+        {
             match result {
                 Ok(()) => successful_mc_versions += 1,
                 Err(e) => {
-                    warn!("⚠️  NeoForge - Failed to process Minecraft version {}/{len}: {}", idx + 1, e);
+                    warn!(
+                        "⚠️  NeoForge - Failed to process Minecraft version {}/{len}: {}",
+                        idx + 1,
+                        e
+                    );
                     failed_mc_versions += 1;
                 }
             }
         }
 
         if failed_mc_versions > 0 {
-            warn!("⚠️  NeoForge - {} Minecraft versions failed to process, {} succeeded",
-                failed_mc_versions, successful_mc_versions);
+            warn!(
+                "⚠️  NeoForge - {} Minecraft versions failed to process, {} succeeded",
+                failed_mc_versions, successful_mc_versions
+            );
         }
     }
 
@@ -515,11 +543,8 @@ pub async fn retrieve_data(
     };
 
     // Use common version merging logic
-    let mut final_versions = merge_loader_versions(
-        old_manifest_versions,
-        new_versions,
-        "NeoForge"
-    );
+    let mut final_versions =
+        merge_loader_versions(old_manifest_versions, new_versions, "NeoForge");
 
     // Use common sorting utilities
     sort_by_minecraft_order(&mut final_versions, minecraft_versions);
@@ -527,7 +552,8 @@ pub async fn retrieve_data(
     // Sort loaders within each version using metadata order
     for version in &mut final_versions {
         if let Some(loader_versions) = maven_metadata.get(&version.id) {
-            let loader_order: Vec<String> = loader_versions.iter().map(|(id, _)| id.clone()).collect();
+            let loader_order: Vec<String> =
+                loader_versions.iter().map(|(id, _)| id.clone()).collect();
             sort_loaders_by_metadata(version, &loader_order);
         }
     }
@@ -536,15 +562,16 @@ pub async fn retrieve_data(
     // This preserves game version -> loader version mappings
     let versions_json = serde_json::to_value(&final_versions)?;
     manifest_builder.set_loader_versions("neoforge", versions_json);
-    info!(version_count = final_versions.len(), "Set NeoForge versions with nested structure in CAS manifest builder");
+    info!(
+        version_count = final_versions.len(),
+        "Set NeoForge versions with nested structure in CAS manifest builder"
+    );
 
     Ok(())
 }
 
-const DEFAULT_MAVEN_METADATA_URL_1: &str =
-    "https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml";
-const DEFAULT_MAVEN_METADATA_URL_2: &str =
-    "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml";
+const DEFAULT_MAVEN_METADATA_URL_1: &str = "https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml";
+const DEFAULT_MAVEN_METADATA_URL_2: &str = "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml";
 
 #[derive(Debug, Deserialize)]
 struct Metadata {
@@ -563,30 +590,58 @@ struct Versions {
 
 pub async fn fetch_maven_metadata(
     semaphore: Arc<Semaphore>,
-) -> Result<HashMap<String, Vec<(String, bool)>>, crate::infrastructure::error::Error> {
+) -> Result<
+    HashMap<String, Vec<(String, bool)>>,
+    crate::infrastructure::error::Error,
+> {
     async fn fetch_values(
         url: &str,
         semaphore: Arc<Semaphore>,
     ) -> Result<Metadata, crate::infrastructure::error::Error> {
-        Ok(serde_xml_rs::from_str(
-            &String::from_utf8(
-                download_file(url, None, semaphore).await?.to_vec(),
-            )
-            .unwrap_or_default(),
-        )?)
+        let bytes = download_file(url, None, semaphore).await?;
+        // Propagate UTF-8 conversion failures instead of `unwrap_or_default()`
+        // which silently produced an empty string — a proxy returning a binary
+        // / latin1 error page would feed empty XML to serde and we'd see a
+        // generic parse error with no transport-level context.
+        let xml = String::from_utf8(bytes.to_vec()).map_err(|e| {
+            crate::infrastructure::error::invalid_input(format!(
+                "NeoForge maven metadata at {url} returned non-UTF-8 bytes: {e}"
+            ))
+        })?;
+        Ok(serde_xml_rs::from_str(&xml)?)
     }
 
-    let forge_values =
-        fetch_values(DEFAULT_MAVEN_METADATA_URL_1, semaphore.clone()).await?;
-    let neo_values =
-        fetch_values(DEFAULT_MAVEN_METADATA_URL_2, semaphore).await?;
+    // Fetch both maven-metadata files concurrently. The legacy `forge` alias
+    // (URL_1) failing must not block the actual `neoforge` (URL_2) processing,
+    // since URL_2 is the load-bearing endpoint — empty forge alias map is fine,
+    // an empty neoforge map publishes nothing.
+    let (forge_result, neo_result) = tokio::join!(
+        fetch_values(DEFAULT_MAVEN_METADATA_URL_1, semaphore.clone()),
+        fetch_values(DEFAULT_MAVEN_METADATA_URL_2, semaphore),
+    );
+    let forge_values = match forge_result {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, url = DEFAULT_MAVEN_METADATA_URL_1, "Legacy forge maven metadata fetch failed; continuing with neoforge only");
+            // Empty placeholder so the rest of the function operates as
+            // "no legacy forge versions present" rather than failing.
+            Metadata {
+                versioning: Versioning {
+                    versions: Versions {
+                        version: Vec::new(),
+                    },
+                },
+            }
+        }
+    };
+    let neo_values = neo_result?;
 
     let mut map: HashMap<String, Vec<(String, bool)>> = HashMap::new();
 
     for value in forge_values.versioning.versions.version {
-        let is_snapshot = value.contains('w') ||
-                          value.contains("-pre") ||
-                          value.contains("-rc");
+        let is_snapshot = value.contains('w')
+            || value.contains("-pre")
+            || value.contains("-rc");
 
         if is_snapshot {
             info!("Skipping snapshot version: {}", value);
@@ -608,7 +663,20 @@ pub async fn fetch_maven_metadata(
 
         let Some(major) = parts.next() else { continue };
         let Some(minor) = parts.next() else { continue };
-        let major_num: u32 = major.parse().unwrap_or(0);
+        // If `major` isn't numeric we can't reliably classify which MC-version
+        // scheme (1.x.y vs YY.D.H) this NeoForge build belongs to. Surface
+        // and drop rather than fall back to `0` + the old-versioning branch,
+        // which would produce nonsense MC ids like `1.26.1.2.11-beta` and
+        // then drop them later via the "unknown MC version" filter — masking
+        // the real upstream change behind two unrelated warnings.
+        let Ok(major_num) = major.parse::<u32>() else {
+            warn!(
+                neoforge_id = %original,
+                major = %major,
+                "NeoForge - non-numeric major version; skipping (upstream versioning scheme may have changed)"
+            );
+            continue;
+        };
 
         if major_num > 21 {
             // New MC versioning (YY.D.H) — MC dropped the "1." prefix after 1.21
@@ -616,7 +684,8 @@ pub async fn fetch_maven_metadata(
             // e.g. 26.1.2.11-beta -> MC 26.1.2
             // e.g. 26.1.0.0-alpha.1+snapshot-1 -> MC 26.1-snapshot-1
             // e.g. 26.1.0.0-alpha.15+pre-3 -> MC 26.1-pre-3
-            let hotfix = parts.next()
+            let hotfix = parts
+                .next()
                 .and_then(|h| h.split(|c: char| !c.is_ascii_digit()).next())
                 .unwrap_or("0");
 
@@ -627,18 +696,20 @@ pub async fn fetch_maven_metadata(
             };
 
             // Extract MC phase suffix: +snapshot-N, +pre-N, +rc-N
-            let game_version = if let Some((_, phase)) = original.split_once('+') {
-                format!("{}-{}", base, phase)
-            } else {
-                base
-            };
+            let game_version =
+                if let Some((_, phase)) = original.split_once('+') {
+                    format!("{}-{}", base, phase)
+                } else {
+                    base
+                };
 
-            map.entry(game_version)
-                .or_default()
-                .push((original, true));
+            map.entry(game_version).or_default().push((original, true));
         } else {
             // Old MC versioning (1.x.y) — skip weekly snapshots, pre-releases, RCs
-            if original.contains('w') || original.contains("-pre") || original.contains("-rc") {
+            if original.contains('w')
+                || original.contains("-pre")
+                || original.contains("-rc")
+            {
                 info!("Skipping old snapshot version: {}", original);
                 continue;
             }
@@ -649,9 +720,7 @@ pub async fn fetch_maven_metadata(
                 format!("1.{}.{}", major, minor)
             };
 
-            map.entry(game_version)
-                .or_default()
-                .push((original, true));
+            map.entry(game_version).or_default().push((original, true));
         }
     }
 

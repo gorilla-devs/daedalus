@@ -129,14 +129,21 @@ async fn upload_single_file(
     s3_client: &Bucket,
     semaphore: Arc<Semaphore>,
 ) -> Result<(), crate::infrastructure::error::Error> {
-    let _permit = semaphore.acquire().await?;
-
     info!(path = %path, "Started uploading");
 
+    // Acquire the semaphore inside each retry attempt so a slow/failing
+    // upload doesn't pin a permit for the entire retry sequence (up to
+    // 5 × 60s). Holding across retries previously starved the upload pool
+    // and could deadlock against downloaders sharing the same semaphore.
     (|| async {
+        let _permit = semaphore.acquire().await?;
         let result = if let Some(content_type) = content_type {
             s3_client
-                .put_object_with_content_type(path.to_string(), bytes, content_type)
+                .put_object_with_content_type(
+                    path.to_string(),
+                    bytes,
+                    content_type,
+                )
                 .await
         } else {
             s3_client.put_object(path.to_string(), bytes).await

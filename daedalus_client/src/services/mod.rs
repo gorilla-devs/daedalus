@@ -1,5 +1,10 @@
 pub mod betterstack;
 pub mod cas;
 pub mod cloudflare;
+pub mod control;
+pub mod discord;
 pub mod download;
+pub mod pins;
+pub mod run_state;
+pub mod sanity;
 pub mod upload;

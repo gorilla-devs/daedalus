@@ -1,4 +1,6 @@
-use super::{GameVersionInfo, LoaderStrategy, LoaderVersionInfo, LoaderVersionsList};
+use super::{
+    GameVersionInfo, LoaderStrategy, LoaderVersionInfo, LoaderVersionsList,
+};
 use serde::{Deserialize, Serialize};
 
 /// Fabric loader strategy implementation
@@ -50,6 +52,9 @@ impl LoaderVersionsList for FabricVersions {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FabricGameVersion {
     pub version: String,
+    // `stable` was added to the Fabric API; treat absence as `false` so a
+    // single missing field doesn't fail the entire version-list parse.
+    #[serde(default)]
     pub stable: bool,
 }
 
@@ -65,10 +70,14 @@ impl GameVersionInfo for FabricGameVersion {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FabricLoaderVersion {
+    #[serde(default)]
     pub separator: String,
+    #[serde(default)]
     pub build: u32,
     pub maven: String,
     pub version: String,
+    // `stable` may be absent on older loader entries; default to `false`.
+    #[serde(default)]
     pub stable: bool,
 }
 

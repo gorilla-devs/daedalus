@@ -1,5 +1,5 @@
 use crate::modded::{Processor, SidedDataEntry};
-use crate::{download_file, Error, GradleSpecifier};
+use crate::{Error, GradleSpecifier, download_file};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -20,17 +20,32 @@ pub enum VersionType {
     OldAlpha,
     /// Early versions of the game
     OldBeta,
+    #[serde(untagged)]
+    /// Catch-all for upstream version types we don't recognise yet (e.g. Mojang
+    /// adds a new "experiment" type). Deserialises any unknown string so the
+    /// whole manifest doesn't fail; consumers can detect this via `is_known()`
+    /// and surface a warning to operators.
+    Unknown(String),
 }
 
 impl VersionType {
-    /// Converts the version type to a string
-    pub fn as_str(&self) -> &'static str {
+    /// Converts the version type to a string. Returns the borrowed string for
+    /// the `Unknown` variant so callers can still serialize round-trip.
+    pub fn as_str(&self) -> &str {
         match self {
             VersionType::Release => "release",
             VersionType::Snapshot => "snapshot",
             VersionType::OldAlpha => "old_alpha",
             VersionType::OldBeta => "old_beta",
+            VersionType::Unknown(s) => s.as_str(),
         }
+    }
+
+    /// True if this is one of the recognised variants. False for `Unknown(...)`
+    /// — callers should warn-and-pass-through to keep the manifest publishable
+    /// while flagging that the upstream changed.
+    pub fn is_known(&self) -> bool {
+        !matches!(self, VersionType::Unknown(_))
     }
 }
 
@@ -203,7 +218,9 @@ pub struct AssetIndex {
     pub url: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone)]
+#[derive(
+    Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone,
+)]
 #[serde(rename_all = "snake_case")]
 /// The type of download
 pub enum DownloadType {
@@ -217,6 +234,18 @@ pub enum DownloadType {
     ServerMappings,
     /// The download is for the windows server
     WindowsServer,
+    #[serde(untagged)]
+    /// Catch-all for new download types Mojang ships before we know about them.
+    /// Used as a map key in `VersionInfo::downloads`, so it must round-trip
+    /// through serde. The wrapped string is the raw key Mojang published.
+    Unknown(String),
+}
+
+impl DownloadType {
+    /// True if this is one of the recognised variants.
+    pub fn is_known(&self) -> bool {
+        !matches!(self, DownloadType::Unknown(_))
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -437,7 +466,12 @@ impl Library {
     /// let url = library.resolve_url("1.16.5", "https://maven.modrinth.com", 0);
     /// assert_eq!(url, Some("https://maven.modrinth.com/v0/objects/ab/c123def456".to_string()));
     /// ```
-    pub fn resolve_url(&self, minecraft_version: &str, base_url: &str, cas_version: u32) -> Option<String> {
+    pub fn resolve_url(
+        &self,
+        minecraft_version: &str,
+        base_url: &str,
+        cas_version: u32,
+    ) -> Option<String> {
         // First try version_hashes if present
         if let Some(ref hashes) = self.version_hashes {
             if let Some(hash) = hashes.get(minecraft_version) {
@@ -618,7 +652,18 @@ pub enum Argument {
     },
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone, Copy)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Debug,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Clone,
+    Copy,
+)]
 #[serde(rename_all = "kebab-case")]
 /// The type of argument
 pub enum ArgumentType {
@@ -638,7 +683,18 @@ pub enum LoggingType {
     Log4j2Xml,
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone, Copy)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Debug,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Clone,
+    Copy,
+)]
 #[serde(rename_all = "kebab-case")]
 /// Java Logging config names
 pub enum LoggingConfigName {
@@ -822,4 +878,87 @@ pub async fn fetch_assets_index(
         )
         .await?,
     )?)
+}
+
+#[cfg(test)]
+mod schema_drift_tests {
+    use super::*;
+
+    #[test]
+    fn version_type_unknown_round_trips() {
+        let unknown: VersionType = serde_json::from_str("\"experiment\"")
+            .expect("untagged Unknown deserialises");
+        assert!(
+            matches!(unknown, VersionType::Unknown(ref s) if s == "experiment")
+        );
+        assert!(!unknown.is_known());
+        assert_eq!(unknown.as_str(), "experiment");
+        let back = serde_json::to_string(&unknown).expect("serializes");
+        assert_eq!(back, "\"experiment\"");
+    }
+
+    #[test]
+    fn version_type_known_variants_still_deserialise() {
+        let release: VersionType = serde_json::from_str("\"release\"").unwrap();
+        assert!(matches!(release, VersionType::Release));
+        assert!(release.is_known());
+
+        let snapshot: VersionType =
+            serde_json::from_str("\"snapshot\"").unwrap();
+        assert!(matches!(snapshot, VersionType::Snapshot));
+    }
+
+    #[test]
+    fn download_type_unknown_round_trips() {
+        let unknown: DownloadType = serde_json::from_str("\"android_client\"")
+            .expect("untagged Unknown deserialises");
+        assert!(
+            matches!(unknown, DownloadType::Unknown(ref s) if s == "android_client")
+        );
+        assert!(!unknown.is_known());
+    }
+
+    #[test]
+    fn download_type_known_variants_still_deserialise() {
+        let client: DownloadType = serde_json::from_str("\"client\"").unwrap();
+        assert!(matches!(client, DownloadType::Client));
+        assert!(client.is_known());
+    }
+
+    #[test]
+    fn java_profile_unknown_round_trips() {
+        // A profile name Mojang ships before we add it should parse as Unknown,
+        // not panic or fail the whole version.
+        let unknown: MinecraftJavaProfile =
+            serde_json::from_str("\"java-runtime-zeta\"")
+                .expect("untagged Unknown deserialises");
+        assert!(
+            matches!(unknown, MinecraftJavaProfile::Unknown(ref s) if s == "java-runtime-zeta")
+        );
+        assert!(!unknown.is_known());
+        // as_str() must return Err (not panic) for Unknown.
+        assert!(unknown.as_str().is_err());
+        // Round-trips through serde.
+        let back = serde_json::to_string(&unknown).expect("serializes");
+        assert_eq!(back, "\"java-runtime-zeta\"");
+    }
+
+    #[test]
+    fn java_profile_known_variants_still_deserialise() {
+        let profile: MinecraftJavaProfile =
+            serde_json::from_str("\"jre-legacy\"").unwrap();
+        assert!(matches!(profile, MinecraftJavaProfile::JreLegacy));
+        assert!(profile.is_known());
+        assert_eq!(profile.as_str().unwrap(), "jre-legacy");
+    }
+
+    #[test]
+    fn java_profile_try_from_unknown_is_not_known() {
+        let profile =
+            MinecraftJavaProfile::try_from("java-runtime-omega").unwrap();
+        assert!(
+            matches!(profile, MinecraftJavaProfile::Unknown(ref s) if s == "java-runtime-omega")
+        );
+        assert!(!profile.is_known());
+    }
 }

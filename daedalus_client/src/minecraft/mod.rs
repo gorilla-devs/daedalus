@@ -31,8 +31,8 @@ pub use types::LibraryPatch;
 use crate::download_file;
 use crate::format_url;
 use crate::services::upload::BatchUploader;
-use dashmap::DashSet;
 use daedalus::minecraft::{JavaVersion, MinecraftJavaProfile, VersionManifest};
+use dashmap::DashSet;
 use futures::future::join_all;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -76,15 +76,78 @@ pub async fn retrieve_data(
     let old_manifest = if is_first_run {
         None
     } else {
-        daedalus::minecraft::fetch_version_manifest(Some(&format_url(&format!(
-            "minecraft/v{}/manifest.json",
-            daedalus::minecraft::CURRENT_FORMAT_VERSION
-        ))))
+        daedalus::minecraft::fetch_version_manifest(Some(&format_url(
+            &format!(
+                "minecraft/v{}/manifest.json",
+                daedalus::minecraft::CURRENT_FORMAT_VERSION
+            ),
+        )))
         .await
         .ok()
     };
 
-    let mut manifest = daedalus::minecraft::fetch_version_manifest(None).await?;
+    let mut manifest =
+        daedalus::minecraft::fetch_version_manifest(None).await?;
+
+    // §1.2(a/b): Tolerant parsing + never-publish-unknowns.
+    // `VersionType` has an `Unknown(String)` catch-all so the whole manifest
+    // doesn't fail to parse on a new upstream type. But we must NOT publish
+    // versions we don't understand — see policy in §1.2(b). Warn per unique
+    // unknown type (Discord layer deduplicates across cycles), then remove
+    // all affected versions from the manifest before we do anything else.
+    {
+        use std::collections::HashSet;
+        let mut seen_unknown: HashSet<String> = HashSet::new();
+        let before = manifest.versions.len();
+        manifest.versions.retain(|v| {
+            if let daedalus::minecraft::VersionType::Unknown(s) = &v.type_ {
+                if seen_unknown.insert(s.clone()) {
+                    warn!(
+                        version_type = %s,
+                        example_version_id = %v.id,
+                        "Mojang shipped a new VersionType we don't recognise; \
+                         skipping version from manifest until support is added \
+                         in daedalus::minecraft::VersionType"
+                    );
+                }
+                false // exclude from published manifest
+            } else {
+                true
+            }
+        });
+        let removed = before - manifest.versions.len();
+        if removed > 0 {
+            warn!(
+                removed_count = removed,
+                "Excluded {} Minecraft version(s) with unknown VersionType from manifest",
+                removed
+            );
+        }
+    }
+
+    // Detect new vanilla Minecraft versions against our previously-published
+    // manifest. Fired exactly once per (publish-cycle, new-version) — on a
+    // cold start (`old_manifest` is None) we suppress to avoid spamming one
+    // message per historical version. After the first run the
+    // `is_first_run` parameter is false on every subsequent retrieve_data
+    // call, so this guards both: cold-start and transient old-manifest fetch
+    // failures (which would also make `old_manifest` None and trip the
+    // notification path on a known set of versions).
+    if let Some(old) = &old_manifest {
+        if let Some(notifier) = crate::services::discord::notifier() {
+            let known_ids: std::collections::HashSet<&str> =
+                old.versions.iter().map(|v| v.id.as_str()).collect();
+            for v in &manifest.versions {
+                if !known_ids.contains(v.id.as_str()) {
+                    notifier.report_new_mc_version(
+                        &v.id,
+                        &format!("{:?}", v.type_).to_lowercase(),
+                        Some(&v.release_time.to_rfc3339()),
+                    );
+                }
+            }
+        }
+    }
 
     // Pre-build an id → original-index map so the per-version mutex section can do an
     // O(1) lookup instead of an O(N) `position(...)` scan. New versions inserted at the
@@ -147,6 +210,41 @@ pub async fn retrieve_data(
 
             async move {
                 let mut version_info = daedalus::minecraft::fetch_version_info(version).await?;
+
+                // §1.2(b) — Never-publish-unknowns for DownloadType.
+                // A new download key (e.g. some future "android_client") deserialises
+                // to DownloadType::Unknown(...) instead of failing the parse, but we
+                // must not publish a version we don't fully understand. Warn, remove
+                // this version from the manifest, and skip further processing.
+                {
+                    let unknown_keys: Vec<String> = version_info
+                        .downloads
+                        .keys()
+                        .filter_map(|k| {
+                            if let daedalus::minecraft::DownloadType::Unknown(s) = k {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if !unknown_keys.is_empty() {
+                        for key in &unknown_keys {
+                            warn!(
+                                version_id = %version_info.id,
+                                download_key = %key,
+                                "Mojang shipped a new DownloadType we don't recognise; \
+                                 excluding version from manifest until support is added \
+                                 in daedalus::minecraft::DownloadType"
+                            );
+                        }
+                        // Remove the version from the manifest so it is never published.
+                        let mut guard = cloned_manifest_mutex.lock().await;
+                        let (m, _) = &mut *guard;
+                        m.versions.retain(|v| v.id != version_info.id);
+                        return Ok(());
+                    }
+                }
 
                 // Process libraries: apply patches (including LWJGL fixes)
                 let mut new_libraries = Vec::new();
@@ -317,10 +415,12 @@ pub async fn retrieve_data(
                             Some(version_info.asset_index.sha1.clone());
                         cloned_manifest.versions[position].assets_index_url =
                             Some(format_url(&assets_path));
+                        // try_from is infallible; map Unknown defensively to None.
                         cloned_manifest.versions[position].java_profile =
-                            version_info.java_version.as_ref().map(|x| {
-                                MinecraftJavaProfile::try_from(&*x.component)
-                                    .expect("MinecraftJavaProfile::try_from is infallible")
+                            version_info.java_version.as_ref().and_then(|x| {
+                                let profile = MinecraftJavaProfile::try_from(&*x.component)
+                                    .unwrap_or(MinecraftJavaProfile::Unknown(x.component.clone()));
+                                if profile.is_known() { Some(profile) } else { None }
                             });
                         cloned_manifest.versions[position].sha1 = version_hash.clone();
                         cloned_manifest.versions[position].original_sha1 = Some(upstream_sha1.clone());
@@ -341,10 +441,30 @@ pub async fn retrieve_data(
                                 release_time: version_info.release_time,
                                 sha1: version_hash.clone(),
                                 original_sha1: Some(upstream_sha1.clone()),
-                                java_profile: version_info.java_version.as_ref().map(|x| {
-                                    MinecraftJavaProfile::try_from(&*x.component).expect(
-                                        "Safe to unwrap since we ensure it's valid in version_json already",
-                                    )
+                                // §1.3: `try_from` is infallible — unknown strings come
+                                // back as `MinecraftJavaProfile::Unknown(...)`. The
+                                // java_version was already sanitised above: if the
+                                // component string was unrecognised, version_info.java_version
+                                // was set to None by the `!parsed.is_known()` branch, so
+                                // any Some(x) here has a recognised component string.
+                                // Map Unknown back to None defensively so a future refactor
+                                // that changes the sanitisation path above can never cause
+                                // a panic via an Unknown variant reaching here.
+                                java_profile: version_info.java_version.as_ref().and_then(|x| {
+                                    // infallible: always returns Ok(...)
+                                    let profile = MinecraftJavaProfile::try_from(&*x.component)
+                                        .unwrap_or(MinecraftJavaProfile::Unknown(x.component.clone()));
+                                    if profile.is_known() {
+                                        Some(profile)
+                                    } else {
+                                        warn!(
+                                            component = %x.component,
+                                            version_id = %version_info.id,
+                                            "Unknown java profile on new-version insert; \
+                                             omitting java_profile from manifest entry"
+                                        );
+                                        None
+                                    }
                                 }),
                                 compliance_level: 1,
                                 assets_index_url: Some(format_url(&assets_path)),
@@ -385,7 +505,10 @@ pub async fn retrieve_data(
                         successful += 1;
                     }
                     Err(e) => {
-                        warn!("⚠️  Minecraft - Failed to process version: {}", e);
+                        warn!(
+                            "⚠️  Minecraft - Failed to process version: {}",
+                            e
+                        );
                         failed += 1;
                     }
                 }
@@ -409,16 +532,23 @@ pub async fn retrieve_data(
     let elapsed = now.elapsed();
     info!("Elapsed: {:.2?}", elapsed);
 
-    // Get the final manifest with all processed versions
-    let final_manifest = Arc::try_unwrap(cloned_manifest)
-        .map_err(|err| {
-            crate::infrastructure::error::invalid_input(format!(
-                "Failed to unwrap Arc<Mutex<(VersionManifest, _)>>: {:?}",
-                err
-            ))
-        })?
-        .into_inner()
-        .0;
+    // Drain the manifest by acquiring the lock and `mem::take`ing it out.
+    // Avoids the previous `Arc::try_unwrap` failure mode: if any future
+    // panicked mid-await holding the Arc, try_unwrap returned Err and the
+    // entire Minecraft cycle aborted, which made every loader skip. Now a
+    // partial-failure cycle still produces a usable (possibly stale-in-spots)
+    // manifest.
+    let final_manifest = {
+        let mut guard = cloned_manifest.lock().await;
+        let placeholder = (
+            daedalus::minecraft::VersionManifest {
+                latest: guard.0.latest.clone(),
+                versions: Vec::new(),
+            },
+            0usize,
+        );
+        std::mem::replace(&mut *guard, placeholder).0
+    };
 
     // Set the full Minecraft versions JSON in manifest_builder
     // This preserves rich metadata (type, url, time, releaseTime, sha1, complianceLevel, etc.)
@@ -430,4 +560,118 @@ pub async fn retrieve_data(
     );
 
     Ok(final_manifest)
+}
+
+#[cfg(test)]
+mod schema_drift_tests {
+    use super::*;
+    use chrono::Utc;
+
+    /// Build a minimal `daedalus::minecraft::Version` with a given `VersionType`.
+    fn make_version(
+        id: &str,
+        type_: daedalus::minecraft::VersionType,
+    ) -> daedalus::minecraft::Version {
+        daedalus::minecraft::Version {
+            id: id.to_string(),
+            type_,
+            url: format!("https://example.com/{id}.json"),
+            time: Utc::now(),
+            release_time: Utc::now(),
+            sha1: "deadbeef".to_string(),
+            compliance_level: 1,
+            original_sha1: None,
+            assets_index_url: None,
+            assets_index_sha1: None,
+            java_profile: None,
+        }
+    }
+
+    /// Simulates the §1.2(b) retain logic used inside `retrieve_data`.
+    /// Returns the list of version ids that survive the filter.
+    fn filter_unknown_version_types(
+        versions: Vec<daedalus::minecraft::Version>,
+    ) -> Vec<String> {
+        use std::collections::HashSet;
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out = versions;
+        out.retain(|v| {
+            if let daedalus::minecraft::VersionType::Unknown(s) = &v.type_ {
+                seen.insert(s.clone());
+                false
+            } else {
+                true
+            }
+        });
+        out.into_iter().map(|v| v.id).collect()
+    }
+
+    #[test]
+    fn unknown_version_type_is_excluded_from_manifest() {
+        let versions = vec![
+            make_version("1.20.4", daedalus::minecraft::VersionType::Release),
+            make_version(
+                "24w99a",
+                daedalus::minecraft::VersionType::Unknown(
+                    "experiment".to_string(),
+                ),
+            ),
+            make_version("1.20.3", daedalus::minecraft::VersionType::Release),
+            make_version(
+                "1.20.4-rc1",
+                daedalus::minecraft::VersionType::Unknown(
+                    "pre_release".to_string(),
+                ),
+            ),
+        ];
+
+        let surviving = filter_unknown_version_types(versions);
+
+        // Only known-type versions survive.
+        assert_eq!(surviving, vec!["1.20.4", "1.20.3"]);
+    }
+
+    #[test]
+    fn all_known_version_types_survive_filter() {
+        let versions = vec![
+            make_version("1.20.4", daedalus::minecraft::VersionType::Release),
+            make_version("24w04a", daedalus::minecraft::VersionType::Snapshot),
+            make_version("b1.8", daedalus::minecraft::VersionType::OldBeta),
+            make_version("a1.2.6", daedalus::minecraft::VersionType::OldAlpha),
+        ];
+
+        let surviving = filter_unknown_version_types(versions.clone());
+        assert_eq!(surviving.len(), 4);
+    }
+
+    #[test]
+    fn unknown_java_profile_maps_to_none_not_panic() {
+        // Ensure MinecraftJavaProfile::try_from with an unknown string returns
+        // Unknown(...) and is_known() returns false — no panic.
+        let profile = MinecraftJavaProfile::try_from("java-runtime-omega")
+            .expect("try_from is infallible");
+        assert!(!profile.is_known());
+
+        // The defensive and_then pattern used in the manifest insert produces None.
+        let java_version = daedalus::minecraft::JavaVersion {
+            component: "java-runtime-omega".to_string(),
+            major_version: 0,
+        };
+        let result = {
+            let profile =
+                MinecraftJavaProfile::try_from(&*java_version.component)
+                    .unwrap_or(MinecraftJavaProfile::Unknown(
+                        java_version.component.clone(),
+                    ));
+            if profile.is_known() {
+                Some(profile)
+            } else {
+                None
+            }
+        };
+        assert!(
+            result.is_none(),
+            "Unknown java profile should map to None, not panic"
+        );
+    }
 }

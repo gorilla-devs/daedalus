@@ -4,7 +4,7 @@
 //! allowing for overrides and additional libraries to be injected.
 
 use crate::minecraft::types::LibraryPatch;
-use daedalus::minecraft::{merge_partial_library, Library, LibraryDownloads};
+use daedalus::minecraft::{Library, LibraryDownloads, merge_partial_library};
 use std::collections::HashMap;
 use tracing::info;
 
@@ -42,7 +42,10 @@ impl LibraryPatchIndex {
 /// - Override library properties
 /// - Add additional libraries
 /// - Recursively patch the additional libraries
-pub fn patch_library(patches: &LibraryPatchIndex, mut library: Library) -> Vec<Library> {
+pub fn patch_library(
+    patches: &LibraryPatchIndex,
+    mut library: Library,
+) -> Vec<Library> {
     let mut val = Vec::new();
 
     let actual_patches = patches.patches_for(&library.name.to_string());
@@ -62,7 +65,8 @@ pub fn patch_library(patches: &LibraryPatchIndex, mut library: Library) -> Vec<L
                 for additional_library in additional_libraries {
                     if patch.patch_additional_libraries.unwrap_or(false) {
                         // Recursive patching
-                        let mut libs = patch_library(patches, additional_library.clone());
+                        let mut libs =
+                            patch_library(patches, additional_library.clone());
                         val.append(&mut libs)
                     } else {
                         let mut new_lib = additional_library.clone();
@@ -82,11 +86,13 @@ pub fn patch_library(patches: &LibraryPatchIndex, mut library: Library) -> Vec<L
 }
 
 /// Fetch library patches from embedded JSON file
-pub async fn get_library_patches(
-) -> Result<LibraryPatchIndex, crate::infrastructure::error::Error> {
+pub async fn get_library_patches()
+-> Result<LibraryPatchIndex, crate::infrastructure::error::Error> {
     let patches = include_bytes!("../../patched-library-patches.json");
-    let unprocessed_patches: Vec<LibraryPatch> = serde_json::from_slice(patches)?;
-    let processed: Vec<LibraryPatch> = unprocessed_patches.iter().map(pre_process_patch).collect();
+    let unprocessed_patches: Vec<LibraryPatch> =
+        serde_json::from_slice(patches)?;
+    let processed: Vec<LibraryPatch> =
+        unprocessed_patches.iter().map(pre_process_patch).collect();
     Ok(LibraryPatchIndex::new(processed))
 }
 

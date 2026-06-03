@@ -1,9 +1,9 @@
 //! Type definitions for Forge loader processing
 
 use chrono::{DateTime, Utc};
+use daedalus::GradleSpecifier;
 use daedalus::minecraft::{Library, VersionType};
 use daedalus::modded::{Processor, SidedDataEntry};
-use daedalus::GradleSpecifier;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
@@ -102,7 +102,8 @@ impl MinecraftVersionLibraryCache {
     pub async fn load_minecraft_version_libs(
         &mut self,
         version_id: &str,
-    ) -> Result<&HashSet<GradleSpecifier>, crate::infrastructure::error::Error> {
+    ) -> Result<&HashSet<GradleSpecifier>, crate::infrastructure::error::Error>
+    {
         let index = self.versions.iter().position(|ver| ver.id == version_id);
 
         if let Some(index) = index {
@@ -136,4 +137,3 @@ impl MinecraftVersionLibraryCache {
         Ok(&entry.libraries)
     }
 }
-

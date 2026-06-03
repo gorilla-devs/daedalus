@@ -21,4 +21,3 @@ pub fn lib_is_split_natives(lib: &Library) -> bool {
         .as_ref()
         .is_some_and(|data| data.starts_with("natives-"))
 }
-

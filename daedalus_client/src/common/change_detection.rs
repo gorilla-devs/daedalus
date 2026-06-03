@@ -121,7 +121,8 @@ mod tests {
 
     #[test]
     fn test_new_version() {
-        let result = detect_version_change("TestLoader", "1.0.0", None, "abcdef123");
+        let result =
+            detect_version_change("TestLoader", "1.0.0", None, "abcdef123");
         assert_eq!(result.should_upload, true);
         assert_eq!(result.old_hash, None);
     }

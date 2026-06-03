@@ -28,7 +28,9 @@ impl std::fmt::Display for CircuitBreakerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CircuitBreakerError::Open => write!(f, "Circuit breaker is open"),
-            CircuitBreakerError::Failed(e) => write!(f, "Request failed: {}", e),
+            CircuitBreakerError::Failed(e) => {
+                write!(f, "Request failed: {}", e)
+            }
         }
     }
 }
@@ -58,7 +60,11 @@ impl CircuitBreaker {
     /// * `name` - Name for logging purposes
     /// * `failure_threshold` - Number of consecutive failures before opening
     /// * `reset_timeout` - Duration to wait before trying again
-    pub fn new(name: impl Into<String>, failure_threshold: u32, reset_timeout: Duration) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        failure_threshold: u32,
+        reset_timeout: Duration,
+    ) -> Self {
         Self {
             name: name.into(),
             failure_threshold,
@@ -86,7 +92,10 @@ impl CircuitBreaker {
     /// - `Ok(T)` if the operation succeeded
     /// - `Err(CircuitBreakerError::Open)` if the circuit is open
     /// - `Err(CircuitBreakerError::Failed(e))` if the operation failed
-    pub async fn call<F, T, E>(&self, future: F) -> Result<T, CircuitBreakerError>
+    pub async fn call<F, T, E>(
+        &self,
+        future: F,
+    ) -> Result<T, CircuitBreakerError>
     where
         F: Future<Output = Result<T, E>>,
         E: Into<crate::infrastructure::error::Error>,
@@ -186,28 +195,40 @@ mod tests {
 
     #[tokio::test]
     async fn test_circuit_breaker_closes_on_success() {
-        let breaker = CircuitBreaker::new("test", 3, Duration::from_millis(100));
+        let breaker =
+            CircuitBreaker::new("test", 3, Duration::from_millis(100));
 
         // Should succeed
-        let result = breaker.call(async { Ok::<_, crate::infrastructure::error::Error>(42) }).await;
+        let result = breaker
+            .call(async { Ok::<_, crate::infrastructure::error::Error>(42) })
+            .await;
         assert!(result.is_ok());
         assert!(!breaker.is_open().await);
     }
 
     #[tokio::test]
     async fn test_circuit_breaker_opens_after_threshold() {
-        let breaker = CircuitBreaker::new("test", 3, Duration::from_millis(100));
+        let breaker =
+            CircuitBreaker::new("test", 3, Duration::from_millis(100));
 
         // Fail 3 times
         for _ in 0..3 {
-            let _ = breaker.call(async { Err::<(), _>(crate::infrastructure::error::invalid_input("error")) }).await;
+            let _ = breaker
+                .call(async {
+                    Err::<(), _>(crate::infrastructure::error::invalid_input(
+                        "error",
+                    ))
+                })
+                .await;
         }
 
         // Circuit should be open
         assert!(breaker.is_open().await);
 
         // Next call should be rejected immediately
-        let result = breaker.call(async { Ok::<_, crate::infrastructure::error::Error>(42) }).await;
+        let result = breaker
+            .call(async { Ok::<_, crate::infrastructure::error::Error>(42) })
+            .await;
         assert!(matches!(result, Err(CircuitBreakerError::Open)));
     }
 
@@ -217,7 +238,13 @@ mod tests {
 
         // Fail twice to open circuit
         for _ in 0..2 {
-            let _ = breaker.call(async { Err::<(), _>(crate::infrastructure::error::invalid_input("error")) }).await;
+            let _ = breaker
+                .call(async {
+                    Err::<(), _>(crate::infrastructure::error::invalid_input(
+                        "error",
+                    ))
+                })
+                .await;
         }
 
         assert!(breaker.is_open().await);
@@ -226,7 +253,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(60)).await;
 
         // Next call should go through (half-open state)
-        let result = breaker.call(async { Ok::<_, crate::infrastructure::error::Error>(42) }).await;
+        let result = breaker
+            .call(async { Ok::<_, crate::infrastructure::error::Error>(42) })
+            .await;
         assert!(result.is_ok());
 
         // Circuit should be closed again

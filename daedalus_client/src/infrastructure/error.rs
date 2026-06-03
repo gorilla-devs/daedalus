@@ -39,7 +39,9 @@ pub enum ErrorKind {
     Io(#[from] std::io::Error),
 
     /// Checksum validation failure
-    #[error("Checksum mismatch for {url}: expected {expected}, got {actual} after {tries} tries")]
+    #[error(
+        "Checksum mismatch for {url}: expected {expected}, got {actual} after {tries} tries"
+    )]
     ChecksumFailure {
         url: String,
         expected: String,
@@ -135,13 +137,20 @@ impl ErrorKind {
     pub fn should_retry(&self) -> bool {
         match self {
             ErrorKind::Fetch { source, .. } => {
-                // Retry on network errors, timeouts, or 5xx errors
-                source.is_timeout()
-                    || source.is_connect()
-                    || source
-                        .status()
-                        .map(|s| s.is_server_error())
-                        .unwrap_or(false)
+                // Retry on transient network errors and 5xx/429/408.
+                // If reqwest didn't get a status at all (connection reset
+                // mid-stream, DNS failure, etc.), treat as transient and
+                // retry — mirrors the S3 classifier in the arm below.
+                if let Some(status) = source.status() {
+                    status.is_server_error()
+                        || status.as_u16() == 429
+                        || status.as_u16() == 408
+                } else {
+                    source.is_timeout()
+                        || source.is_connect()
+                        || source.is_request()
+                        || source.is_body()
+                }
             }
             ErrorKind::ChecksumFailure { .. } => true,
             ErrorKind::S3 { source, .. } => {
@@ -158,7 +167,11 @@ impl ErrorKind {
                         e.is_timeout()
                             || e.is_connect()
                             || e.status()
-                                .map(|s| s.is_server_error() || s.as_u16() == 429 || s.as_u16() == 408)
+                                .map(|s| {
+                                    s.is_server_error()
+                                        || s.as_u16() == 429
+                                        || s.as_u16() == 408
+                                })
                                 .unwrap_or(true) // no status = network-level, retry
                     }
                     S3Error::Io(_) => true,
@@ -216,11 +229,13 @@ mod tests {
     #[test]
     fn test_error_classification() {
         // Permanent errors
-        assert!(ErrorKind::SerdeJSON(serde_json::Error::io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "test"
-        )))
-        .is_permanent());
+        assert!(
+            ErrorKind::SerdeJSON(serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "test"
+            )))
+            .is_permanent()
+        );
         assert!(ErrorKind::InvalidInput("test".to_string()).is_permanent());
 
         // Transient errors

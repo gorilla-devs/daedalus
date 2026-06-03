@@ -3,6 +3,7 @@
 //! This module provides common logic for merging old and new loader versions,
 //! updating existing loaders, and sorting versions.
 
+use crate::services::discord;
 use daedalus::minecraft::VersionManifest;
 use daedalus::modded::Version;
 use tracing::info;
@@ -32,18 +33,23 @@ pub fn merge_loader_versions(
     new_versions: Vec<Version>,
     loader_name: &str,
 ) -> Vec<Version> {
+    let old_is_empty = old_versions.is_empty();
+    let notifier = discord::notifier();
+
     for new_version in new_versions {
         // Find if this Minecraft version already exists
-        if let Some(existing) = old_versions
-            .iter_mut()
-            .find(|v| v.id == new_version.id)
+        if let Some(existing) =
+            old_versions.iter_mut().find(|v| v.id == new_version.id)
         {
             // Merge loaders: keep old loaders + add/update new ones
+            let mc_version_id = existing.id.clone();
+            // "First-time support" only makes sense if this MC version had at
+            // least one loader before; otherwise it's effectively a new-MC-version
+            // event, which we handle in the other branch.
+            let had_any_loader_before = !existing.loaders.is_empty();
             for new_loader in new_version.loaders {
-                if let Some(existing_loader) = existing
-                    .loaders
-                    .iter_mut()
-                    .find(|l| l.id == new_loader.id)
+                if let Some(existing_loader) =
+                    existing.loaders.iter_mut().find(|l| l.id == new_loader.id)
                 {
                     // Update existing loader
                     let loader_id = new_loader.id.clone();
@@ -58,6 +64,18 @@ pub fn merge_loader_versions(
                         "✅ {} - Added new loader: {}/{}",
                         loader_name, existing.id, new_loader.id
                     );
+                    // Notify Discord about the first build for an existing
+                    // MC version. Skip on a cold start (old_versions empty)
+                    // because every entry would fire a notification.
+                    if !old_is_empty && !had_any_loader_before {
+                        if let Some(n) = notifier.as_ref() {
+                            n.report_new_loader_support(
+                                loader_name,
+                                &mc_version_id,
+                                &new_loader.id,
+                            );
+                        }
+                    }
                     existing.loaders.push(new_loader);
                 }
             }
@@ -67,6 +85,20 @@ pub fn merge_loader_versions(
                 "✅ {} - Added new Minecraft version: {}",
                 loader_name, new_version.id
             );
+            // First time we're seeing this MC version for this loader. Skip
+            // on cold start so we don't fire a flood of notifications for
+            // every historical version on first deploy.
+            if !old_is_empty {
+                if let (Some(n), Some(first_loader)) =
+                    (notifier.as_ref(), new_version.loaders.first())
+                {
+                    n.report_new_loader_support(
+                        loader_name,
+                        &new_version.id,
+                        &first_loader.id,
+                    );
+                }
+            }
             old_versions.push(new_version);
         }
     }
@@ -119,7 +151,10 @@ pub fn sort_by_minecraft_order(
 ///
 /// * `version` - Version containing loaders to sort (modified in place)
 /// * `loader_order` - Ordered list of loader IDs from metadata
-pub fn sort_loaders_by_metadata(version: &mut Version, loader_order: &[String]) {
+pub fn sort_loaders_by_metadata(
+    version: &mut Version,
+    loader_order: &[String],
+) {
     version.loaders.sort_by(|x, y| {
         let x_pos = loader_order
             .iter()
@@ -153,7 +188,8 @@ mod tests {
             }],
         }];
 
-        let merged = merge_loader_versions(old_versions, new_versions, "TestLoader");
+        let merged =
+            merge_loader_versions(old_versions, new_versions, "TestLoader");
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].id, "1.20.1");
@@ -182,7 +218,8 @@ mod tests {
             }],
         }];
 
-        let merged = merge_loader_versions(old_versions, new_versions, "TestLoader");
+        let merged =
+            merge_loader_versions(old_versions, new_versions, "TestLoader");
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].loaders[0].url, "new_url");
@@ -210,7 +247,8 @@ mod tests {
             }],
         }];
 
-        let merged = merge_loader_versions(old_versions, new_versions, "TestLoader");
+        let merged =
+            merge_loader_versions(old_versions, new_versions, "TestLoader");
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].loaders.len(), 2);

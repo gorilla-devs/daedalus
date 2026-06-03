@@ -1,4 +1,6 @@
-use super::{GameVersionInfo, LoaderStrategy, LoaderVersionInfo, LoaderVersionsList};
+use super::{
+    GameVersionInfo, LoaderStrategy, LoaderVersionInfo, LoaderVersionsList,
+};
 use serde::{Deserialize, Serialize};
 
 /// Quilt loader versions known to be broken upstream.
@@ -65,6 +67,9 @@ impl LoaderVersionsList for QuiltVersions {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct QuiltGameVersion {
     pub version: String,
+    // `stable` may be absent on some Quilt API responses; default to `false`
+    // so a missing field doesn't abort the entire game-version-list parse.
+    #[serde(default)]
     pub stable: bool,
 }
 

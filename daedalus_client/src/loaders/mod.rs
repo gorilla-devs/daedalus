@@ -1,14 +1,14 @@
 pub mod fabric;
 pub mod quilt;
 
-use crate::{download_file, format_url};
 use crate::common::cas::build_cas_url;
 use crate::common::change_detection::detect_version_change;
 use crate::services::upload::BatchUploader;
-use dashmap::DashMap;
+use crate::{download_file, format_url};
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, Version};
-use daedalus::{get_hash, BRANDING};
+use daedalus::{BRANDING, get_hash};
+use dashmap::DashMap;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -108,19 +108,27 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
 
         // Wrap in Arc so per-loader-version futures can cheaply share a reference
         // without requiring V: Clone.
-        let list: Arc<V> = Arc::new(self.fetch_versions_list(None, semaphore.clone()).await?);
+        let list: Arc<V> =
+            Arc::new(self.fetch_versions_list(None, semaphore.clone()).await?);
 
-        let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
-            "{}/v{}/manifest.json",
-            self.strategy.manifest_path_prefix(),
-            crate::services::cas::CAS_VERSION,
-        )))
-        .await
-        .ok();
+        let old_manifest =
+            daedalus::modded::fetch_manifest(&format_url(&format!(
+                "{}/v{}/manifest.json",
+                self.strategy.manifest_path_prefix(),
+                crate::services::cas::CAS_VERSION,
+            )))
+            .await
+            .ok();
 
-        let mut versions = old_manifest
-            .map(|m| m.game_versions)
-            .unwrap_or_default();
+        // Treat "we successfully loaded a previous manifest" as the cold-start
+        // signal for Discord notifications: on a brand-new deploy / first run
+        // (no previous manifest), we suppress per-MC-version notifications to
+        // avoid spamming one message per historical Minecraft version. This
+        // does mean a transient fetch failure of the previous manifest is
+        // indistinguishable from a true cold start, which is acceptable.
+        let old_manifest_was_present = old_manifest.is_some();
+        let mut versions =
+            old_manifest.map(|m| m.game_versions).unwrap_or_default();
 
         let dummy_replace_string = BRANDING
             .get()
@@ -134,7 +142,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         let mut to_skip: Vec<LoaderVersion> = Vec::new();
         let mut to_fetch: Vec<(bool, String)> = Vec::new();
 
-        let dummy_entry = versions.iter().find(|x| x.id == dummy_replace_string);
+        let dummy_entry =
+            versions.iter().find(|x| x.id == dummy_replace_string);
 
         let mut skipped = 0usize;
         for loader in list.loader() {
@@ -150,7 +159,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                 continue;
             }
 
-            let stable = self.strategy.is_stable(loader as &dyn LoaderVersionInfo);
+            let stable =
+                self.strategy.is_stable(loader as &dyn LoaderVersionInfo);
 
             let cached = dummy_entry
                 .and_then(|x| x.loaders.iter().find(|l| l.id == version_id))
@@ -183,19 +193,26 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         );
 
         // Fetch new loader profiles in parallel (semaphore controls real concurrency).
-        let fetch_futures = to_fetch.into_iter().map(|(stable, loader_version)| {
-            let semaphore = semaphore.clone();
-            async move {
-                let result = self
-                    .fetch_loader_version(DUMMY_GAME_VERSION, &loader_version, semaphore)
-                    .await;
-                (stable, loader_version, result)
-            }
-        });
+        let fetch_futures =
+            to_fetch.into_iter().map(|(stable, loader_version)| {
+                let semaphore = semaphore.clone();
+                async move {
+                    let result = self
+                        .fetch_loader_version(
+                            DUMMY_GAME_VERSION,
+                            &loader_version,
+                            semaphore,
+                        )
+                        .await;
+                    (stable, loader_version, result)
+                }
+            });
 
         let mut fetched: Vec<(bool, String, PartialVersionInfo)> = Vec::new();
         let mut fetch_failed = 0;
-        for (stable, loader, result) in futures::future::join_all(fetch_futures).await {
+        for (stable, loader, result) in
+            futures::future::join_all(fetch_futures).await
+        {
             match result {
                 Ok(profile) => fetched.push((stable, loader, profile)),
                 Err(e) => {
@@ -219,32 +236,34 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
 
         // Process fetched profiles in parallel.
         let caches = Arc::new(LoaderCaches::new());
-        let process_futures = fetched.into_iter().map(|(stable, loader, profile)| {
-            let semaphore = semaphore.clone();
-            let caches = Arc::clone(&caches);
-            let list = Arc::clone(&list);
-            let dummy_replace_string = dummy_replace_string.clone();
-            async move {
-                let result = self
-                    .process_loader_version(
-                        stable,
-                        loader.clone(),
-                        profile,
-                        list.as_ref(),
-                        uploader,
-                        s3_client,
-                        &caches,
-                        &dummy_replace_string,
-                        semaphore,
-                    )
-                    .await;
-                (loader, result)
-            }
-        });
+        let process_futures =
+            fetched.into_iter().map(|(stable, loader, profile)| {
+                let semaphore = semaphore.clone();
+                let caches = Arc::clone(&caches);
+                let list = Arc::clone(&list);
+                let dummy_replace_string = dummy_replace_string.clone();
+                async move {
+                    let result = self
+                        .process_loader_version(
+                            stable,
+                            loader.clone(),
+                            profile,
+                            list.as_ref(),
+                            uploader,
+                            s3_client,
+                            &caches,
+                            &dummy_replace_string,
+                            semaphore,
+                        )
+                        .await;
+                    (loader, result)
+                }
+            });
 
         let mut processed: Vec<LoaderVersion> = to_skip;
         let mut process_failed = 0;
-        for (loader, result) in futures::future::join_all(process_futures).await {
+        for (loader, result) in futures::future::join_all(process_futures).await
+        {
             match result {
                 Ok(loader_version) => processed.push(loader_version),
                 Err(e) => {
@@ -268,12 +287,15 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
 
         // Add processed loaders to versions list under the dummy game version entry.
         if !processed.is_empty() {
-            if let Some(version) = versions.iter_mut().find(|x| x.id == dummy_replace_string) {
+            if let Some(version) =
+                versions.iter_mut().find(|x| x.id == dummy_replace_string)
+            {
                 // Replace by id so cached entries are refreshed cleanly.
-                let mut existing_by_id: BTreeMap<String, LoaderVersion> = std::mem::take(&mut version.loaders)
-                    .into_iter()
-                    .map(|l| (l.id.clone(), l))
-                    .collect();
+                let mut existing_by_id: BTreeMap<String, LoaderVersion> =
+                    std::mem::take(&mut version.loaders)
+                        .into_iter()
+                        .map(|l| (l.id.clone(), l))
+                        .collect();
                 for entry in processed {
                     existing_by_id.insert(entry.id.clone(), entry);
                 }
@@ -287,9 +309,22 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             }
         }
 
-        // Add game versions that don't have loaders yet
+        // Add game versions that don't have loaders yet, and emit a Discord
+        // notification per new (loader, mc_version) pair — Fabric/Quilt use
+        // a placeholder game version with `version_hashes` resolution at the
+        // launcher, so the meaningful event is the MC id appearing in the API.
+        let notifier = crate::services::discord::notifier();
         for version in list.game() {
             if !versions.iter().any(|x| x.id == version.version()) {
+                if old_manifest_was_present {
+                    if let Some(n) = notifier.as_ref() {
+                        n.report_new_loader_support(
+                            self.strategy.name(),
+                            version.version(),
+                            DUMMY_GAME_VERSION,
+                        );
+                    }
+                }
                 versions.push(Version {
                     id: version.version().to_string(),
                     stable: version.stable(),
@@ -337,7 +372,10 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         };
 
         let versions_json = serde_json::to_value(&manifest.game_versions)?;
-        manifest_builder.set_loader_versions(self.strategy.manifest_path_prefix(), versions_json);
+        manifest_builder.set_loader_versions(
+            self.strategy.manifest_path_prefix(),
+            versions_json,
+        );
 
         info!(
             "✅ {} - Processed {} game versions",
@@ -358,7 +396,10 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
     {
         Ok(serde_json::from_slice(
             &download_file(
-                url.unwrap_or(&format!("{}/versions", self.strategy.meta_url())),
+                url.unwrap_or(&format!(
+                    "{}/versions",
+                    self.strategy.meta_url()
+                )),
                 None,
                 semaphore,
             )
@@ -404,124 +445,163 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         V: LoaderVersionsList,
     {
         // Process all libraries
-        let libs = futures::future::try_join_all(version.libraries.into_iter().map(|mut lib| {
-            let semaphore = semaphore.clone();
-            let list_game: Vec<_> = list.game().to_vec();
-            let maven_fallback = self.strategy.maven_fallback().to_string();
+        let libs = futures::future::try_join_all(
+            version.libraries.into_iter().map(|mut lib| {
+                let semaphore = semaphore.clone();
+                let list_game: Vec<_> = list.game().to_vec();
+                let maven_fallback = self.strategy.maven_fallback().to_string();
 
-            async move {
-                let original_name = lib.name.to_string();
-                let has_placeholder = original_name.contains(DUMMY_GAME_VERSION);
-                let coord_with_placeholder = original_name.replace(
-                    DUMMY_GAME_VERSION,
-                    dummy_replace_string,
-                );
+                async move {
+                    let original_name = lib.name.to_string();
+                    let has_placeholder =
+                        original_name.contains(DUMMY_GAME_VERSION);
+                    let coord_with_placeholder = original_name
+                        .replace(DUMMY_GAME_VERSION, dummy_replace_string);
 
-                if has_placeholder && is_intermediary_library(&coord_with_placeholder) {
-                    // Intermediary path — variable artifact per MC version.
-                    if let Some(cached) = caches.intermediary_hashes.get(&coord_with_placeholder) {
+                    if has_placeholder
+                        && is_intermediary_library(&coord_with_placeholder)
+                    {
+                        // Intermediary path — variable artifact per MC version.
+                        if let Some(cached) = caches
+                            .intermediary_hashes
+                            .get(&coord_with_placeholder)
+                        {
+                            lib.name = coord_with_placeholder.parse()?;
+                            lib.version_hashes = Some(cached.clone());
+                            lib.url = None;
+                            return Ok(lib);
+                        }
+
+                        let lib_url = lib.url.clone();
+                        let version_hash_results =
+                            futures::future::try_join_all(
+                                list_game.iter().map(|game_version| {
+                                    let semaphore = semaphore.clone();
+                                    let lib_url = lib_url.clone();
+                                    let coord_with_placeholder =
+                                        coord_with_placeholder.clone();
+                                    let maven_fallback = maven_fallback.clone();
+                                    let game_version_str =
+                                        game_version.version().to_string();
+
+                                    async move {
+                                        let artifact_path =
+                                            daedalus::get_path_from_artifact(
+                                                &coord_with_placeholder
+                                                    .replace(
+                                                        dummy_replace_string,
+                                                        &game_version_str,
+                                                    ),
+                                            )?;
+
+                                        let artifact = download_file(
+                                            &format!(
+                                                "{}{}",
+                                                lib_url
+                                                    .as_deref()
+                                                    .unwrap_or(&maven_fallback),
+                                                artifact_path
+                                            ),
+                                            None,
+                                            semaphore.clone(),
+                                        )
+                                        .await?;
+
+                                        let hash = uploader
+                                            .upload_cas(
+                                                artifact.to_vec(),
+                                                Some(
+                                                    "application/java-archive"
+                                                        .to_string(),
+                                                ),
+                                                s3_client,
+                                                semaphore.clone(),
+                                            )
+                                            .await?;
+
+                                        Ok::<
+                                            (String, String),
+                                            crate::infrastructure::error::Error,
+                                        >(
+                                            (
+                                            game_version_str,
+                                            hash,
+                                        )
+                                        )
+                                    }
+                                }),
+                            )
+                            .await?;
+
+                        let version_hashes: BTreeMap<String, String> =
+                            version_hash_results.into_iter().collect();
+                        caches.intermediary_hashes.insert(
+                            coord_with_placeholder.clone(),
+                            version_hashes.clone(),
+                        );
                         lib.name = coord_with_placeholder.parse()?;
-                        lib.version_hashes = Some(cached.clone());
+                        lib.version_hashes = Some(version_hashes);
                         lib.url = None;
                         return Ok(lib);
                     }
 
-                    let lib_url = lib.url.clone();
-                    let version_hash_results = futures::future::try_join_all(list_game.iter().map(|game_version| {
-                        let semaphore = semaphore.clone();
-                        let lib_url = lib_url.clone();
-                        let coord_with_placeholder = coord_with_placeholder.clone();
-                        let maven_fallback = maven_fallback.clone();
-                        let game_version_str = game_version.version().to_string();
+                    // Regular library path (with or without placeholder). The artifact is
+                    // version-agnostic, so the same CAS URL is reused across loader versions.
+                    if let Some(cached_url) =
+                        caches.regular_cas_urls.get(&coord_with_placeholder)
+                    {
+                        lib.name = coord_with_placeholder.parse()?;
+                        lib.url = Some(cached_url.clone());
+                        return Ok(lib);
+                    }
 
-                        async move {
-                            let artifact_path = daedalus::get_path_from_artifact(
-                                &coord_with_placeholder.replace(
-                                    dummy_replace_string,
-                                    &game_version_str,
-                                ),
-                            )?;
+                    lib.name = coord_with_placeholder.parse()?;
+                    let artifact_path = lib.name.path();
 
-                            let artifact = download_file(
-                                &format!(
-                                    "{}{}",
-                                    lib_url.as_deref().unwrap_or(&maven_fallback),
-                                    artifact_path
-                                ),
-                                None,
-                                semaphore.clone(),
-                            )
-                            .await?;
+                    // Hardcode: net.minecraft:launchwrapper:1.12 ships on Mojang's maven,
+                    // not Fabric's. Older Fabric loaders (1.13/1.14-era) reference it with
+                    // a null url field; without this override we'd 404 on the Fabric maven
+                    // fallback. Matches Modrinth daedalus's fabric.rs.
+                    let coord = lib.name.to_string();
+                    let mojang_libs_override =
+                        if coord == "net.minecraft:launchwrapper:1.12" {
+                            Some("https://libraries.minecraft.net/")
+                        } else {
+                            None
+                        };
 
-                            let hash = uploader.upload_cas(
-                                artifact.to_vec(),
-                                Some("application/java-archive".to_string()),
-                                s3_client,
-                                semaphore.clone(),
-                            ).await?;
-
-                            Ok::<(String, String), crate::infrastructure::error::Error>((game_version_str, hash))
-                        }
-                    }))
+                    let artifact = download_file(
+                        &format!(
+                            "{}{}",
+                            mojang_libs_override
+                                .or(lib.url.as_deref())
+                                .unwrap_or(&maven_fallback),
+                            artifact_path
+                        ),
+                        None,
+                        semaphore.clone(),
+                    )
                     .await?;
 
-                    let version_hashes: BTreeMap<String, String> = version_hash_results.into_iter().collect();
-                    caches.intermediary_hashes.insert(coord_with_placeholder.clone(), version_hashes.clone());
-                    lib.name = coord_with_placeholder.parse()?;
-                    lib.version_hashes = Some(version_hashes);
-                    lib.url = None;
-                    return Ok(lib);
+                    let hash = uploader
+                        .upload_cas(
+                            artifact.to_vec(),
+                            Some("application/java-archive".to_string()),
+                            s3_client,
+                            semaphore.clone(),
+                        )
+                        .await?;
+
+                    let cas_url = build_cas_url(&hash)?;
+                    caches
+                        .regular_cas_urls
+                        .insert(coord_with_placeholder, cas_url.clone());
+                    lib.url = Some(cas_url);
+
+                    Ok::<Library, crate::infrastructure::error::Error>(lib)
                 }
-
-                // Regular library path (with or without placeholder). The artifact is
-                // version-agnostic, so the same CAS URL is reused across loader versions.
-                if let Some(cached_url) = caches.regular_cas_urls.get(&coord_with_placeholder) {
-                    lib.name = coord_with_placeholder.parse()?;
-                    lib.url = Some(cached_url.clone());
-                    return Ok(lib);
-                }
-
-                lib.name = coord_with_placeholder.parse()?;
-                let artifact_path = lib.name.path();
-
-                // Hardcode: net.minecraft:launchwrapper:1.12 ships on Mojang's maven,
-                // not Fabric's. Older Fabric loaders (1.13/1.14-era) reference it with
-                // a null url field; without this override we'd 404 on the Fabric maven
-                // fallback. Matches Modrinth daedalus's fabric.rs.
-                let coord = lib.name.to_string();
-                let mojang_libs_override = if coord == "net.minecraft:launchwrapper:1.12" {
-                    Some("https://libraries.minecraft.net/")
-                } else {
-                    None
-                };
-
-                let artifact = download_file(
-                    &format!(
-                        "{}{}",
-                        mojang_libs_override
-                            .or(lib.url.as_deref())
-                            .unwrap_or(&maven_fallback),
-                        artifact_path
-                    ),
-                    None,
-                    semaphore.clone(),
-                )
-                .await?;
-
-                let hash = uploader.upload_cas(
-                    artifact.to_vec(),
-                    Some("application/java-archive".to_string()),
-                    s3_client,
-                    semaphore.clone(),
-                ).await?;
-
-                let cas_url = build_cas_url(&hash)?;
-                caches.regular_cas_urls.insert(coord_with_placeholder, cas_url.clone());
-                lib.url = Some(cas_url);
-
-                Ok::<Library, crate::infrastructure::error::Error>(lib)
-            }
-        }))
+            }),
+        )
         .await?;
 
         let version_info = PartialVersionInfo {
@@ -532,7 +612,9 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             time: version.time,
             type_: version.type_,
             logging: None,
-            inherits_from: version.inherits_from.replace(DUMMY_GAME_VERSION, dummy_replace_string),
+            inherits_from: version
+                .inherits_from
+                .replace(DUMMY_GAME_VERSION, dummy_replace_string),
             libraries: libs,
             minecraft_arguments: version.minecraft_arguments,
             processors: None,
@@ -540,19 +622,27 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         };
 
         let version_bytes = serde_json::to_vec(&version_info)?;
-        let new_hash = get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
+        let new_hash =
+            get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
 
         // Note: should_upload comparison against the OLD url is meaningless here
         // because the cached path (T2.5) skips all of this entirely. We always upload
         // newly fetched profiles.
-        let _ = detect_version_change(self.strategy.name(), &loader, None, &new_hash);
+        let _ = detect_version_change(
+            self.strategy.name(),
+            &loader,
+            None,
+            &new_hash,
+        );
 
-        let version_hash = uploader.upload_cas(
-            version_bytes,
-            Some("application/json".to_string()),
-            s3_client,
-            semaphore.clone(),
-        ).await?;
+        let version_hash = uploader
+            .upload_cas(
+                version_bytes,
+                Some("application/json".to_string()),
+                s3_client,
+                semaphore.clone(),
+            )
+            .await?;
 
         let cas_url = build_cas_url(&version_hash)?;
 

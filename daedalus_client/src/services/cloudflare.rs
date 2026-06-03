@@ -1,15 +1,19 @@
 use crate::infrastructure::error::{Error, fetch_error, invalid_input};
 use std::sync::LazyLock;
 use std::time::Duration;
-use tracing::{error, info, instrument, warn, Instrument};
+use tracing::{Instrument, error, info, instrument, warn};
 
-/// HTTP client specifically for Cloudflare API requests
+/// HTTP client specifically for Cloudflare API requests.
 ///
-/// This client is configured with:
-/// - TCP keepalive for long-lived connections
-/// - Generous timeouts for API operations
-/// - Proper user agent identification
-/// - Connection pooling for efficiency
+/// Configured with TCP keepalive, generous timeouts, a branded user agent,
+/// and modest connection pooling.
+///
+/// # Panics
+/// Panics if reqwest can't build the client (e.g. system TLS root store is
+/// busted). This is intentional and matches the project policy: fail loud at
+/// init rather than silently degrade — a misconfigured environment should
+/// crash the process so the operator notices, not paper over the problem
+/// with "purges will be skipped" semantics.
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .tcp_keepalive(Some(Duration::from_secs(10)))
@@ -23,7 +27,7 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         ))
         .pool_max_idle_per_host(10)
         .build()
-        .expect("Failed to build HTTP client")
+        .expect("Failed to build Cloudflare HTTP client")
 });
 
 /// Purges Cloudflare cache for the given URLs
@@ -71,7 +75,11 @@ pub async fn purge_cloudflare_cache(
 
     // Cloudflare limit: 30 URLs per request
     for (batch_idx, chunk) in urls.chunks(30).enumerate() {
-        let batch_span = tracing::info_span!("cloudflare_purge_batch", batch = batch_idx, batch_size = chunk.len());
+        let batch_span = tracing::info_span!(
+            "cloudflare_purge_batch",
+            batch = batch_idx,
+            batch_size = chunk.len()
+        );
         let result = async {
             let response = HTTP_CLIENT
                 .post(format!(
@@ -87,10 +95,17 @@ pub async fn purge_cloudflare_cache(
 
             let status = response.status();
             if status.is_success() {
-                info!(batch = batch_idx, purged = chunk.len(), "Cloudflare cache purge batch succeeded");
+                info!(
+                    batch = batch_idx,
+                    purged = chunk.len(),
+                    "Cloudflare cache purge batch succeeded"
+                );
                 Ok::<usize, Error>(chunk.len())
             } else {
-                let error_text = response.text().await.unwrap_or_else(|_| "Unable to read response".to_string());
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unable to read response".to_string());
                 error!(
                     batch = batch_idx,
                     status = %status,
@@ -99,8 +114,7 @@ pub async fn purge_cloudflare_cache(
                 );
                 Err(invalid_input(format!(
                     "Cloudflare API returned status {}: {}",
-                    status,
-                    error_text
+                    status, error_text
                 )))
             }
         }
@@ -123,7 +137,10 @@ pub async fn purge_cloudflare_cache(
             "Cloudflare cache purge completed with some failures"
         );
     } else {
-        info!(total_purged, "Cloudflare cache purge completed successfully");
+        info!(
+            total_purged,
+            "Cloudflare cache purge completed successfully"
+        );
     }
 
     Ok(())

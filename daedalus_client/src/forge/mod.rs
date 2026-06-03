@@ -1,56 +1,50 @@
 //! Forge loader metadata retrieval and processing
 
-pub mod types;
 pub mod libraries;
+pub mod types;
 pub mod version;
 
 // Re-export commonly used types
 pub use types::{
-    ForgeInstallerProfileV1,
-    ForgeInstallerProfileV2,
+    ForgeInstallerProfileV1, ForgeInstallerProfileV2,
     MinecraftVersionLibraryCache,
 };
 
-use crate::{
-    download_file, download_file_mirrors, format_url,
+use crate::common::manifest_merge::{
+    merge_loader_versions, sort_by_minecraft_order, sort_loaders_by_metadata,
 };
-use crate::common::manifest_merge::{merge_loader_versions, sort_by_minecraft_order, sort_loaders_by_metadata};
 use crate::services::upload::BatchUploader;
+use crate::{download_file, download_file_mirrors, format_url};
+use daedalus::minecraft::{Argument, ArgumentType, Library, VersionManifest};
+use daedalus::modded::{LoaderVersion, PartialVersionInfo};
+use daedalus::{GradleSpecifier, get_hash};
 use dashmap::{DashMap, DashSet};
-use daedalus::minecraft::{
-    Argument, ArgumentType, Library, VersionManifest,
-};
-use daedalus::modded::{
-    LoaderVersion, PartialVersionInfo,
-};
-use daedalus::{get_hash, GradleSpecifier};
-use tracing::{info, warn};
 use semver::{Version, VersionReq};
 use std::collections::{HashMap, HashSet};
-use std::convert::{TryInto, TryFrom};
+use std::convert::{TryFrom, TryInto};
 use std::io::Read;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
+use tracing::{info, warn};
 
-static FORGE_MANIFEST_V1_QUERY: LazyLock<VersionReq> = LazyLock::new(|| {
-    VersionReq::parse(">=8.0.684, <23.5.2851").unwrap()
-});
+static FORGE_MANIFEST_V1_QUERY: LazyLock<VersionReq> =
+    LazyLock::new(|| VersionReq::parse(">=8.0.684, <23.5.2851").unwrap());
 
-static FORGE_MANIFEST_V2_QUERY_P1: LazyLock<VersionReq> = LazyLock::new(|| {
-    VersionReq::parse(">=23.5.2851, <31.2.52").unwrap()
-});
+static FORGE_MANIFEST_V2_QUERY_P1: LazyLock<VersionReq> =
+    LazyLock::new(|| VersionReq::parse(">=23.5.2851, <31.2.52").unwrap());
 
-static FORGE_MANIFEST_V2_QUERY_P2: LazyLock<VersionReq> = LazyLock::new(|| {
-    VersionReq::parse(">=32.0.1, <37.0.0").unwrap()
-});
+static FORGE_MANIFEST_V2_QUERY_P2: LazyLock<VersionReq> =
+    LazyLock::new(|| VersionReq::parse(">=32.0.1, <37.0.0").unwrap());
 
-static FORGE_MANIFEST_V3_QUERY: LazyLock<VersionReq> = LazyLock::new(|| {
-    VersionReq::parse(">=37.0.0").unwrap()
-});
+static FORGE_MANIFEST_V3_QUERY: LazyLock<VersionReq> =
+    LazyLock::new(|| VersionReq::parse(">=37.0.0").unwrap());
 
 // Re-export version utilities for convenience
-pub use version::{extract_hash_from_cas_url, fetch_generated_version_info, should_ignore_artifact};
+pub use version::{
+    extract_hash_from_cas_url, fetch_generated_version_info,
+    should_ignore_artifact,
+};
 
 // Temporary: Keep retrieve_data here until we refactor it
 // This will be broken down in Phase 1.5
@@ -104,7 +98,8 @@ pub async fn retrieve_data(
 
     let visited_assets = Arc::new(DashSet::new());
     // Cache CAS hash per artifact for the V1 path so dedup can produce a real CAS URL.
-    let visited_v1_hashes: Arc<DashMap<GradleSpecifier, String>> = Arc::new(DashMap::new());
+    let visited_v1_hashes: Arc<DashMap<GradleSpecifier, String>> =
+        Arc::new(DashMap::new());
 
     let mut version_futures = Vec::new();
 
@@ -132,7 +127,23 @@ pub async fn retrieve_data(
                     loader_version_raw.to_string()
                 };
 
-                let version = Version::parse(&loader_version)?;
+                // Don't `?` out of the whole MC-version loop on a single
+                // malformed Forge version; just skip it. Previously a single
+                // bad version (e.g. Forge ships `1.20.1-47.1.0.HOTFIX`) would
+                // drop ALL loaders for that MC version silently — the error
+                // surfaced as "failed to process Minecraft version".
+                let version = match Version::parse(&loader_version) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
+                            forge_id = %loader_version_full,
+                            parsed = %loader_version,
+                            error = %e,
+                            "Forge - skipping unparseable loader version"
+                        );
+                        continue;
+                    }
+                };
 
                 if FORGE_MANIFEST_V1_QUERY.matches(&version)
                     || FORGE_MANIFEST_V2_QUERY_P1.matches(&version)
@@ -140,6 +151,15 @@ pub async fn retrieve_data(
                     || FORGE_MANIFEST_V3_QUERY.matches(&version)
                 {
                     loaders.push((loader_version_full, version))
+                } else {
+                    // Version parses but falls into none of our supported
+                    // installer-format ranges. Surface so we notice when
+                    // Forge ships a new family that needs a new query
+                    // range — previously this dropped silently.
+                    warn!(
+                        forge_id = %loader_version_full,
+                        "Forge - version matches no installer-format query range; skipping"
+                    );
                 }
             }
         }
@@ -183,7 +203,19 @@ pub async fn retrieve_data(
 
                             let reader = std::io::Cursor::new(bytes);
 
-                            if let Ok(archive) = zip::ZipArchive::new(reader) {
+                            let archive = match zip::ZipArchive::new(reader) {
+                                Ok(a) => Some(a),
+                                Err(e) => {
+                                    warn!(
+                                        forge_id = %loader_version_full,
+                                        error = %e,
+                                        "Forge - installer JAR is not a valid zip (corrupt download or upstream error page); skipping"
+                                    );
+                                    None
+                                }
+                            };
+
+                            if let Some(archive) = archive {
                                 if FORGE_MANIFEST_V1_QUERY.matches(&version) {
                                     let mut archive_clone = archive.clone();
                                     let profile = tokio::task::spawn_blocking(move || {
@@ -678,17 +710,28 @@ pub async fn retrieve_data(
         let mut successful = 0;
         let mut failed = 0;
 
-        for (idx, result) in futures::future::join_all(version_futures).await.into_iter().enumerate() {
+        for (idx, result) in futures::future::join_all(version_futures)
+            .await
+            .into_iter()
+            .enumerate()
+        {
             match result {
                 Ok(_) => successful += 1,
                 Err(e) => {
-                    warn!("⚠️  Forge - Failed to process Minecraft version {}/{len}: {}", idx + 1, e);
+                    warn!(
+                        "⚠️  Forge - Failed to process Minecraft version {}/{len}: {}",
+                        idx + 1,
+                        e
+                    );
                     failed += 1;
                 }
             }
         }
 
-        info!("📊 Forge - Minecraft version processing complete: {} successful, {} failed", successful, failed);
+        info!(
+            "📊 Forge - Minecraft version processing complete: {} successful, {} failed",
+            successful, failed
+        );
     }
 
     // Extract versions by locking the mutex instead of try_unwrap
@@ -704,7 +747,8 @@ pub async fn retrieve_data(
     };
 
     // Merge new versions with old ones to preserve existing data
-    let mut final_versions = merge_loader_versions(old_manifest_versions, new_versions, "Forge");
+    let mut final_versions =
+        merge_loader_versions(old_manifest_versions, new_versions, "Forge");
 
     // Sort versions by Minecraft version order (handles 1.7.10_pre4 rename + usize::MAX fallback)
     sort_by_minecraft_order(&mut final_versions, minecraft_versions);
@@ -720,13 +764,15 @@ pub async fn retrieve_data(
     // This preserves game version -> loader version mappings
     let versions_json = serde_json::to_value(&final_versions)?;
     manifest_builder.set_loader_versions("forge", versions_json);
-    info!(version_count = final_versions.len(), "Set Forge versions with nested structure in CAS manifest builder");
+    info!(
+        version_count = final_versions.len(),
+        "Set Forge versions with nested structure in CAS manifest builder"
+    );
 
     Ok(())
 }
 
-const DEFAULT_MAVEN_METADATA_URL: &str =
-    "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json";
+const DEFAULT_MAVEN_METADATA_URL: &str = "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json";
 
 /// Fetches the forge maven metadata from the specified URL. If no URL is specified, the default is used.
 /// Returns a hashmap specifying the versions of the forge mod loader
@@ -746,8 +792,7 @@ pub async fn fetch_maven_metadata(
     )?)
 }
 
-const PROMOTIONS_SLIM_URL: &str =
-    "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
+const PROMOTIONS_SLIM_URL: &str = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
 
 #[derive(serde::Deserialize)]
 struct PromotionsSlim {
