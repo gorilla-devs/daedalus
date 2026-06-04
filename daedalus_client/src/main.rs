@@ -578,24 +578,17 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                     .as_ref()
                     .and_then(|r| r.loaders.get(loader.as_str()))
                 {
-                    let prev_url = format_url(&prev_ref.url);
-                    match reqwest::Client::new()
-                        .get(&prev_url)
-                        .timeout(std::time::Duration::from_secs(30))
-                        .send()
-                        .await
-                    {
-                        Ok(resp) if resp.status().is_success() => resp
-                            .json::<services::cas::LoaderManifest>()
-                            .await
-                            .ok(),
-                        Ok(resp) if resp.status().as_u16() == 404 => None,
-                        Ok(resp) => {
-                            warn!(loader = %loader, status = %resp.status(), "Unexpected status fetching previous loader manifest; skipping sanity check");
-                            None
-                        }
+                    // Read the sanity-gate baseline from S3, not the CDN, for the
+                    // same read-after-write reason as the root manifest above —
+                    // `prev_ref.url` is the relative S3 key for the manifest.
+                    match CLIENT.get_object(&prev_ref.url).await {
+                        Ok(resp) => serde_json::from_slice::<
+                            services::cas::LoaderManifest,
+                        >(resp.bytes())
+                        .ok(),
+                        Err(s3::error::S3Error::Http(404, _)) => None,
                         Err(e) => {
-                            warn!(loader = %loader, error = %e, "Failed to fetch previous loader manifest; skipping sanity check");
+                            warn!(loader = %loader, error = %e, "Failed to fetch previous loader manifest from S3; skipping sanity check");
                             None
                         }
                     }
@@ -1032,22 +1025,21 @@ pub use services::download::{download_file, download_file_mirrors};
 /// loader references on partial-failure cycles. Failure here is non-fatal
 /// — we just lose carry-forward and the cycle behaves like a cold start.
 async fn fetch_previous_root_manifest() -> Option<services::cas::RootManifest> {
-    let root_url = format_url(&format!(
-        "v{}/manifest.json",
-        crate::services::cas::CAS_VERSION
-    ));
-    match reqwest::Client::new()
-        .get(&root_url)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<services::cas::RootManifest>().await {
+    let root_path =
+        format!("v{}/manifest.json", crate::services::cas::CAS_VERSION);
+    // Read from S3 (the authoritative store, with read-after-write consistency)
+    // rather than the CDN. A just-purged Cloudflare edge can still serve the
+    // pre-publish or pre-rollback root for the cache TTL, which would seed
+    // carry-forward and the sanity baseline from a stale manifest.
+    match CLIENT.get_object(&root_path).await {
+        Ok(resp) => {
+            match serde_json::from_slice::<services::cas::RootManifest>(
+                resp.bytes(),
+            ) {
                 Ok(m) => {
                     info!(
                         loader_count = m.loaders.len(),
-                        "Loaded previous root manifest for carry-forward"
+                        "Loaded previous root manifest from S3 for carry-forward"
                     );
                     Some(m)
                 }
@@ -1057,16 +1049,12 @@ async fn fetch_previous_root_manifest() -> Option<services::cas::RootManifest> {
                 }
             }
         }
-        Ok(resp) if resp.status().as_u16() == 404 => {
-            info!("No previous root manifest at {root_url} (first deploy?)");
-            None
-        }
-        Ok(resp) => {
-            warn!(status = %resp.status(), "Unexpected response fetching previous root manifest; will treat as cold start");
+        Err(s3::error::S3Error::Http(404, _)) => {
+            info!(path = %root_path, "No previous root manifest on S3 (first deploy?)");
             None
         }
         Err(e) => {
-            warn!(error = %e, "Failed to fetch previous root manifest; will treat as cold start");
+            warn!(error = %e, "Failed to fetch previous root manifest from S3; will treat as cold start");
             None
         }
     }
