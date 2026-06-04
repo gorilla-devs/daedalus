@@ -721,13 +721,16 @@ async fn execute_rollback(
     notify_discord_notice("Rollback performed", &msg);
 
     // ------------------------------------------------------------------
-    // Step 8: update run_state.json.
+    // Step 8: update run_state.json. Tag the affected loaders as RolledBack —
+    // not Success — so the admin view can tell that a rollback (rather than a
+    // fresh build) set their current reference, and that latest_built_timestamp
+    // moved backward on purpose.
     // ------------------------------------------------------------------
     let mut run_state = crate::services::run_state::load(bucket).await;
     for (loader, reference) in &history_manifest.loaders {
         run_state
             .loader_mut(loader)
-            .record_success(&reference.timestamp, &reference.url);
+            .record_rollback(&reference.timestamp, &reference.url);
     }
     crate::services::run_state::save(bucket, &mut run_state).await;
 

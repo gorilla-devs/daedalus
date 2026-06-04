@@ -32,6 +32,10 @@ pub enum LoaderOutcome {
     FetchFailure,
     /// Circuit breaker was open; loader was not attempted.
     CircuitOpen,
+    /// An operator rollback repointed this loader's root reference at a
+    /// historical manifest. A healthy served state (not a failure), but
+    /// distinct from a fresh `Success` build.
+    RolledBack,
 }
 
 impl std::fmt::Display for LoaderOutcome {
@@ -43,6 +47,7 @@ impl std::fmt::Display for LoaderOutcome {
             }
             LoaderOutcome::FetchFailure => write!(f, "fetch_failure"),
             LoaderOutcome::CircuitOpen => write!(f, "circuit_open"),
+            LoaderOutcome::RolledBack => write!(f, "rolled_back"),
         }
     }
 }
@@ -92,6 +97,20 @@ impl LoaderRunState {
         self.last_attempt_at = Some(Utc::now());
         self.last_outcome = Some(outcome);
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+    }
+
+    /// Record an operator rollback that repointed this loader's root reference
+    /// at a historical manifest. Like a successful build this is a healthy
+    /// terminal state, so the failure streak resets, but the outcome is tagged
+    /// `RolledBack` rather than `Success` so observers can tell a rollback from
+    /// a fresh build (and that `latest_built_timestamp` moved backward on
+    /// purpose).
+    pub fn record_rollback(&mut self, timestamp: &str, path: &str) {
+        self.latest_built_timestamp = Some(timestamp.to_string());
+        self.latest_built_path = Some(path.to_string());
+        self.last_attempt_at = Some(Utc::now());
+        self.last_outcome = Some(LoaderOutcome::RolledBack);
+        self.consecutive_failures = 0;
     }
 }
 
@@ -218,5 +237,29 @@ mod tests {
             "sanity_gate_blocked"
         );
         assert_eq!(LoaderOutcome::CircuitOpen.to_string(), "circuit_open");
+        assert_eq!(LoaderOutcome::RolledBack.to_string(), "rolled_back");
+    }
+
+    #[test]
+    fn test_record_rollback_is_distinct_from_success() {
+        let mut s = LoaderRunState::default();
+        s.record_failure(LoaderOutcome::FetchFailure);
+        s.record_rollback("2026-01-01T00-00-00Z", "v5/manifests/forge/x.json");
+        // Tagged as a rollback, not a fresh successful build...
+        assert_eq!(s.last_outcome, Some(LoaderOutcome::RolledBack));
+        // ...but still a healthy state, so the failure streak resets.
+        assert_eq!(s.consecutive_failures, 0);
+        assert_eq!(
+            s.latest_built_timestamp.as_deref(),
+            Some("2026-01-01T00-00-00Z")
+        );
+    }
+
+    #[test]
+    fn test_rolled_back_serializes_snake_case() {
+        let json = serde_json::to_string(&LoaderOutcome::RolledBack).unwrap();
+        assert_eq!(json, "\"rolled_back\"");
+        let back: LoaderOutcome = serde_json::from_str("\"rolled_back\"").unwrap();
+        assert_eq!(back, LoaderOutcome::RolledBack);
     }
 }
