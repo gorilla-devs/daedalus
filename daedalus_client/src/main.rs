@@ -685,23 +685,50 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
         // §1.6: Apply pins uniformly. A pinned loader's root reference always
         // uses `pinned_to`, regardless of whether this cycle's fresh build
         // succeeded, tripped the sanity gate, failed to upload, or was
-        // circuit-open. The fresh manifest (if any) was still uploaded above
-        // for inspection; only the root pointer is overridden. This matches the
-        // documented pin contract in services/pins.rs.
+        // circuit-open. Only the root pointer is overridden; any fresh manifest
+        // that was built and passed its gate this cycle is still uploaded above
+        // for inspection. This matches the documented pin contract in
+        // services/pins.rs.
+        //
+        // The pinned manifest is verified to exist on S3 first: a pin pointing
+        // at a timestamp that isn't there (operator typo, or history that was
+        // pruned) would otherwise publish a root referencing a 404, silently
+        // dropping that loader for every client. On a missing or unverifiable
+        // target the pin is skipped — the carry-forward reference is kept — and
+        // a loud error is logged for an operator to correct.
         for (loader, pin) in pins.iter() {
-            info!(
-                loader = %loader,
-                pinned_to = %pin.pinned_to,
-                reason = %pin.reason,
-                "Loader is pinned — root manifest references the pinned timestamp"
+            let pinned_ref = services::cas::LoaderReference::new(
+                loader,
+                pin.pinned_to.clone(),
             );
-            loader_references.insert(
-                loader.clone(),
-                services::cas::LoaderReference::new(
-                    loader,
-                    pin.pinned_to.clone(),
-                ),
-            );
+            match CLIENT.head_object(&pinned_ref.url).await {
+                Ok(_) => {
+                    info!(
+                        loader = %loader,
+                        pinned_to = %pin.pinned_to,
+                        reason = %pin.reason,
+                        "Loader is pinned — root manifest references the pinned timestamp"
+                    );
+                    loader_references.insert(loader.clone(), pinned_ref);
+                }
+                Err(s3::error::S3Error::Http(404, _)) => {
+                    error!(
+                        loader = %loader,
+                        pinned_to = %pin.pinned_to,
+                        path = %pinned_ref.url,
+                        "Pinned loader manifest does not exist on S3 — refusing to publish a dangling root reference; keeping the carry-forward reference and leaving the pin in place for an operator to correct"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        loader = %loader,
+                        pinned_to = %pin.pinned_to,
+                        path = %pinned_ref.url,
+                        error = %e,
+                        "Failed to verify pinned loader manifest on S3 — keeping the carry-forward reference this cycle"
+                    );
+                }
+            }
         }
 
         if !loader_references.is_empty() {
