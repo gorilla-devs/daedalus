@@ -347,40 +347,55 @@ pub async fn process_pending(bucket: &s3::Bucket) {
     // ------------------------------------------------------------------
     // Force-run intents
     // ------------------------------------------------------------------
-    for req in &control.force_runs {
-        if already_processed.contains(&req.request_id) {
-            continue;
-        }
+    // Every force-run does the same thing: one full publish cycle for all
+    // loaders (approach (b) — see the module doc). So a poll that finds several
+    // unprocessed force-runs runs a single cycle and acks all of them against
+    // it, rather than running one identical full cycle per request (which would
+    // re-fetch every upstream and re-upload everything N times for no extra
+    // effect).
+    let pending_force_runs: Vec<&ForceRunRequest> = control
+        .force_runs
+        .iter()
+        .filter(|req| !already_processed.contains(&req.request_id))
+        .collect();
 
+    if !pending_force_runs.is_empty() {
+        let request_ids: Vec<&str> = pending_force_runs
+            .iter()
+            .map(|r| r.request_id.as_str())
+            .collect();
         info!(
-            request_id = %req.request_id,
-            loader = %req.loader,
-            "Processing force-run intent"
+            count = pending_force_runs.len(),
+            ?request_ids,
+            "Processing force-run intent(s) with a single publish cycle"
         );
 
-        // Approach (b): trigger a full publish cycle for all loaders.
-        // The requested `loader` is noted in the ack details for observability.
-        // A full cycle is used because non-Minecraft loaders depend on the
-        // Minecraft VersionManifest; loading it separately here would duplicate
-        // the dependency-fetch logic from run_publish_cycle.
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
             crate::MAX_CONCURRENT_UPLOADS,
         ));
         crate::run_publish_cycle(false, semaphore).await;
 
-        acks.push(AckEntry {
-            request_id: req.request_id.clone(),
-            kind: "force_run".to_string(),
-            processed_at: Utc::now(),
-            outcome: AckOutcome::success(),
-            details: serde_json::json!({
-                "requested_loader": req.loader,
-                "note": "full publish cycle executed (all loaders)"
-            }),
-        });
+        // Ack every request the cycle satisfied. The requested `loader` is kept
+        // in the ack details for observability even though execution always
+        // refreshes all loaders.
+        for req in &pending_force_runs {
+            acks.push(AckEntry {
+                request_id: req.request_id.clone(),
+                kind: "force_run".to_string(),
+                processed_at: Utc::now(),
+                outcome: AckOutcome::success(),
+                details: serde_json::json!({
+                    "requested_loader": req.loader,
+                    "note": "full publish cycle executed (all loaders); shared with any other force-runs pending in the same poll"
+                }),
+            });
+        }
         persist_acks(bucket, &mut acks).await;
 
-        info!(request_id = %req.request_id, loader = %req.loader, "Force-run intent processed");
+        info!(
+            count = pending_force_runs.len(),
+            "Force-run intent(s) processed"
+        );
     }
 
     // ------------------------------------------------------------------
