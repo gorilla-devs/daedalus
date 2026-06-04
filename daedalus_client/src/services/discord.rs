@@ -74,6 +74,11 @@ pub enum DiscordEvent {
         message: String,
         fields: HashMap<String, String>,
     },
+    /// A positive / informational operator notice that should reach the channel
+    /// without the warning styling of `Error` — e.g. a rollback that completed
+    /// successfully. Sent directly via `notify`, not through the tracing layer
+    /// (which only forwards `warn!`/`error!`).
+    Notice { title: String, message: String },
 }
 
 /// Notifier — cheap clone, send freely.
@@ -596,6 +601,13 @@ fn event_to_embed(event: DiscordEvent) -> Embed {
                 fields: embed_fields,
             }
         }
+        DiscordEvent::Notice { title, message } => Embed {
+            title: format!("✅ {title}"),
+            description: truncate_for_discord(message, DISCORD_DESC_MAX),
+            color: 0x2ecc71, // green
+            timestamp: Utc::now().to_rfc3339(),
+            fields: vec![],
+        },
     }
 }
 
@@ -647,6 +659,18 @@ mod tests {
         });
         assert!(embed.title.contains("forge"));
         assert!(embed.title.contains("1.21.4"));
+    }
+
+    #[test]
+    fn test_event_to_embed_notice_is_green_not_warning() {
+        let embed = event_to_embed(DiscordEvent::Notice {
+            title: "Rollback performed".to_string(),
+            message: "root manifest restored to history entry `x`".to_string(),
+        });
+        assert!(embed.title.starts_with("✅"));
+        assert!(embed.title.contains("Rollback performed"));
+        // Green — distinct from the amber/red used for Error events.
+        assert_eq!(embed.color, 0x2ecc71);
     }
 
     #[tokio::test]

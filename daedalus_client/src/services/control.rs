@@ -483,7 +483,7 @@ pub async fn process_pending(bucket: &s3::Bucket) {
                     let msg = e.to_string();
                     // `error!` is auto-forwarded to Discord by DiscordTracingLayer,
                     // so this single log both records and alerts — no separate
-                    // notify_discord_error call (which would double-report).
+                    // Discord notification (which would double-report).
                     error!(
                         request_id = %req.request_id,
                         history_timestamp = %req.history_timestamp,
@@ -718,7 +718,7 @@ async fn execute_rollback(
          pinned via pins.json keep referencing the rolled-back timestamp until \
          unpinned; unpinned loaders resume updating on the next publish cycle."
     );
-    notify_discord_error("rollback_performed", &msg);
+    notify_discord_notice("Rollback performed", &msg);
 
     // ------------------------------------------------------------------
     // Step 8: update run_state.json.
@@ -743,20 +743,15 @@ async fn execute_rollback(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Fire a Discord notification via the global notifier (if configured).
-/// `key` is the dedup key used by `DiscordNotifier` to suppress repeated
-/// identical alerts.
-fn notify_discord_error(key: &str, message: &str) {
+/// Fire a positive Discord notice (rendered green, not warning-styled) via the
+/// global notifier, if configured. Used for successful operator actions such as
+/// a completed rollback. Goes straight to the notifier rather than through a
+/// `warn!`/`error!`, which the tracing layer would forward as an alert.
+fn notify_discord_notice(title: &str, message: &str) {
     if let Some(notifier) = crate::services::discord::notifier() {
-        notifier.notify(DiscordEvent::Error {
-            level: "warn".to_string(),
-            target: "daedalus_client::services::control".to_string(),
+        notifier.notify(DiscordEvent::Notice {
+            title: title.to_string(),
             message: message.to_string(),
-            fields: {
-                let mut m = std::collections::HashMap::new();
-                m.insert("dedup_key".to_string(), key.to_string());
-                m
-            },
         });
     }
 }
