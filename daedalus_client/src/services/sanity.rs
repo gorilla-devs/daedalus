@@ -162,19 +162,20 @@ fn floor_90_percent(n: usize) -> usize {
     (n as f64 * 0.9).floor() as usize
 }
 
-/// Extract the set of Minecraft version IDs from a non-minecraft loader manifest.
+/// Extract the set of Minecraft version IDs a non-minecraft loader manifest
+/// covers.
 ///
-/// These loaders embed the MC version either as:
-/// - Fabric/Quilt: objects with a `"gameVersions"` array of strings, OR
-///   objects with a `"gameVersion"` string field.
-/// - Forge/NeoForge: simple entries with an `"id"` like `"1.20.1-47.3.0"` —
-///   we extract the prefix before the first `-`.
-/// - Any top-level array where each element has a `"gameVersion"` string field.
+/// Forge, NeoForge, Fabric and Quilt all serialise `Vec<daedalus::modded::Version>`,
+/// where every top-level entry is `{ "id": "<mc version>", "stable": …,
+/// "loaders": [ … ] }` — the `id` IS the Minecraft version and the actual
+/// loader builds are nested under `loaders`. A version only *covers* its
+/// Minecraft id if it carries at least one loader build, so entries with an
+/// empty `loaders` array are ignored; that is what lets this gate catch a run
+/// that keeps the MC-version skeleton but loses the builds inside it.
 ///
-/// We try all known patterns and union the results. If we find nothing that
-/// looks like MC IDs (e.g. a simple `[{id, hash, size}]` array), we return an
-/// empty set so the caller skips the MC-coverage check rather than raising a
-/// false positive.
+/// Any element that doesn't match this shape is skipped, and a manifest that
+/// yields nothing returns an empty set so the caller skips the coverage check
+/// rather than raising a false positive.
 fn extract_mc_ids(versions: &Value) -> Vec<String> {
     let Value::Array(arr) = versions else {
         return vec![];
@@ -187,34 +188,14 @@ fn extract_mc_ids(versions: &Value) -> Vec<String> {
             continue;
         };
 
-        // Pattern A: `gameVersions: ["1.20.1", ...]`
-        if let Some(Value::Array(gvs)) = obj.get("gameVersions") {
-            for gv in gvs {
-                if let Some(s) = gv.as_str() {
-                    ids.push(s.to_string());
-                }
+        // Modded loader entry: { id: "<mc>", loaders: [ … ] }. Count the
+        // Minecraft id only when it actually carries a loader build.
+        if let (Some(Value::String(id)), Some(Value::Array(loaders))) =
+            (obj.get("id"), obj.get("loaders"))
+        {
+            if !loaders.is_empty() {
+                ids.push(id.clone());
             }
-            continue;
-        }
-
-        // Pattern B: `gameVersion: "1.20.1"`
-        if let Some(Value::String(gv)) = obj.get("gameVersion") {
-            ids.push(gv.clone());
-            continue;
-        }
-
-        // Pattern C: Forge/NeoForge simple entries — `id: "1.20.1-47.3.0"`
-        // extract the part before the first `-`.
-        if let Some(Value::String(id)) = obj.get("id") {
-            // Only treat it as a MC ID if it looks like a version string
-            // (contains dots and doesn't look like a plain loader version
-            // like "0.15.3").
-            let candidate = id.split('-').next().unwrap_or(id.as_str());
-            if candidate.contains('.') && candidate != id.as_str() {
-                // The full id had a `-` separator, so the prefix is the MC part.
-                ids.push(candidate.to_string());
-            }
-            // If there's no `-`, this is a plain loader version — no MC ID to extract.
         }
     }
 
@@ -331,42 +312,64 @@ mod tests {
 
     // ── invariant 2: minecraft coverage ──────────────────────────────────────
 
+    /// Build one entry of the real modded-loader manifest shape
+    /// (`daedalus::modded::Version`): a top-level MC `id` with its loader builds
+    /// nested under `loaders`. An empty `builds` slice models an MC version that
+    /// kept its slot but lost every loader build.
+    fn modded_version(mc: &str, builds: &[&str]) -> serde_json::Value {
+        json!({
+            "id": mc,
+            "stable": true,
+            "loaders": builds
+                .iter()
+                .map(|id| json!({ "id": id, "url": "https://example/x.json", "stable": true }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
     #[test]
     fn test_mc_coverage_ok() {
-        // Fabric-style: previous covers mc 1.20.1; new still covers it.
+        // Previous covers mc 1.20.1 / 1.19.4; new still covers both (and adds one).
         let prev = make_manifest(
             "fabric",
-            json!([{"gameVersion": "1.20.1"}, {"gameVersion": "1.19.4"}]),
+            json!([
+                modded_version("1.20.1", &["0.15.0"]),
+                modded_version("1.19.4", &["0.15.0"]),
+            ]),
         );
         let new = make_manifest(
             "fabric",
-            json!([{"gameVersion": "1.20.1"}, {"gameVersion": "1.19.4"}, {"gameVersion": "1.21.0"}]),
+            json!([
+                modded_version("1.20.1", &["0.15.1"]),
+                modded_version("1.19.4", &["0.15.1"]),
+                modded_version("1.21.0", &["0.16.0"]),
+            ]),
         );
         assert_eq!(check_loader_health("fabric", &new, Some(&prev)), Ok(()));
     }
 
     #[test]
     fn test_mc_coverage_drop_fails() {
-        // Previous covers 10 distinct MC versions across 20 entries (2 loader
-        // versions per MC version).  New has 20 entries too (passes the version-count
-        // check) but only covers 4 of the 10 MC versions → coverage drop fires.
-        let prev_versions: Vec<serde_json::Value> = (0..10)
-            .flat_map(|i| {
-                vec![
-                    json!({"gameVersion": format!("1.{i}.0")}),
-                    json!({"gameVersion": format!("1.{i}.0")}),
-                ]
-            })
-            .collect();
-        let prev = make_manifest("forge", json!(prev_versions));
+        // Previous covers 10 MC versions, each with a build. New keeps all 10
+        // top-level entries (so the version-count gate passes) but 6 of them
+        // have an empty `loaders` array, so only 4 MC versions are actually
+        // covered → coverage drop fires.
+        let prev = make_manifest(
+            "forge",
+            json!((0..10)
+                .map(|i| modded_version(&format!("1.{i}.0"), &["1.0.0"]))
+                .collect::<Vec<_>>()),
+        );
 
-        // New also has 20 entries (≥ 18 = 90% of 20) but maps only 4 MC IDs.
-        let new_versions: Vec<serde_json::Value> = (0..4)
-            .flat_map(|i| {
-                (0..5).map(move |_| json!({"gameVersion": format!("1.{i}.0")}))
-            })
-            .collect();
-        let new = make_manifest("forge", json!(new_versions));
+        let new = make_manifest(
+            "forge",
+            json!((0..10)
+                .map(|i| {
+                    let builds: &[&str] = if i < 4 { &["1.0.0"] } else { &[] };
+                    modded_version(&format!("1.{i}.0"), builds)
+                })
+                .collect::<Vec<_>>()),
+        );
 
         let result = check_loader_health("forge", &new, Some(&prev));
         assert!(
@@ -383,18 +386,23 @@ mod tests {
     }
 
     #[test]
-    fn test_forge_id_pattern_extraction() {
-        // Forge entries use `id: "1.20.1-47.3.0"` — we must extract "1.20.1".
-        let prev_versions: Vec<serde_json::Value> = (1..11)
-            .map(|i| json!({"id": format!("1.{i}.0-47.0.{i}"), "hash": "aaa", "size": 1}))
-            .collect();
-        let prev = make_manifest("forge", json!(prev_versions));
-
-        // new covers 9 of the same 10 MC IDs → ok (90%)
-        let new_versions: Vec<serde_json::Value> = (1..10)
-            .map(|i| json!({"id": format!("1.{i}.0-47.0.{i}"), "hash": "aaa", "size": 1}))
-            .collect();
-        let new = make_manifest("forge", json!(new_versions));
+    fn test_nested_modded_shape_is_understood() {
+        // Regression guard for the dead-gate bug: the real shape nests the loader
+        // id (e.g. "1.20.1-47.0.3") under a top-level MC `id` ("1.20.1"). The
+        // coverage gate must key off the top-level MC id, not the nested loader
+        // id. prev covers 10 MC ids; new covers 9 of them → 90% → ok.
+        let prev = make_manifest(
+            "forge",
+            json!((1..11)
+                .map(|i| modded_version(&format!("1.{i}.0"), &["47.0.1"]))
+                .collect::<Vec<_>>()),
+        );
+        let new = make_manifest(
+            "forge",
+            json!((1..10)
+                .map(|i| modded_version(&format!("1.{i}.0"), &["47.0.1"]))
+                .collect::<Vec<_>>()),
+        );
         assert_eq!(check_loader_health("forge", &new, Some(&prev)), Ok(()));
     }
 
