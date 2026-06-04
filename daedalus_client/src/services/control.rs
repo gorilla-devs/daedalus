@@ -284,16 +284,58 @@ pub async fn load(bucket: &s3::Bucket) -> ControlFile {
     }
 }
 
-/// Load `control_acks.json` from S3.  Returns `ControlAcks::new()` on 404 or
-/// any parse/fetch error.
-pub async fn load_acks(bucket: &s3::Bucket) -> ControlAcks {
-    crate::services::s3_json::load_or_else(
-        bucket,
-        &acks_s3_path(),
-        "control acks",
-        ControlAcks::new,
-    )
-    .await
+/// Outcome of loading `control_acks.json` — the idempotency log.
+enum ControlAcksLoad {
+    /// Log loaded from S3, or absent (404 → empty). Safe to process intents.
+    Loaded(ControlAcks),
+    /// The log exists but could not be read (parse error, or a fetch error that
+    /// leaves us unable to prove what has already run). The caller must skip
+    /// this poll: processing intents without the log would re-execute
+    /// already-applied rollbacks / force-runs and then overwrite the history
+    /// with a fresh empty log.
+    Unreadable,
+}
+
+/// Load `control_acks.json` from S3.
+///
+/// A 404 yields an empty log (first deploy). Unlike the advisory pins/run-state
+/// files, a *parse* error here is not treated as "absent": silently defaulting
+/// to an empty log would drop the idempotency guarantee, so it (and a non-404
+/// fetch error) returns `Unreadable` and is logged loudly, leaving the caller to
+/// skip the poll rather than re-run intents against a lost log.
+async fn load_acks(bucket: &s3::Bucket) -> ControlAcksLoad {
+    let path = acks_s3_path();
+    match bucket.get_object(&path).await {
+        Ok(resp) => match serde_json::from_slice::<ControlAcks>(resp.bytes()) {
+            Ok(acks) => {
+                info!(path = %path, "Loaded control acks from S3");
+                ControlAcksLoad::Loaded(acks)
+            }
+            Err(e) => {
+                error!(
+                    path = %path,
+                    error = %e,
+                    "control_acks.json exists but could not be parsed; skipping ALL control \
+                     processing this poll to avoid re-executing already-applied intents and \
+                     overwriting the ack history. Inspect or remove the file on S3 to resume."
+                );
+                ControlAcksLoad::Unreadable
+            }
+        },
+        Err(s3::error::S3Error::Http(404, _)) => {
+            info!(path = %path, "No control acks on S3 yet; starting a fresh log");
+            ControlAcksLoad::Loaded(ControlAcks::new())
+        }
+        Err(e) => {
+            warn!(
+                path = %path,
+                error = %e,
+                "Failed to fetch control_acks.json; skipping control processing this poll \
+                 rather than risk re-executing intents against an unknown ack log"
+            );
+            ControlAcksLoad::Unreadable
+        }
+    }
 }
 
 /// Persist `control_acks.json` to S3.
@@ -337,7 +379,11 @@ async fn persist_acks(bucket: &s3::Bucket, acks: &mut ControlAcks) {
 /// `outcome: { error: "..." }`; daedalus always continues to the next intent.
 pub async fn process_pending(bucket: &s3::Bucket) {
     let control = load(bucket).await;
-    let mut acks = load_acks(bucket).await;
+    let mut acks = match load_acks(bucket).await {
+        ControlAcksLoad::Loaded(acks) => acks,
+        // Idempotency log unreadable — skip this poll entirely (see load_acks).
+        ControlAcksLoad::Unreadable => return,
+    };
     let already_processed = acks
         .processed_ids()
         .into_iter()
