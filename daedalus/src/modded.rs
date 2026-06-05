@@ -36,8 +36,31 @@ where
 {
     let s = String::deserialize(deserializer)?;
 
+    // Forge has published version.json files with malformed offsets like
+    // "+0:00" (single-digit hour). Normalize trailing "[+-]H:MM" to
+    // "[+-]0H:MM" so chrono's strict parsers accept it.
+    let normalized = {
+        let bytes = s.as_bytes();
+        let n = bytes.len();
+        if n >= 5
+            && matches!(bytes[n - 5], b'+' | b'-')
+            && bytes[n - 4].is_ascii_digit()
+            && bytes[n - 3] == b':'
+            && bytes[n - 2].is_ascii_digit()
+            && bytes[n - 1].is_ascii_digit()
+        {
+            let mut fixed = String::with_capacity(n + 1);
+            fixed.push_str(&s[..n - 4]);
+            fixed.push('0');
+            fixed.push_str(&s[n - 4..]);
+            fixed
+        } else {
+            s.clone()
+        }
+    };
+
     // Try parsing with timezone first (standard ISO 8601)
-    serde_json::from_str::<DateTime<Utc>>(&format!("\"{s}\""))
+    serde_json::from_str::<DateTime<Utc>>(&format!("\"{normalized}\""))
         // Fallback: parse as naive datetime (no timezone) and assume UTC
         // Uses %.f to accept any number of fractional seconds (not just 9)
         .or_else(|_| {
