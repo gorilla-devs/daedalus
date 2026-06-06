@@ -108,8 +108,15 @@ pub fn check_loader_health(
 
     // Invariant 2: Minecraft ID coverage for non-minecraft loaders.
     if loader != "minecraft" {
-        let prev_mc_ids = extract_mc_ids(&prev.versions);
-        let new_mc_ids = extract_mc_ids(&new.versions);
+        // Fabric and Quilt nest every loader build under a single placeholder
+        // entry and emit each real Minecraft version as its own empty-`loaders`
+        // entry, so for them an empty-loaders entry still counts as covering its
+        // MC id. Forge and NeoForge carry per-MC builds, so there an
+        // empty-loaders entry means that MC version lost all its builds and must
+        // not count as covered.
+        let include_empty_loaders = matches!(loader, "fabric" | "quilt");
+        let prev_mc_ids = extract_mc_ids(&prev.versions, include_empty_loaders);
+        let new_mc_ids = extract_mc_ids(&new.versions, include_empty_loaders);
 
         if !prev_mc_ids.is_empty() {
             let covered = prev_mc_ids
@@ -167,16 +174,26 @@ fn floor_90_percent(n: usize) -> usize {
 ///
 /// Forge, NeoForge, Fabric and Quilt all serialise `Vec<daedalus::modded::Version>`,
 /// where every top-level entry is `{ "id": "<mc version>", "stable": …,
-/// "loaders": [ … ] }` — the `id` IS the Minecraft version and the actual
-/// loader builds are nested under `loaders`. A version only *covers* its
-/// Minecraft id if it carries at least one loader build, so entries with an
-/// empty `loaders` array are ignored; that is what lets this gate catch a run
-/// that keeps the MC-version skeleton but loses the builds inside it.
+/// "loaders": [ … ] }` — the `id` IS the Minecraft version.
+///
+/// The two loader families differ in where the builds live, so
+/// `include_empty_loaders` selects the right coverage rule:
+///
+/// * Forge / NeoForge nest a per-Minecraft-version build list under `loaders`,
+///   so a version only *covers* its id when it carries at least one build
+///   (`include_empty_loaders == false`). That lets the gate catch a run that
+///   keeps the MC-version skeleton but loses the builds inside it.
+/// * Fabric / Quilt nest every build under a single placeholder entry and emit
+///   each real Minecraft version as its own entry with an EMPTY `loaders` array
+///   (builds are resolved via `version_hashes` at the launcher). For those an
+///   empty-loaders entry still declares MC coverage, so they pass
+///   `include_empty_loaders == true`; otherwise the gate would only ever see
+///   the single placeholder id and be a permanent no-op.
 ///
 /// Any element that doesn't match this shape is skipped, and a manifest that
 /// yields nothing returns an empty set so the caller skips the coverage check
 /// rather than raising a false positive.
-fn extract_mc_ids(versions: &Value) -> Vec<String> {
+fn extract_mc_ids(versions: &Value, include_empty_loaders: bool) -> Vec<String> {
     let Value::Array(arr) = versions else {
         return vec![];
     };
@@ -193,7 +210,7 @@ fn extract_mc_ids(versions: &Value) -> Vec<String> {
         if let (Some(Value::String(id)), Some(Value::Array(loaders))) =
             (obj.get("id"), obj.get("loaders"))
         {
-            if !loaders.is_empty() {
+            if include_empty_loaders || !loaders.is_empty() {
                 ids.push(id.clone());
             }
         }
@@ -404,6 +421,77 @@ mod tests {
                 .collect::<Vec<_>>()),
         );
         assert_eq!(check_loader_health("forge", &new, Some(&prev)), Ok(()));
+    }
+
+    #[test]
+    fn test_fabric_quilt_placeholder_shape_coverage_is_checked() {
+        // Fabric/Quilt store every loader build under ONE placeholder entry
+        // (non-empty `loaders`) and emit each real Minecraft version as its own
+        // entry with an EMPTY `loaders` array. The coverage gate must count
+        // those empty-loaders MC entries for fabric/quilt — otherwise it only
+        // ever sees the single placeholder id and is a permanent no-op. Here the
+        // entry COUNT is preserved (so invariant 1 passes) but the specific MC
+        // ids change, which only the coverage gate can catch.
+        let placeholder = json!({
+            "id": "${gameVersion}", "stable": true,
+            "loaders": [{"id": "0.16.0", "url": "https://example/x.json", "stable": true}],
+        });
+        let mc = |v: &str| json!({ "id": v, "stable": true, "loaders": [] });
+
+        let prev = make_manifest(
+            "fabric",
+            json!([
+                placeholder.clone(),
+                mc("1.0.0"), mc("1.1.0"), mc("1.2.0"), mc("1.3.0"), mc("1.4.0"),
+                mc("1.5.0"), mc("1.6.0"), mc("1.7.0"), mc("1.8.0"), mc("1.9.0"),
+            ]),
+        );
+        // Same entry count (11), but 6 of the MC ids are replaced, so only 5 of
+        // the 11 previous ids (placeholder + 1.0.0..1.3.0) survive → coverage
+        // 5/11 < floor(0.9 * 11) = 9 → drop fires.
+        let new = make_manifest(
+            "fabric",
+            json!([
+                placeholder,
+                mc("1.0.0"), mc("1.1.0"), mc("1.2.0"), mc("1.3.0"),
+                mc("9.0.0"), mc("9.1.0"), mc("9.2.0"), mc("9.3.0"), mc("9.4.0"), mc("9.5.0"),
+            ]),
+        );
+
+        let result = check_loader_health("fabric", &new, Some(&prev));
+        assert!(
+            matches!(
+                result,
+                Err(SanityViolation::MinecraftCoverageDrop {
+                    covered: 5,
+                    previous_mc_ids: 11,
+                    ..
+                })
+            ),
+            "Expected MinecraftCoverageDrop(covered=5, prev=11) for the fabric \
+             placeholder shape, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_fabric_quilt_placeholder_shape_ok_when_ids_retained() {
+        // Same placeholder shape, but the new manifest keeps every previous MC
+        // id (and adds one) → coverage holds and the gate passes.
+        let placeholder = json!({
+            "id": "${gameVersion}", "stable": true,
+            "loaders": [{"id": "0.16.0", "url": "https://example/x.json", "stable": true}],
+        });
+        let mc = |v: &str| json!({ "id": v, "stable": true, "loaders": [] });
+
+        let prev = make_manifest(
+            "quilt",
+            json!([placeholder.clone(), mc("1.20.1"), mc("1.19.4")]),
+        );
+        let new = make_manifest(
+            "quilt",
+            json!([placeholder, mc("1.20.1"), mc("1.19.4"), mc("1.21.0")]),
+        );
+        assert_eq!(check_loader_health("quilt", &new, Some(&prev)), Ok(()));
     }
 
     // ── invariant 3: minecraft latest release ─────────────────────────────────
