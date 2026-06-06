@@ -544,10 +544,18 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
             .unwrap_or_default();
         let mut upload_failures: Vec<String> = Vec::new();
 
-        // §1.6: load pins once per cycle from S3. Missing file is treated as
-        // empty. (run-state was loaded at the top of the cycle so retrieval-
-        // phase outcomes could be recorded.)
-        let pins = services::pins::load(&CLIENT).await;
+        // §1.6: load pins once per cycle from S3. A 404 means no pins are
+        // active; a transient fetch error or a parse failure is "unknown pin
+        // state" and holds back the root publish (below) rather than silently
+        // dropping an active pin. (run-state was loaded at the top of the cycle
+        // so retrieval-phase outcomes could be recorded.)
+        let (pins, pins_unreadable) =
+            match services::pins::load_checked(&CLIENT).await {
+                services::pins::PinsLoad::Loaded(pins) => (pins, false),
+                services::pins::PinsLoad::Unreadable => {
+                    (services::pins::Pins::new(), true)
+                }
+            };
 
         // §1.6: Warn about pins that have been active for too long so
         // they aren't silently forgotten (the DiscordTracingLayer forwards
@@ -762,15 +770,18 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
             }
         }
 
-        if previous_root_unreadable {
+        if previous_root_unreadable || pins_unreadable {
             error!(
-                "Holding back the root manifest publish this cycle: the \
-                 previously-published root was unreadable on S3 (transient fetch \
-                 error or parse failure), so carry-forward can't be guaranteed and \
-                 publishing a fresh root could silently drop any loader that lacks \
-                 a fresh reference this cycle. Loader manifests built this cycle \
-                 were still uploaded; the existing root stays live and will be \
-                 repointed next cycle."
+                previous_root_unreadable,
+                pins_unreadable,
+                "Holding back the root manifest publish this cycle: admin state \
+                 was unreadable on S3 (the previous root and/or pins.json — a \
+                 transient fetch error or a parse failure). Carry-forward and pin \
+                 overrides can't be guaranteed, so publishing a fresh root could \
+                 silently drop a loader that lacks a fresh reference or republish a \
+                 build an operator pinned away from. Loader manifests built this \
+                 cycle were still uploaded; the existing root stays live and will \
+                 be repointed next cycle."
             );
         } else if !loader_references.is_empty() {
             let root_manifest =

@@ -14,7 +14,7 @@ use crate::services::cas::CAS_VERSION;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// S3 path where the pins file lives.
 pub fn pins_s3_path() -> String {
@@ -111,19 +111,46 @@ impl Pins {
     }
 }
 
-/// Load pins from S3.
+/// Result of attempting to load pins, distinguishing an unreadable file from an
+/// absent one.
+pub enum PinsLoad {
+    /// Pins were read — possibly empty, on a 404 first deploy.
+    Loaded(Pins),
+    /// A non-404 fetch error or a parse failure. The publish loop must NOT
+    /// treat this as "no pins active": doing so would republish a rolled-back
+    /// loader's fresh build, defeating the pin. The loop holds back the root
+    /// commit this cycle instead.
+    Unreadable,
+}
+
+/// Load pins from S3, distinguishing an unreadable file from an absent one.
 ///
-/// Returns an empty `Pins` on 404 (no pins set yet) or any parse / fetch
-/// error.  A missing pins file is not an error — it just means no pins are
-/// active.
-pub async fn load(bucket: &s3::Bucket) -> Pins {
-    crate::services::s3_json::load_or_else(
-        bucket,
-        &pins_s3_path(),
-        "pins",
-        Pins::new,
-    )
-    .await
+/// A 404 is "no pins set" (`Loaded` with an empty map). A parse failure or a
+/// non-404 fetch error is `Unreadable`: unlike a 404 it must not be silently
+/// treated as "no pins active", or a transient blip would drop every active pin
+/// for the cycle and republish the very build an operator rolled back from.
+pub async fn load_checked(bucket: &s3::Bucket) -> PinsLoad {
+    let path = pins_s3_path();
+    match bucket.get_object(&path).await {
+        Ok(resp) => match serde_json::from_slice::<Pins>(resp.bytes()) {
+            Ok(pins) => {
+                info!(path = %path, count = pins.len(), "Loaded pins from S3");
+                PinsLoad::Loaded(pins)
+            }
+            Err(e) => {
+                error!(path = %path, error = %e, "pins.json exists but could not be parsed; holding back the root publish this cycle rather than dropping an active pin");
+                PinsLoad::Unreadable
+            }
+        },
+        Err(s3::error::S3Error::Http(404, _)) => {
+            info!(path = %path, "No pins on S3 yet; treating as no active pins");
+            PinsLoad::Loaded(Pins::new())
+        }
+        Err(e) => {
+            warn!(path = %path, error = %e, "Failed to fetch pins.json; holding back the root publish this cycle rather than dropping an active pin");
+            PinsLoad::Unreadable
+        }
+    }
 }
 
 /// Persist pins to S3.
