@@ -581,15 +581,35 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                     // Read the sanity-gate baseline from S3, not the CDN, for the
                     // same read-after-write reason as the root manifest above —
                     // `prev_ref.url` is the relative S3 key for the manifest.
+                    //
+                    // A 404 means there is genuinely no baseline yet, so the gate
+                    // is skipped (nothing to compare against). A transient fetch
+                    // error or a parse failure is different: skipping the gate
+                    // there would let an unverified — possibly collapsed —
+                    // manifest publish. In that case keep the previous reference
+                    // live through carry-forward (the seed already holds it) and
+                    // skip this loader's upload, retrying next cycle.
                     match CLIENT.get_object(&prev_ref.url).await {
-                        Ok(resp) => serde_json::from_slice::<
+                        Ok(resp) => match serde_json::from_slice::<
                             services::cas::LoaderManifest,
                         >(resp.bytes())
-                        .ok(),
+                        {
+                            Ok(manifest) => Some(manifest),
+                            Err(e) => {
+                                error!(loader = %loader, error = %e, "Previous loader manifest exists but could not be parsed; keeping the carry-forward reference and skipping this loader's upload rather than bypassing the sanity gate");
+                                run_state.loader_mut(loader).record_failure(
+                                    services::run_state::LoaderOutcome::FetchFailure,
+                                );
+                                continue;
+                            }
+                        },
                         Err(s3::error::S3Error::Http(404, _)) => None,
                         Err(e) => {
-                            warn!(loader = %loader, error = %e, "Failed to fetch previous loader manifest from S3; skipping sanity check");
-                            None
+                            error!(loader = %loader, error = %e, "Failed to fetch previous loader manifest from S3; keeping the carry-forward reference and skipping this loader's upload rather than bypassing the sanity gate");
+                            run_state.loader_mut(loader).record_failure(
+                                services::run_state::LoaderOutcome::FetchFailure,
+                            );
+                            continue;
                         }
                     }
                 } else {
