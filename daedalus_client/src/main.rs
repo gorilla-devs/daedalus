@@ -523,7 +523,18 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
         // would silently drop Forge from the published root manifest (clients
         // would stop seeing Forge support entirely), which directly violates
         // the "if Forge breaks, everything else keeps updating" contract.
-        let previous_root_manifest = fetch_previous_root_manifest().await;
+        let previous_root = fetch_previous_root_manifest().await;
+        // A transiently-unreadable previous root means the carry-forward seed
+        // can't be trusted, so this cycle must not repoint the root (see the
+        // root-publish guard below). Loader manifests are still built and
+        // uploaded; only the atomic root commit is held back.
+        let previous_root_unreadable =
+            matches!(previous_root, PreviousRoot::Unreadable);
+        let previous_root_manifest: Option<services::cas::RootManifest> =
+            match previous_root {
+                PreviousRoot::Loaded(m) => Some(m),
+                PreviousRoot::Absent | PreviousRoot::Unreadable => None,
+            };
         let mut loader_references: std::collections::BTreeMap<
             String,
             services::cas::LoaderReference,
@@ -751,7 +762,17 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
             }
         }
 
-        if !loader_references.is_empty() {
+        if previous_root_unreadable {
+            error!(
+                "Holding back the root manifest publish this cycle: the \
+                 previously-published root was unreadable on S3 (transient fetch \
+                 error or parse failure), so carry-forward can't be guaranteed and \
+                 publishing a fresh root could silently drop any loader that lacks \
+                 a fresh reference this cycle. Loader manifests built this cycle \
+                 were still uploaded; the existing root stays live and will be \
+                 repointed next cycle."
+            );
+        } else if !loader_references.is_empty() {
             let root_manifest =
                 services::cas::RootManifest::new(loader_references);
             let root_path =
@@ -1068,10 +1089,28 @@ pub fn format_url(path: &str) -> String {
 
 pub use services::download::{download_file, download_file_mirrors};
 
-/// Fetch the previously-published root manifest so we can carry forward
-/// loader references on partial-failure cycles. Failure here is non-fatal
-/// — we just lose carry-forward and the cycle behaves like a cold start.
-async fn fetch_previous_root_manifest() -> Option<services::cas::RootManifest> {
+/// Outcome of reading the previously-published root manifest at the start of a
+/// publish cycle.
+enum PreviousRoot {
+    /// The root was read and parsed; seed carry-forward and sanity baselines
+    /// from it.
+    Loaded(services::cas::RootManifest),
+    /// No root exists yet (404) — a genuine cold start / first deploy.
+    Absent,
+    /// The root exists but could not be fetched (transient error) or parsed.
+    /// Carry-forward can't be trusted this cycle.
+    Unreadable,
+}
+
+/// Fetch the previously-published root manifest so we can carry forward loader
+/// references on partial-failure cycles.
+///
+/// Distinguishes a genuine cold start (404 → `Absent`) from a root that exists
+/// but couldn't be fetched or parsed (`Unreadable`). The latter must NOT be
+/// treated as a cold start: that empties the carry-forward seed, and any loader
+/// that gate-blocks, fails to upload, or is circuit-open this cycle would then
+/// be dropped from the freshly-published root entirely.
+async fn fetch_previous_root_manifest() -> PreviousRoot {
     let root_path =
         format!("v{}/manifest.json", crate::services::cas::CAS_VERSION);
     // Read from S3 (the authoritative store, with read-after-write consistency)
@@ -1088,21 +1127,21 @@ async fn fetch_previous_root_manifest() -> Option<services::cas::RootManifest> {
                         loader_count = m.loaders.len(),
                         "Loaded previous root manifest from S3 for carry-forward"
                     );
-                    Some(m)
+                    PreviousRoot::Loaded(m)
                 }
                 Err(e) => {
-                    warn!(error = %e, "Previous root manifest exists but couldn't parse; will treat as cold start");
-                    None
+                    error!(error = %e, "Previous root manifest exists but couldn't parse; holding back the root publish this cycle to avoid dropping loaders");
+                    PreviousRoot::Unreadable
                 }
             }
         }
         Err(s3::error::S3Error::Http(404, _)) => {
             info!(path = %root_path, "No previous root manifest on S3 (first deploy?)");
-            None
+            PreviousRoot::Absent
         }
         Err(e) => {
-            warn!(error = %e, "Failed to fetch previous root manifest from S3; will treat as cold start");
-            None
+            error!(error = %e, "Failed to fetch previous root manifest from S3; holding back the root publish this cycle to avoid dropping loaders");
+            PreviousRoot::Unreadable
         }
     }
 }
