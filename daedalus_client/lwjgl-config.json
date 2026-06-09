@@ -1,8 +1,8 @@
 {
   "accept": [
     {
-      "match": "fcf37d03db6ad0b457f9c23a5bfe91f5b96975b2",
-      "_comment": "#3.4.1 (2026-03-24 12:11:04 UTC) natives: [] Split: true"
+      "match": "87d20523db83ea582e37ca0034647803ff62aa3e",
+      "_comment": "#3.4.1 (2026-06-08 13:04:25 UTC) natives: [] Split: true. 26.2-pre variant: includes lwjgl-vulkan/-shaderc/-spvc/-vma and the unsafe core jar (drop-in core build, verified same base classes); serves every version that suggests 3.4.1."
     },
     {
       "match": "2eb6e2bfa1f9435e1b414c08cf8471f75d4173f2",
@@ -70,6 +70,14 @@
     }
   ],
   "reject": [
+    {
+      "match": "820490e4cebf628aa23dbca3e058b225ff6e4c73",
+      "_comment": "#3.4.1 (2026-05-19 15:19:20 UTC) natives: [] Split: true. 26.2-snapshot variant: has the Vulkan modules but the plain core jar; superseded by the 26.2-pre variant."
+    },
+    {
+      "match": "fcf37d03db6ad0b457f9c23a5bfe91f5b96975b2",
+      "_comment": "#3.4.1 (2026-03-24 12:11:04 UTC) natives: [] Split: true. 26.1 variant without the Vulkan modules; superseded by the 26.2-pre variant."
+    },
     {
       "match": "465d40d8db05f5e04055ddf0582ab143d10e0e9f",
       "_comment": "#3.3.3 (2024-05-29 12:04:43 UTC) natives: [] Split: true",
