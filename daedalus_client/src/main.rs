@@ -300,9 +300,13 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
             let mut publish_timer = tokio::time::interval(Duration::from_secs(UPDATE_INTERVAL_SECS));
             let mut control_timer = tokio::time::interval(Duration::from_secs(control_poll_interval_secs));
-            // MissedTickBehavior::Delay: if a control tick is missed (e.g. because
-            // a publish cycle was running), just schedule the next tick relative to
-            // now rather than firing immediately N times to catch up.
+            // MissedTickBehavior::Delay on BOTH timers: a missed tick (because a
+            // long publish cycle was running) schedules the next tick relative to
+            // now instead of firing immediately to catch up. The default Burst
+            // behaviour turns every over-long publish cycle into back-to-back
+            // cycles with zero idle — and a persistently slow cycle into a
+            // permanent backlog that hammers Mojang and the loader mavens.
+            publish_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             control_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS));
