@@ -51,29 +51,36 @@ pub struct ForgeInstallerProfileV1 {
 /// Forge installer profile (v2+ format)
 ///
 /// Forge has historically tweaked this schema between releases (renaming or
-/// dropping descriptive metadata fields). Only the fields that are actually
-/// load-bearing for processing are required; everything else is `Option` with
-/// `default` so a future field rename doesn't take down a whole MC version.
-#[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(rename_all = "camelCase", default)]
+/// dropping descriptive metadata fields). Descriptive fields default so a
+/// rename there doesn't take down a whole MC version — but the load-bearing
+/// fields (`version`, `minecraft`, `data`, `libraries`, `processors`) are
+/// REQUIRED on purpose: silently defaulting them would publish a version
+/// without its processors or libraries (no binpatched client, broken
+/// installs) while the pipeline reports success. Schema drift there must
+/// fail the version loudly instead.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ForgeInstallerProfileV2 {
     /// Display name (e.g. "forge", "neoforge"). Not load-bearing for our pipeline.
+    #[serde(default)]
     pub profile: String,
     /// Maven version coord; used to namespace extracted artifacts.
     pub version: String,
     /// Path to the bundled version.json inside the installer JAR. Currently unused
     /// (we read `version.json` by name) but kept so future tooling can rely on it.
+    #[serde(default)]
     pub json: String,
     /// Maven coord of the universal jar; nullable for some installers.
+    #[serde(default)]
     pub path: Option<String>,
     /// Minecraft version this installer targets — load-bearing (replaces the
     /// reverse-engineered MC id in the maven coordinate).
     pub minecraft: String,
-    /// Sided data entries (client/server). May be missing on some legacy installers.
+    /// Sided data entries (client/server).
     pub data: BTreeMap<String, SidedDataEntry>,
     /// Library list with per-entry artifact metadata.
     pub libraries: Vec<Library>,
-    /// Post-install processors. May be empty for non-installer flows.
+    /// Post-install processors.
     pub processors: Vec<Processor>,
 }
 

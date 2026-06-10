@@ -240,17 +240,22 @@ pub async fn retrieve_data(
                                                     if let Some(last) = split {
                                                         // rsplit_once handles `foo.tar.gz` (file_name = "foo.tar", ext = "gz")
                                                         if let Some((file_name, ext)) = last.rsplit_once('.') {
-                                                            let path = format!(
+                                                            // The map key must be the GradleSpecifier's canonical Display
+                                                            // form — that is what the consumption lookup uses, and Display
+                                                            // omits a plain '@jar' extension, so the raw formatted string
+                                                            // would never match for .jar data files.
+                                                            let name: GradleSpecifier = format!(
                                                                 "gg.gdl.daedalus:neoforge-installer-extracts:{}:{}-{}@{}",
                                                                 version, $side, file_name, ext
-                                                            );
+                                                            ).as_str().try_into()?;
+                                                            let path = name.to_string();
                                                             $value = format!("[{}]", &path);
                                                             local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
 
                                                             libs.push(Library {
                                                                 downloads: None,
                                                                 extract: None,
-                                                                name: path.as_str().try_into()?,
+                                                                name,
                                                                 url: Some("".to_string()),
                                                                 natives: None,
                                                                 rules: None,

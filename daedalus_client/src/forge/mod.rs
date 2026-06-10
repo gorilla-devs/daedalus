@@ -299,13 +299,23 @@ pub async fn retrieve_data(
 
                                             let artifact_path = lib.name.path();
                                             let mirrors = vec![url.as_str(), "https://maven.creeperhost.net/", "https://libraries.minecraft.net/"];
+                                            // V1 metadata carries the served jar's SHA1 in
+                                            // checksums[0]; verifying it keeps a mirror's
+                                            // wrong-bytes 200 (soft-404 page, truncation)
+                                            // from being immortalised as the CAS object
+                                            // every other version dedups onto.
+                                            let checksum = lib
+                                                .checksums
+                                                .as_ref()
+                                                .and_then(|c| c.first())
+                                                .cloned();
                                             let artifact = if lib.name.to_string() == forge_universal_path {
                                                 forge_universal_bytes.clone()
                                             } else {
                                                 download_file_mirrors(
                                                     &artifact_path,
                                                     &mirrors,
-                                                    None,
+                                                    checksum.as_deref(),
                                                     semaphore.clone(),
                                                 )
                                                 .await?
@@ -505,15 +515,20 @@ pub async fn retrieve_data(
 
                                                         if let Some(file_name) = file.next() {
                                                             if let Some(ext) = file.next() {
-                                                                // Use consistent namespace (synced with Modrinth daedalus approach)
-                                                                let path = format!("gg.gdl.daedalus:forge-installer-extracts:{}:{}@{}", version, file_name, ext);
+                                                                // Use consistent namespace (synced with Modrinth daedalus approach).
+                                                                // The map key must be the GradleSpecifier's canonical Display form —
+                                                                // that is what the consumption lookup uses, and Display omits a
+                                                                // plain '@jar' extension, so the raw formatted string would never
+                                                                // match for .jar data files.
+                                                                let name: GradleSpecifier = format!("gg.gdl.daedalus:forge-installer-extracts:{}:{}@{}", version, file_name, ext).as_str().try_into()?;
+                                                                let path = name.to_string();
                                                                 $value = format!("[{}]", &path);
                                                                 local_libs.insert(path.clone(), Some(bytes::Bytes::from(lib_bytes)));
 
                                                                 libs.push(Library {
                                                                     downloads: None,
                                                                     extract: None,
-                                                                    name: path.as_str().try_into()?,
+                                                                    name,
                                                                     url: Some("".to_string()),
                                                                     natives: None,
                                                                     rules: None,
@@ -578,9 +593,17 @@ pub async fn retrieve_data(
                                                 local_libs.get(&lib.name.to_string()).cloned().flatten()
                                             } else {
                                                 let lib_url = format!("{}/{}", url, lib.name.path());
+                                                // url-style metadata carries the served SHA1
+                                                // in checksums[0] when present — verify it so
+                                                // wrong bytes can't become the shared CAS object.
+                                                let checksum = lib
+                                                    .checksums
+                                                    .as_ref()
+                                                    .and_then(|c| c.first())
+                                                    .cloned();
                                                 Some(download_file(
                                                     &lib_url,
-                                                    None,
+                                                    checksum.as_deref(),
                                                     semaphore.clone(),
                                                 ).await?)
                                             };
