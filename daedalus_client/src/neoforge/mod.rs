@@ -326,6 +326,10 @@ pub async fn retrieve_data(
                                                 local_libs.get(&lib.name.to_string()).cloned()
                                             };
 
+                                            if res.is_none() {
+                                                artifact.url = None;
+                                            }
+
                                             res
                                         } else { None }
                                     } else if let Some(ref mut url) = lib.url {
@@ -339,6 +343,10 @@ pub async fn retrieve_data(
                                             )
                                                 .await?)
                                         };
+
+                                        if res.is_none() {
+                                            lib.url = None;
+                                        }
 
                                         res
                                     } else { None };
