@@ -169,6 +169,11 @@ pub async fn retrieve_data(
 
     for version in manifest.versions.iter_mut().rev() {
         version_futures.push(async {
+            // The id is returned alongside the result so a failure can be
+            // repaired in the shared manifest (carry forward the previous
+            // published entry, or drop the raw Mojang entry).
+            let version_id = version.id.clone();
+            let result = async {
             let old_version = old_versions
                 .as_ref()
                 .and_then(|old| old.iter().find(|x| x.id == version.id));
@@ -466,6 +471,10 @@ pub async fn retrieve_data(
             .await?;
 
             Ok::<(), crate::infrastructure::error::Error>(())
+            }
+            .await;
+
+            (version_id, result)
         })
     }
 
@@ -481,17 +490,52 @@ pub async fn retrieve_data(
             let chunk: Vec<_> = versions.by_ref().take(100).collect();
 
             // Process chunk concurrently (semaphore controls actual I/O parallelism)
-            for result in join_all(chunk).await {
+            for (version_id, result) in join_all(chunk).await {
                 match result {
                     Ok(_) => {
                         successful += 1;
                     }
                     Err(e) => {
                         warn!(
+                            version_id = %version_id,
                             "⚠️  Minecraft - Failed to process version: {}",
                             e
                         );
                         failed += 1;
+
+                        // The shared manifest still holds the raw Mojang entry
+                        // for this version (piston-meta URL, no patches, no
+                        // CAS fields) — publishing that would hand launchers
+                        // an unprocessed version. Restore the previously
+                        // published entry when a baseline has one, otherwise
+                        // drop the version from this cycle's manifest; the
+                        // next cycle retries it.
+                        let previous = old_versions.as_ref().and_then(|old| {
+                            old.iter().find(|v| v.id == version_id).cloned()
+                        });
+                        let mut guard = cloned_manifest.lock().await;
+                        match previous {
+                            Some(prev_entry) => {
+                                if let Some(entry) = guard
+                                    .versions
+                                    .iter_mut()
+                                    .find(|v| v.id == version_id)
+                                {
+                                    *entry = prev_entry;
+                                    warn!(
+                                        version_id = %version_id,
+                                        "Carried the previously published entry forward for the failed version"
+                                    );
+                                }
+                            }
+                            None => {
+                                guard.versions.retain(|v| v.id != version_id);
+                                warn!(
+                                    version_id = %version_id,
+                                    "No previous publish to carry forward; version is absent from this cycle's manifest"
+                                );
+                            }
+                        }
                     }
                 }
             }
