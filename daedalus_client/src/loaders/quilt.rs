@@ -26,7 +26,10 @@ impl LoaderStrategy for QuiltStrategy {
     }
 
     fn maven_fallback(&self) -> &str {
-        "https://maven.quiltmc.org/"
+        // Quilt serves artifacts under /repository/release/ — the bare host
+        // 404s for every path, so a profile library shipped without an
+        // explicit url would be undownloadable with the shorter base.
+        "https://maven.quiltmc.org/repository/release/"
     }
 
     fn manifest_path_prefix(&self) -> &str {
@@ -101,8 +104,15 @@ impl GameVersionInfo for QuiltGameVersion {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct QuiltLoaderVersion {
+    // The pipeline only reads `version`; the descriptive fields default so a
+    // benign upstream API change (dropping or renaming one of them) cannot
+    // fail the whole versions-list parse and halt quilt processing. The
+    // fabric twin defaults its equivalents for the same reason.
+    #[serde(default)]
     pub separator: String,
+    #[serde(default)]
     pub build: u32,
+    #[serde(default)]
     pub maven: String,
     pub version: String,
     // Note: Quilt API does not include a 'stable' field
