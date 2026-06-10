@@ -167,6 +167,12 @@ pub async fn retrieve_data(
     let asset_cas_urls: Arc<dashmap::DashMap<String, String>> =
         Arc::new(dashmap::DashMap::new());
 
+    // Number of versions that ran the full library-patch pass this cycle.
+    // When it equals the published version count (a clean full reprocess),
+    // every patch anchor had the chance to match — see the dead-anchor check
+    // after processing.
+    let patched_versions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     let now = Instant::now();
 
     let mut version_futures = Vec::new();
@@ -244,6 +250,7 @@ pub async fn retrieve_data(
             let cloned_manifest_mutex = Arc::clone(&cloned_manifest);
             let semaphore = Arc::clone(&semaphore);
             let patches = Arc::clone(&patches);
+            let patched_versions = Arc::clone(&patched_versions);
 
             let assets_hash = old_version.and_then(|x| x.assets_index_sha1.clone());
             let old_assets_index_url =
@@ -337,38 +344,40 @@ pub async fn retrieve_data(
                 }
 
                 version_info.libraries = new_libraries;
+                patched_versions
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                // Patch java version
+                // Patch java version. Known components are normalised; an
+                // unknown component (a runtime name Mojang ships before we
+                // know it) passes through VERBATIM — degrading it to None
+                // would publish a version whose launcher falls back to the
+                // wrong Java and fails at launch, silently, every cycle.
                 version_info.java_version = {
                     if let Some(java_version) = &version_info.java_version {
-                        // try_from is now infallible — unknown strings come back as
-                        // MinecraftJavaProfile::Unknown(...). Branch on is_known()
-                        // and handle the unknown case the same way the old Err arm did.
                         let parsed = MinecraftJavaProfile::try_from(&*java_version.component)
                             .expect("MinecraftJavaProfile::try_from is infallible");
-                        if parsed.is_known() {
-                            Some(JavaVersion {
-                                component: parsed
-                                    .as_str()
-                                    .expect("known variants always have an as_str")
-                                    .to_string(),
-                                major_version: 0,
-                            })
-                        } else {
+                        if !parsed.is_known() {
                             #[cfg(feature = "sentry")]
                             sentry::capture_message(
                                 &format!(
-                                    "Unknown java version \"{}\"",
+                                    "Unknown java runtime component \"{}\" — publishing it verbatim; add it to MinecraftJavaProfile",
                                     java_version.component
                                 ),
                                 sentry::Level::Warning,
                             );
                             warn!(
                                 java_version = %java_version.component,
-                                "Unknown java version, omitting from manifest"
+                                "Unknown java runtime component; publishing it verbatim"
                             );
-                            None
                         }
+                        Some(JavaVersion {
+                            component: match parsed.as_str() {
+                                Ok(s) => s.to_string(),
+                                Err(_) => java_version.component.clone(),
+                            },
+                            // Mojang's major version passes through unchanged.
+                            major_version: java_version.major_version,
+                        })
                     } else {
                         Some(JavaVersion {
                             component: MinecraftJavaProfile::JreLegacy
@@ -461,12 +470,13 @@ pub async fn retrieve_data(
                         entry.assets_index_sha1 =
                             Some(version_info.asset_index.sha1.clone());
                         entry.assets_index_url = Some(asset_cas_url.clone());
-                        // try_from is infallible; map Unknown defensively to None.
+                        // Unknown(...) serialises as the raw component string,
+                        // so manifest consumers see a new runtime name instead
+                        // of an absent java_profile.
                         entry.java_profile =
-                            version_info.java_version.as_ref().and_then(|x| {
-                                let profile = MinecraftJavaProfile::try_from(&*x.component)
-                                    .unwrap_or(MinecraftJavaProfile::Unknown(x.component.clone()));
-                                if profile.is_known() { Some(profile) } else { None }
+                            version_info.java_version.as_ref().map(|x| {
+                                MinecraftJavaProfile::try_from(&*x.component)
+                                    .unwrap_or(MinecraftJavaProfile::Unknown(x.component.clone()))
                             });
                         entry.sha1 = version_hash.clone();
                         entry.original_sha1 = Some(upstream_sha1.clone());
@@ -499,11 +509,11 @@ pub async fn retrieve_data(
         })
     }
 
+    let mut successful = 0;
+    let mut failed = 0;
     {
         let mut versions = version_futures.into_iter().peekable();
         let mut chunk_index = 0;
-        let mut successful = 0;
-        let mut failed = 0;
 
         while versions.peek().is_some() {
             let now = Instant::now();
@@ -593,6 +603,34 @@ pub async fn retrieve_data(
         };
         std::mem::replace(&mut *guard, placeholder)
     };
+
+    // Dead-anchor detection. Patch anchors are exact coordinate strings, so
+    // an upstream rename silently disconnects them (this exact class hid the
+    // Vulkan renderer when org.lwjgl:lwjgl:3.4.1 became :3.4.1:unsafe). On a
+    // clean FULL reprocess — every published version went through the patch
+    // pass — any patch that matched nothing is dead and must be surfaced.
+    // Incremental cycles skip the check: their unexercised patches are just
+    // skip-reused versions.
+    let fully_patched = patched_versions
+        .load(std::sync::atomic::Ordering::Relaxed)
+        == final_manifest.versions.len();
+    if failed == 0 && fully_patched {
+        for patch in patches.never_matched() {
+            #[cfg(feature = "sentry")]
+            sentry::capture_message(
+                &format!(
+                    "Library patch matched no libraries across a full reprocess: {}",
+                    patch._comment
+                ),
+                sentry::Level::Warning,
+            );
+            warn!(
+                patch = %patch._comment,
+                anchors = ?patch.match_,
+                "Library patch matched no libraries across a full reprocess — its anchors may be dead (coordinate renamed or reclassified upstream)"
+            );
+        }
+    }
 
     // Set the full Minecraft versions JSON in manifest_builder
     // This preserves rich metadata (type, url, time, releaseTime, sha1, complianceLevel, etc.)
@@ -689,33 +727,34 @@ mod schema_drift_tests {
     }
 
     #[test]
-    fn unknown_java_profile_maps_to_none_not_panic() {
-        // Ensure MinecraftJavaProfile::try_from with an unknown string returns
-        // Unknown(...) and is_known() returns false — no panic.
-        let profile = MinecraftJavaProfile::try_from("java-runtime-omega")
-            .expect("try_from is infallible");
-        assert!(!profile.is_known());
-
-        // The defensive and_then pattern used in the manifest insert produces None.
+    fn unknown_java_profile_passes_through_verbatim() {
+        // An unknown runtime component parses to Unknown(...) without panicking
+        // and survives into the published data as the raw string — never
+        // silently degraded to an absent field.
         let java_version = daedalus::minecraft::JavaVersion {
             component: "java-runtime-omega".to_string(),
-            major_version: 0,
+            major_version: 26,
         };
-        let result = {
-            let profile =
-                MinecraftJavaProfile::try_from(&*java_version.component)
-                    .unwrap_or(MinecraftJavaProfile::Unknown(
-                        java_version.component.clone(),
-                    ));
-            if profile.is_known() {
-                Some(profile)
-            } else {
-                None
-            }
+
+        // The version-JSON normalisation keeps the verbatim component.
+        let parsed = MinecraftJavaProfile::try_from(&*java_version.component)
+            .expect("try_from is infallible");
+        assert!(!parsed.is_known());
+        let published_component = match parsed.as_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => java_version.component.clone(),
         };
-        assert!(
-            result.is_none(),
-            "Unknown java profile should map to None, not panic"
+        assert_eq!(published_component, "java-runtime-omega");
+
+        // The manifest java_profile carries Unknown(...), which serialises as
+        // the raw string.
+        let profile = MinecraftJavaProfile::try_from(&*java_version.component)
+            .unwrap_or(MinecraftJavaProfile::Unknown(
+                java_version.component.clone(),
+            ));
+        assert_eq!(
+            serde_json::to_string(&profile).unwrap(),
+            "\"java-runtime-omega\""
         );
     }
 }

@@ -15,6 +15,12 @@ use tracing::info;
 pub struct LibraryPatchIndex {
     by_match: HashMap<String, Vec<usize>>,
     patches: Vec<LibraryPatch>,
+    /// Indices of patches that matched at least one library since this index
+    /// was built. Patch anchors are exact coordinate strings, so an upstream
+    /// rename or reclassifier (e.g. a core jar gaining an `:unsafe`
+    /// classifier) silently kills them — `never_matched` exposes the dead
+    /// ones after a full reprocess.
+    matched: dashmap::DashSet<usize>,
 }
 
 impl LibraryPatchIndex {
@@ -25,14 +31,38 @@ impl LibraryPatchIndex {
                 by_match.entry(matched_coord.clone()).or_default().push(idx);
             }
         }
-        Self { by_match, patches }
+        Self {
+            by_match,
+            patches,
+            matched: dashmap::DashSet::new(),
+        }
     }
 
     fn patches_for(&self, coord: &str) -> Vec<&LibraryPatch> {
         self.by_match
             .get(coord)
-            .map(|indices| indices.iter().map(|&i| &self.patches[i]).collect())
+            .map(|indices| {
+                indices
+                    .iter()
+                    .map(|&i| {
+                        self.matched.insert(i);
+                        &self.patches[i]
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
+    }
+
+    /// Patches whose anchors matched no library so far. Only meaningful after
+    /// a FULL reprocess of every version — on incremental cycles most patches
+    /// legitimately go unexercised because their versions were skip-reused.
+    pub fn never_matched(&self) -> Vec<&LibraryPatch> {
+        self.patches
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.matched.contains(i))
+            .map(|(_, p)| p)
+            .collect()
     }
 }
 
