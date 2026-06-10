@@ -56,44 +56,84 @@ mod neoforge;
 mod quilt;
 mod services;
 
-/// Create a future that completes when a shutdown signal is received (SIGTERM or Ctrl+C)
-async fn shutdown_signal() {
-    // Both branches log+fall-through to `pending::<()>` if signal handler
-    // installation fails — a panic here would kill the main loop, which is
-    // the exact opposite of the "never crash" contract this service has.
-    let ctrl_c = async {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {}
-            Err(e) => {
-                warn!(error = %e, "Failed to install Ctrl+C handler; ignoring");
-                std::future::pending::<()>().await;
+/// Long-lived shutdown listener (SIGTERM / SIGINT).
+///
+/// The signal streams are created ONCE and kept alive for the process
+/// lifetime. Tokio delivers signal events only to live streams: a stream
+/// created per select! iteration is dropped while a publish cycle runs, so a
+/// SIGTERM landing mid-cycle was lost entirely — the process (whose default
+/// disposition the first registration replaced) ignored it, was SIGKILLed by
+/// the supervisor after the grace period, and the buffered Discord and
+/// Betterstack drains never ran. Persistent streams buffer the event and the
+/// next `recv` poll observes it.
+#[cfg(unix)]
+struct ShutdownListener {
+    interrupt: Option<tokio::signal::unix::Signal>,
+    terminate: Option<tokio::signal::unix::Signal>,
+}
+
+#[cfg(unix)]
+impl ShutdownListener {
+    /// Installation failures are logged and that signal is ignored — a panic
+    /// here would kill the main loop, the opposite of this service's
+    /// never-crash contract.
+    fn new() -> Self {
+        fn install(
+            kind: SignalKind,
+            name: &str,
+        ) -> Option<tokio::signal::unix::Signal> {
+            match signal(kind) {
+                Ok(sig) => Some(sig),
+                Err(e) => {
+                    warn!(error = %e, signal = name, "Failed to install signal handler; ignoring that signal");
+                    None
+                }
             }
         }
-    };
+        Self {
+            interrupt: install(SignalKind::interrupt(), "SIGINT"),
+            terminate: install(SignalKind::terminate(), "SIGTERM"),
+        }
+    }
 
-    #[cfg(unix)]
-    let terminate = async {
-        match signal(SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
+    /// Completes when a shutdown signal arrives — including one delivered
+    /// while the caller was busy in another select! branch.
+    async fn recv(&mut self) {
+        async fn wait(sig: &mut Option<tokio::signal::unix::Signal>) {
+            match sig {
+                Some(sig) => {
+                    sig.recv().await;
+                }
+                None => std::future::pending::<()>().await,
             }
-            Err(e) => {
-                warn!(error = %e, "Failed to install SIGTERM handler; ignoring");
-                std::future::pending::<()>().await;
+        }
+
+        tokio::select! {
+            _ = wait(&mut self.interrupt) => {
+                info!("Received SIGINT signal");
+            }
+            _ = wait(&mut self.terminate) => {
+                info!("Received SIGTERM signal");
             }
         }
-    };
+    }
+}
 
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+#[cfg(not(unix))]
+struct ShutdownListener;
 
-    tokio::select! {
-        _ = ctrl_c => {
-            info!("Received Ctrl+C signal");
+#[cfg(not(unix))]
+impl ShutdownListener {
+    fn new() -> Self {
+        Self
+    }
+
+    async fn recv(&mut self) {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            warn!(error = %e, "Failed to install Ctrl+C handler; ignoring");
+            std::future::pending::<()>().await;
         }
-        _ = terminate => {
-            info!("Received SIGTERM signal");
-        }
+        info!("Received Ctrl+C signal");
     }
 }
 
@@ -281,6 +321,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
             }
 
             let mut is_first_run = true;
+            let mut shutdown = ShutdownListener::new();
 
             loop {
                 info!("Waiting for next publish timer, control poll, or shutdown signal");
@@ -297,7 +338,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                         // §2.3: poll control.json for pending operator intents.
                         services::control::process_pending(&CLIENT).await;
                     }
-                    _ = shutdown_signal() => {
+                    _ = shutdown.recv() => {
                         info!("Shutdown signal received - exiting gracefully");
                         break;
                     }
