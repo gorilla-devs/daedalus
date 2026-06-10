@@ -49,6 +49,18 @@ impl LoaderStrategy for QuiltStrategy {
 pub struct QuiltVersions {
     pub game: Vec<QuiltGameVersion>,
     pub loader: Vec<QuiltLoaderVersion>,
+    /// Game versions with a published hashed-mojmap mapping — the installable
+    /// set. Quilt's game list runs ahead of its mappings (no `hashed`
+    /// artifacts exist for the 26.x era), so this is the load-bearing list.
+    /// Required on purpose: a meta response without it must fail the parse
+    /// loudly rather than publish loaders no client can resolve.
+    pub hashed: Vec<QuiltMappingVersion>,
+}
+
+/// One entry of the meta API's mapping list (`hashed`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct QuiltMappingVersion {
+    pub version: String,
 }
 
 impl LoaderVersionsList for QuiltVersions {
@@ -61,6 +73,10 @@ impl LoaderVersionsList for QuiltVersions {
 
     fn game(&self) -> &[Self::Game] {
         &self.game
+    }
+
+    fn mapping_versions(&self) -> Vec<&str> {
+        self.hashed.iter().map(|m| m.version.as_str()).collect()
     }
 }
 

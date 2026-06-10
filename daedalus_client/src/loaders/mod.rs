@@ -2,15 +2,14 @@ pub mod fabric;
 pub mod quilt;
 
 use crate::common::cas::build_cas_url;
-use crate::common::change_detection::detect_version_change;
-use crate::services::upload::BatchUploader;
 use crate::download_file;
+use crate::services::upload::BatchUploader;
+use daedalus::BRANDING;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, Version};
-use daedalus::{BRANDING, get_hash};
 use dashmap::DashMap;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
@@ -60,6 +59,12 @@ pub trait LoaderVersionsList: Send + Sync {
 
     fn loader(&self) -> &[Self::Loader];
     fn game(&self) -> &[Self::Game];
+    /// Game versions that have a published mapping artifact (fabric
+    /// `intermediary`, quilt `hashed`). Only these are installable — the
+    /// loader profile's mapping library resolves per game version, and a
+    /// game version without a mapping has nothing to resolve to. The game
+    /// list can run ahead of this one (Quilt's has for years).
+    fn mapping_versions(&self) -> Vec<&str>;
 }
 
 /// Generic processor for loaders using the strategy pattern
@@ -72,11 +77,16 @@ pub struct LoaderProcessor<S: LoaderStrategy> {
 /// - `regular_cas_urls`: maven coord (post-placeholder) → CAS URL of the unique artifact.
 ///   Lets duplicate non-intermediary libs across loader versions reuse the same CAS URL
 ///   without redownloading.
-/// - `intermediary_hashes`: intermediary coord (with placeholder) → mc_version → CAS hash.
-///   Same intermediary jar referenced by N loader versions only downloads once per MC.
+/// - `intermediary_hashes`: intermediary coord (with placeholder) → async cell holding
+///   the mc_version → CAS hash table. The cell guarantees the per-game-version mapping
+///   sweep runs EXACTLY once per coordinate per cycle — every loader version referencing
+///   the coordinate awaits the same expansion instead of each running its own (which
+///   multiplied to loader_count × game_count downloads on cold cycles). A failed
+///   expansion leaves the cell empty, so the next loader version retries it.
 struct LoaderCaches {
     regular_cas_urls: DashMap<String, String>,
-    intermediary_hashes: DashMap<String, BTreeMap<String, String>>,
+    intermediary_hashes:
+        DashMap<String, Arc<tokio::sync::OnceCell<BTreeMap<String, String>>>>,
 }
 
 impl LoaderCaches {
@@ -110,6 +120,25 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         // without requiring V: Clone.
         let list: Arc<V> =
             Arc::new(self.fetch_versions_list(None, semaphore.clone()).await?);
+
+        // Only game versions with a published mapping artifact are
+        // installable. Intersecting with game[] keeps stray mapping entries
+        // (mappings for ids the game list dropped) out of the expansion.
+        let game_ids: HashSet<&str> =
+            list.game().iter().map(|g| g.version()).collect();
+        let mapped_game_versions: Arc<Vec<String>> = Arc::new(
+            list.mapping_versions()
+                .into_iter()
+                .filter(|v| game_ids.contains(v))
+                .map(str::to_string)
+                .collect(),
+        );
+        info!(
+            "📊 {} - {} game versions, {} with mappings (installable)",
+            self.strategy.name(),
+            list.game().len(),
+            mapped_game_versions.len()
+        );
 
         // Previous publish's game-version entries, resolved through the
         // previous root manifest — loader manifests live at timestamped keys
@@ -240,7 +269,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             fetched.into_iter().map(|(stable, loader, profile)| {
                 let semaphore = semaphore.clone();
                 let caches = Arc::clone(&caches);
-                let list = Arc::clone(&list);
+                let mapped_game_versions = Arc::clone(&mapped_game_versions);
                 let dummy_replace_string = dummy_replace_string.clone();
                 async move {
                     let result = self
@@ -248,7 +277,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                             stable,
                             loader.clone(),
                             profile,
-                            list.as_ref(),
+                            &mapped_game_versions,
                             uploader,
                             s3_client,
                             &caches,
@@ -313,8 +342,16 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         // notification per new (loader, mc_version) pair — Fabric/Quilt use
         // a placeholder game version with `version_hashes` resolution at the
         // launcher, so the meaningful event is the MC id appearing in the API.
+        // Only MAPPED game versions are listed: a version without a mapping
+        // artifact cannot be installed, and publishing it would advertise
+        // loader support that resolves to nothing.
+        let mapped_set: HashSet<&str> =
+            mapped_game_versions.iter().map(String::as_str).collect();
         let notifier = crate::services::discord::notifier();
         for version in list.game() {
+            if !mapped_set.contains(version.version()) {
+                continue;
+            }
             if !versions.iter().any(|x| x.id == version.version()) {
                 if old_manifest_was_present {
                     if let Some(n) = notifier.as_ref() {
@@ -429,26 +466,23 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn process_loader_version<V>(
+    async fn process_loader_version(
         &self,
         stable: bool,
         loader: String,
         version: PartialVersionInfo,
-        list: &V,
+        mapped_game_versions: &Arc<Vec<String>>,
         uploader: &BatchUploader,
         s3_client: &s3::Bucket,
         caches: &LoaderCaches,
         dummy_replace_string: &str,
         semaphore: Arc<Semaphore>,
-    ) -> Result<LoaderVersion, crate::infrastructure::error::Error>
-    where
-        V: LoaderVersionsList,
-    {
+    ) -> Result<LoaderVersion, crate::infrastructure::error::Error> {
         // Process all libraries
         let libs = futures::future::try_join_all(
             version.libraries.into_iter().map(|mut lib| {
                 let semaphore = semaphore.clone();
-                let list_game: Vec<_> = list.game().to_vec();
+                let mapped_game_versions = Arc::clone(mapped_game_versions);
                 let maven_fallback = self.strategy.maven_fallback().to_string();
 
                 async move {
@@ -461,84 +495,112 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                     if has_placeholder
                         && is_intermediary_library(&coord_with_placeholder)
                     {
-                        // Intermediary path — variable artifact per MC version.
-                        if let Some(cached) = caches
+                        // Intermediary path — one artifact per mapped MC
+                        // version, identical for every loader version that
+                        // references this coordinate. The cell runs the
+                        // expansion exactly once per coordinate per cycle;
+                        // concurrent loader versions await the same result.
+                        let cell = caches
                             .intermediary_hashes
-                            .get(&coord_with_placeholder)
-                        {
-                            lib.name = coord_with_placeholder.parse()?;
-                            lib.version_hashes = Some(cached.clone());
-                            lib.url = None;
-                            return Ok(lib);
-                        }
+                            .entry(coord_with_placeholder.clone())
+                            .or_default()
+                            .clone();
 
                         let lib_url = lib.url.clone();
-                        let version_hash_results =
-                            futures::future::try_join_all(
-                                list_game.iter().map(|game_version| {
-                                    let semaphore = semaphore.clone();
-                                    let lib_url = lib_url.clone();
-                                    let coord_with_placeholder =
-                                        coord_with_placeholder.clone();
-                                    let maven_fallback = maven_fallback.clone();
-                                    let game_version_str =
-                                        game_version.version().to_string();
+                        let version_hashes = cell
+                            .get_or_try_init(|| async {
+                                let results = futures::future::join_all(
+                                    mapped_game_versions.iter().map(|game_version| {
+                                        let semaphore = semaphore.clone();
+                                        let lib_url = lib_url.clone();
+                                        let coord_with_placeholder =
+                                            coord_with_placeholder.clone();
+                                        let maven_fallback = maven_fallback.clone();
 
-                                    async move {
-                                        let artifact_path =
-                                            daedalus::get_path_from_artifact(
-                                                &coord_with_placeholder
-                                                    .replace(
+                                        async move {
+                                            let artifact_path =
+                                                daedalus::get_path_from_artifact(
+                                                    &coord_with_placeholder.replace(
                                                         dummy_replace_string,
-                                                        &game_version_str,
+                                                        game_version,
                                                     ),
-                                            )?;
+                                                )?;
 
-                                        let artifact = download_file(
-                                            &format!(
-                                                "{}{}",
-                                                lib_url
-                                                    .as_deref()
-                                                    .unwrap_or(&maven_fallback),
-                                                artifact_path
-                                            ),
-                                            None,
-                                            semaphore.clone(),
-                                        )
-                                        .await?;
-
-                                        let hash = uploader
-                                            .upload_cas(
-                                                artifact.to_vec(),
-                                                Some(
-                                                    "application/java-archive"
-                                                        .to_string(),
+                                            let artifact = match download_file(
+                                                &format!(
+                                                    "{}{}",
+                                                    lib_url
+                                                        .as_deref()
+                                                        .unwrap_or(&maven_fallback),
+                                                    artifact_path
                                                 ),
-                                                s3_client,
+                                                None,
                                                 semaphore.clone(),
                                             )
-                                            .await?;
+                                            .await
+                                            {
+                                                Ok(bytes) => bytes,
+                                                // The meta lists a mapping the
+                                                // maven doesn't serve: that game
+                                                // version simply isn't
+                                                // installable. Omit its hash
+                                                // instead of failing every
+                                                // loader version over it.
+                                                Err(e) if e.is_not_found() => {
+                                                    warn!(
+                                                        coordinate = %coord_with_placeholder,
+                                                        game_version = %game_version,
+                                                        "Mapping artifact missing on the maven; omitting this game version"
+                                                    );
+                                                    return Ok(None);
+                                                }
+                                                Err(e) => return Err(e),
+                                            };
 
-                                        Ok::<
-                                            (String, String),
-                                            crate::infrastructure::error::Error,
-                                        >(
-                                            (
-                                            game_version_str,
-                                            hash,
-                                        )
-                                        )
+                                            let hash = uploader
+                                                .upload_cas(
+                                                    artifact.to_vec(),
+                                                    Some(
+                                                        "application/java-archive"
+                                                            .to_string(),
+                                                    ),
+                                                    s3_client,
+                                                    semaphore.clone(),
+                                                )
+                                                .await?;
+
+                                            Ok::<
+                                                Option<(String, String)>,
+                                                crate::infrastructure::error::Error,
+                                            >(Some((
+                                                game_version.clone(),
+                                                hash,
+                                            )))
+                                        }
+                                    }),
+                                )
+                                .await;
+
+                                // A transient failure anywhere fails the whole
+                                // expansion (the cell stays empty and the next
+                                // loader version retries it) — publishing a
+                                // partial mapping table would permanently break
+                                // the omitted game versions for every cached
+                                // re-emit of these loader JSONs.
+                                let mut map = BTreeMap::new();
+                                for result in results {
+                                    if let Some((game_version, hash)) = result? {
+                                        map.insert(game_version, hash);
                                     }
-                                }),
-                            )
-                            .await?;
+                                }
+                                Ok::<
+                                    BTreeMap<String, String>,
+                                    crate::infrastructure::error::Error,
+                                >(map)
+                            })
+                            .await?
+                            .clone();
 
-                        let version_hashes: BTreeMap<String, String> =
-                            version_hash_results.into_iter().collect();
-                        caches.intermediary_hashes.insert(
-                            coord_with_placeholder.clone(),
-                            version_hashes.clone(),
-                        );
                         lib.name = coord_with_placeholder.parse()?;
                         lib.version_hashes = Some(version_hashes);
                         lib.url = None;
@@ -621,20 +683,11 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             data: None,
         };
 
+        // Newly fetched profiles are always uploaded — the cached fast path
+        // in retrieve_data already skips known loader versions entirely, so
+        // by the time control reaches here the version is new (or being
+        // refreshed on purpose) and upload_cas dedups identical bytes anyway.
         let version_bytes = serde_json::to_vec(&version_info)?;
-        let new_hash =
-            get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
-
-        // Note: should_upload comparison against the OLD url is meaningless here
-        // because the cached path (T2.5) skips all of this entirely. We always upload
-        // newly fetched profiles.
-        let _ = detect_version_change(
-            self.strategy.name(),
-            &loader,
-            None,
-            &new_hash,
-        );
-
         let version_hash = uploader
             .upload_cas(
                 version_bytes,

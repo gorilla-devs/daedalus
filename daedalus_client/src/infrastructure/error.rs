@@ -188,6 +188,11 @@ impl ErrorKind {
             ErrorKind::Fetch { source, .. } => {
                 source.status().map(|s| s.as_u16() == 404).unwrap_or(false)
             }
+            // Downloads routed through daedalus arrive wrapped — classify the
+            // inner reqwest error the same way.
+            ErrorKind::Daedalus(daedalus::Error::FetchError {
+                inner, ..
+            }) => inner.status().map(|s| s.as_u16() == 404).unwrap_or(false),
             _ => false,
         }
     }

@@ -34,6 +34,18 @@ impl LoaderStrategy for FabricStrategy {
 pub struct FabricVersions {
     pub game: Vec<FabricGameVersion>,
     pub loader: Vec<FabricLoaderVersion>,
+    /// Game versions with a published intermediary mapping — the set that is
+    /// actually installable. Required on purpose: if the meta API stops
+    /// listing mappings, the parse must fail loudly (carry-forward keeps the
+    /// previous manifest live) rather than publish loaders no client can
+    /// resolve.
+    pub intermediary: Vec<FabricMappingVersion>,
+}
+
+/// One entry of the meta API's mapping list (`intermediary`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FabricMappingVersion {
+    pub version: String,
 }
 
 impl LoaderVersionsList for FabricVersions {
@@ -46,6 +58,13 @@ impl LoaderVersionsList for FabricVersions {
 
     fn game(&self) -> &[Self::Game] {
         &self.game
+    }
+
+    fn mapping_versions(&self) -> Vec<&str> {
+        self.intermediary
+            .iter()
+            .map(|m| m.version.as_str())
+            .collect()
     }
 }
 
