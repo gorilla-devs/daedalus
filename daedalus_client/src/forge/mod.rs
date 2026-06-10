@@ -31,11 +31,12 @@ use tracing::{info, warn};
 static FORGE_MANIFEST_V1_QUERY: LazyLock<VersionReq> =
     LazyLock::new(|| VersionReq::parse(">=8.0.684, <23.5.2851").unwrap());
 
-static FORGE_MANIFEST_V2_QUERY_P1: LazyLock<VersionReq> =
-    LazyLock::new(|| VersionReq::parse(">=23.5.2851, <31.2.52").unwrap());
-
-static FORGE_MANIFEST_V2_QUERY_P2: LazyLock<VersionReq> =
-    LazyLock::new(|| VersionReq::parse(">=32.0.1, <37.0.0").unwrap());
+/// install_profile.json format 2, one contiguous range: 1.12.2's
+/// 14.23.5.2851 through the 1.16.x line. The 1.15.2 tail (31.2.52–31.2.60,
+/// including the upstream-recommended 31.2.57) sits inside it and is handled
+/// identically to its neighbours.
+static FORGE_MANIFEST_V2_QUERY: LazyLock<VersionReq> =
+    LazyLock::new(|| VersionReq::parse(">=23.5.2851, <37.0.0").unwrap());
 
 static FORGE_MANIFEST_V3_QUERY: LazyLock<VersionReq> =
     LazyLock::new(|| VersionReq::parse(">=37.0.0").unwrap());
@@ -144,8 +145,7 @@ pub async fn retrieve_data(
                 };
 
                 if FORGE_MANIFEST_V1_QUERY.matches(&version)
-                    || FORGE_MANIFEST_V2_QUERY_P1.matches(&version)
-                    || FORGE_MANIFEST_V2_QUERY_P2.matches(&version)
+                    || FORGE_MANIFEST_V2_QUERY.matches(&version)
                     || FORGE_MANIFEST_V3_QUERY.matches(&version)
                 {
                     loaders.push((loader_version_full, version))
@@ -194,6 +194,19 @@ pub async fn retrieve_data(
                                 info!("⏭️  Forge - Skipping excluded version: {}", loader_version_full);
                                 return Ok::<Option<LoaderVersion>, crate::infrastructure::error::Error>(None);
                             }
+
+                            // Promotions are keyed "{mc}-{forge}"; maven ids may carry a
+                            // branch suffix on top ("1.7.10-10.13.4.1614-1.7.10"), so the
+                            // stable lookup compares on the first two dash segments. The MC
+                            // part itself never contains a dash in forge maven ids
+                            // (pre-release MCs use underscores, e.g. 1.7.10_pre4).
+                            let promotion_key = {
+                                let mut parts = loader_version_full.splitn(3, '-');
+                                match (parts.next(), parts.next()) {
+                                    (Some(mc), Some(forge)) => format!("{}-{}", mc, forge),
+                                    _ => loader_version_full.clone(),
+                                }
+                            };
 
 
                             info!("Forge - Installer Start {}", loader_version_full.clone());
@@ -353,11 +366,11 @@ pub async fn retrieve_data(
                                     let cas_url = crate::common::cas::build_cas_url(&version_hash)?;
 
                                     return Ok(Some(LoaderVersion {
-                                        stable: recommended_loaders.contains(&loader_version_full),
+                                        stable: recommended_loaders.contains(&promotion_key),
                                         id: loader_version_full,
                                         url: cas_url,
                                     }));
-                                } else if FORGE_MANIFEST_V2_QUERY_P1.matches(&version) || FORGE_MANIFEST_V2_QUERY_P2.matches(&version) || FORGE_MANIFEST_V3_QUERY.matches(&version) {
+                                } else if FORGE_MANIFEST_V2_QUERY.matches(&version) || FORGE_MANIFEST_V3_QUERY.matches(&version) {
                                     let mut archive_clone = archive.clone();
                                     let mut profile = tokio::task::spawn_blocking(move || {
                                         let mut install_profile = archive_clone.by_name("install_profile.json")?;
@@ -638,7 +651,7 @@ pub async fn retrieve_data(
                                     let cas_url = crate::common::cas::build_cas_url(&version_hash)?;
 
                                     return Ok(Some(LoaderVersion {
-                                        stable: recommended_loaders.contains(&loader_version_full),
+                                        stable: recommended_loaders.contains(&promotion_key),
                                         id: loader_version_full,
                                         url: cas_url,
                                     }));
@@ -779,13 +792,14 @@ struct PromotionsSlim {
     promos: HashMap<String, String>,
 }
 
-/// Fetches Forge's promotions_slim.json and returns the set of full loader IDs
-/// (e.g. "1.20.1-47.4.10") that the upstream marks as `recommended`.
+/// Fetches Forge's promotions_slim.json and returns the set of
+/// "{mc}-{forge}" keys that the upstream marks as `recommended`.
 ///
 /// The JSON keys are `<mc>-<latest|recommended>[-<branch>]` and the values are
 /// short Forge versions. We mirror Prism's logic: only `-recommended` entries
-/// without a branch suffix promote the build, and the resulting full id is
-/// reconstructed by joining the MC version with the short Forge version.
+/// without a branch suffix promote the build. Lookups must compare against
+/// the same "{mc}-{forge}" shape — maven ids can additionally carry a branch
+/// suffix that this set never contains.
 pub async fn fetch_forge_promotions(
     semaphore: Arc<Semaphore>,
 ) -> Result<HashSet<String>, crate::infrastructure::error::Error> {
