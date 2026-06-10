@@ -379,8 +379,16 @@ pub struct FeatureRule {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Whether the instance is being launched to a multi-player world
     pub is_quick_play_multiplayer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     ///  Whether the instance is being launched to a realms world
     pub is_quick_play_realms: Option<bool>,
+    #[serde(flatten)]
+    /// Feature keys Mojang ships before we know about them (precedent: the
+    /// three quick-play keys all arrived at once in 23w14a). Captured so the
+    /// published rule keeps its conditions instead of silently becoming
+    /// vacuous on re-serialize. Mojang feature values are booleans; a future
+    /// non-boolean value fails deserialization rather than being dropped.
+    pub other: BTreeMap<String, bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
@@ -502,8 +510,10 @@ impl Library {
         // First try version_hashes if present
         if let Some(ref hashes) = self.version_hashes {
             if let Some(hash) = hashes.get(minecraft_version) {
-                // Validate hash is at least 2 characters to avoid panic on slicing
-                if hash.len() < 2 {
+                // A malformed hash (too short, or starting with a multibyte
+                // character) comes from untrusted metadata — reject it
+                // instead of panicking on the byte slice.
+                if hash.len() < 2 || !hash.is_char_boundary(2) {
                     return None;
                 }
                 return Some(format!(
@@ -516,8 +526,16 @@ impl Library {
             }
         }
 
-        // Fall back to url field
-        self.url.clone()
+        // Fall back to the url field. It carries one of two forms: a full
+        // artifact URL, or a maven repository base (trailing slash — the form
+        // forge-legacy libraries use) that must be joined with the library's
+        // maven path to address the artifact.
+        match self.url.as_deref() {
+            Some(base) if base.ends_with('/') => {
+                Some(format!("{}{}", base, self.name.path()))
+            }
+            other => other.map(str::to_string),
+        }
     }
 }
 
@@ -1034,6 +1052,58 @@ mod schema_drift_tests {
         assert!(args.contains_key(&ArgumentType::Unknown("wasm".to_string())));
         let back = serde_json::to_string(&args).unwrap();
         assert!(back.contains("\"wasm\""));
+    }
+
+    #[test]
+    fn feature_rule_unknown_keys_round_trip() {
+        // A new feature key must survive deserialize → serialize so the
+        // published rule keeps its condition instead of becoming vacuous.
+        let json = r#"{"is_demo_user": true, "is_quick_play_dimension": true}"#;
+        let rule: FeatureRule = serde_json::from_str(json).unwrap();
+        assert_eq!(rule.is_demo_user, Some(true));
+        assert_eq!(rule.other.get("is_quick_play_dimension"), Some(&true));
+        let back = serde_json::to_string(&rule).unwrap();
+        assert!(back.contains("is_quick_play_dimension"));
+        // Absent optional fields stay absent — no spurious nulls.
+        assert!(!back.contains("is_quick_play_realms"));
+    }
+
+    #[test]
+    fn resolve_url_rejects_malformed_hashes() {
+        let lib: Library = serde_json::from_value(serde_json::json!({
+            "name": "org.example:lib:1.0",
+            "versionHashes": {"1.20.1": "\u{20bf}xyz", "1.20.2": "a"}
+        }))
+        .unwrap();
+        // Multibyte first character: must return None, not panic on slicing.
+        assert_eq!(lib.resolve_url("1.20.1", "https://cdn.example", 5), None);
+        // Too short.
+        assert_eq!(lib.resolve_url("1.20.2", "https://cdn.example", 5), None);
+    }
+
+    #[test]
+    fn resolve_url_joins_maven_base_urls() {
+        let base: Library = serde_json::from_value(serde_json::json!({
+            "name": "com.example:thing:2.0",
+            "url": "https://libraries.minecraft.net/"
+        }))
+        .unwrap();
+        assert_eq!(
+            base.resolve_url("1.20.1", "https://cdn.example", 5).as_deref(),
+            Some(
+                "https://libraries.minecraft.net/com/example/thing/2.0/thing-2.0.jar"
+            )
+        );
+
+        let full: Library = serde_json::from_value(serde_json::json!({
+            "name": "com.example:thing:2.0",
+            "url": "https://cdn.example/v5/objects/ab/cdef"
+        }))
+        .unwrap();
+        assert_eq!(
+            full.resolve_url("1.20.1", "https://cdn.example", 5).as_deref(),
+            Some("https://cdn.example/v5/objects/ab/cdef")
+        );
     }
 
     #[test]

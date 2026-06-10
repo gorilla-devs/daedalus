@@ -72,9 +72,9 @@ pub fn extract_hash_from_cas_url(url: &str) -> Option<String> {
 pub fn build_cas_url(
     hash: &str,
 ) -> Result<String, crate::infrastructure::error::Error> {
-    if hash.len() < 2 {
+    if hash.len() < 2 || !hash.is_char_boundary(2) {
         return Err(crate::infrastructure::error::invalid_input(format!(
-            "Hash too short for CAS URL: '{}' (must be at least 2 characters)",
+            "Hash unusable for CAS URL: '{}' (must be at least 2 single-byte characters)",
             hash
         )));
     }
