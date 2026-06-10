@@ -31,7 +31,11 @@ pub struct ChangeResult {
 /// * `loader_name` - Name of the loader (e.g., "Forge", "NeoForge")
 /// * `version_id` - Version identifier (e.g., "1.20.1-47.1.0")
 /// * `old_version_url` - Optional CAS URL from the previous manifest
-/// * `new_hash` - Hash of the newly generated version data
+/// * `new_hash` - Hash of the newly generated version data. This MUST be the
+///   CAS content hash (`BatchUploader::compute_hash`, SHA-256): it is compared
+///   against the hash extracted from the previous object URL, and when the
+///   version is unchanged callers reuse it as the existing object's key — any
+///   other hash function would either never match or produce a dangling URL
 ///
 /// # Returns
 ///

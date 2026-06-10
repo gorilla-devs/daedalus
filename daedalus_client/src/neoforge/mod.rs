@@ -14,9 +14,9 @@ use crate::common::{
 };
 use crate::services::upload::BatchUploader;
 use crate::{download_file, format_url};
+use daedalus::GradleSpecifier;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, SidedDataEntry};
-use daedalus::{GradleSpecifier, get_hash};
 use dashmap::{DashMap, DashSet};
 use tracing::{info, warn};
 // Note: Using lenient_semver instead of semver::Version to handle
@@ -375,7 +375,10 @@ pub async fn retrieve_data(
                                 };
 
                                 let version_bytes = serde_json::to_vec(&new_profile)?;
-                                let new_hash = get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
+                                // The CAS content hash: comparable against the hash inside the
+                                // previous manifest's object URL, and reusable as the object key
+                                // when the version is unchanged.
+                                let new_hash = BatchUploader::compute_hash(&version_bytes);
 
                                 // Loader IDs are globally unique, so look up by loader id alone.
                                 // This is robust against migrations of the MC-version grouping

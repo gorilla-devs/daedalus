@@ -15,9 +15,9 @@ use crate::common::manifest_merge::{
 };
 use crate::services::upload::BatchUploader;
 use crate::{download_file, download_file_mirrors, format_url};
+use daedalus::GradleSpecifier;
 use daedalus::minecraft::{Argument, ArgumentType, Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo};
-use daedalus::{GradleSpecifier, get_hash};
 use dashmap::{DashMap, DashSet};
 use semver::{Version, VersionReq};
 use std::collections::{HashMap, HashSet};
@@ -320,7 +320,10 @@ pub async fn retrieve_data(
                                     };
 
                                     let version_bytes = serde_json::to_vec(&new_profile)?;
-                                    let new_hash = get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
+                                    // The CAS content hash: comparable against the hash inside the
+                                    // previous manifest's object URL, and reusable as the object key
+                                    // when the version is unchanged.
+                                    let new_hash = BatchUploader::compute_hash(&version_bytes);
 
                                     let old_loader_version = {
                                         let versions = versions_mutex.lock().await;
@@ -604,7 +607,8 @@ pub async fn retrieve_data(
                                     };
 
                                     let version_bytes = serde_json::to_vec(&new_profile)?;
-                                    let new_hash = get_hash(bytes::Bytes::from(version_bytes.clone())).await?;
+                                    // The CAS content hash — see the V1 branch note above.
+                                    let new_hash = BatchUploader::compute_hash(&version_bytes);
 
                                     let old_loader_version = {
                                         let versions = versions_mutex.lock().await;
