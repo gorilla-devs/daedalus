@@ -542,6 +542,11 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
             .as_ref()
             .map(|r| r.loaders.clone())
             .unwrap_or_default();
+        // The untouched carry-forward seed. Fresh uploads overwrite entries in
+        // `loader_references` as they succeed, so when a pin later fails
+        // verification the value sitting in the map is the FRESH build — the
+        // one the operator pinned away from. Restoration must come from here.
+        let carry_forward_references = loader_references.clone();
         let mut upload_failures: Vec<String> = Vec::new();
 
         // §1.6: load pins once per cycle from S3. A 404 means no pins are
@@ -735,6 +740,33 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
         // dropping that loader for every client. On a missing or unverifiable
         // target the pin is skipped — the carry-forward reference is kept — and
         // a loud error is logged for an operator to correct.
+        // A pin that can't be verified must not let this cycle's fresh build
+        // through: on fresh-success cycles the map already holds the fresh
+        // reference, which is exactly the build the operator pinned away
+        // from. Restore the previous root's reference (in steady state, the
+        // pinned build itself); a pinned loader with no previous reference
+        // publishes nothing rather than the pinned-away-from build.
+        fn restore_carry_forward(
+            references: &mut std::collections::BTreeMap<
+                String,
+                services::cas::LoaderReference,
+            >,
+            carry_forward: &std::collections::BTreeMap<
+                String,
+                services::cas::LoaderReference,
+            >,
+            loader: &str,
+        ) {
+            match carry_forward.get(loader) {
+                Some(previous) => {
+                    references.insert(loader.to_string(), previous.clone());
+                }
+                None => {
+                    references.remove(loader);
+                }
+            }
+        }
+
         for (loader, pin) in pins.iter() {
             let pinned_ref = services::cas::LoaderReference::new(
                 loader,
@@ -755,7 +787,12 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                         loader = %loader,
                         pinned_to = %pin.pinned_to,
                         path = %pinned_ref.url,
-                        "Pinned loader manifest does not exist on S3 — refusing to publish a dangling root reference; keeping the carry-forward reference and leaving the pin in place for an operator to correct"
+                        "Pinned loader manifest does not exist on S3 — refusing to publish a dangling root reference; restoring the previous root's reference and leaving the pin in place for an operator to correct"
+                    );
+                    restore_carry_forward(
+                        &mut loader_references,
+                        &carry_forward_references,
+                        loader,
                     );
                 }
                 Err(e) => {
@@ -764,7 +801,12 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                         pinned_to = %pin.pinned_to,
                         path = %pinned_ref.url,
                         error = %e,
-                        "Failed to verify pinned loader manifest on S3 — keeping the carry-forward reference this cycle"
+                        "Failed to verify pinned loader manifest on S3 — restoring the previous root's reference for this cycle"
+                    );
+                    restore_carry_forward(
+                        &mut loader_references,
+                        &carry_forward_references,
+                        loader,
                     );
                 }
             }
