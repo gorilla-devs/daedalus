@@ -165,6 +165,26 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             .dummy_replace_string
             .clone();
 
+        // Cached loader entries embed the mapping table that existed when
+        // they were first processed: re-emitting them after a NEW mapped game
+        // version appeared would publish loader JSONs that can never resolve
+        // the new Minecraft version. When the mapped set grew, bypass the
+        // cache for one cycle so every loader version republishes with the
+        // full table — the expansion is shared, so the refresh costs one
+        // mapping sweep plus the profile fetches, not a per-version explosion.
+        let known_ids: HashSet<&str> =
+            versions.iter().map(|v| v.id.as_str()).collect();
+        let has_new_mapped_version = mapped_game_versions
+            .iter()
+            .any(|v| !known_ids.contains(v.as_str()));
+        drop(known_ids);
+        if has_new_mapped_version && old_manifest_was_present {
+            info!(
+                "🔁 {} - New mapped game version(s) since the previous publish; refreshing all loader versions",
+                self.strategy.name()
+            );
+        }
+
         // Build the set of loader versions to process. For each loader API entry, look up
         // the previously-published LoaderVersion (if any). When found we can skip the
         // fetch/process round-trip entirely and just re-emit the existing entry.
@@ -191,9 +211,13 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             let stable =
                 self.strategy.is_stable(loader as &dyn LoaderVersionInfo);
 
-            let cached = dummy_entry
-                .and_then(|x| x.loaders.iter().find(|l| l.id == version_id))
-                .cloned();
+            let cached = if has_new_mapped_version {
+                None
+            } else {
+                dummy_entry
+                    .and_then(|x| x.loaders.iter().find(|l| l.id == version_id))
+                    .cloned()
+            };
 
             if let Some(mut existing) = cached {
                 // Loader entries are immutable artifacts on the loader API side, so a known
