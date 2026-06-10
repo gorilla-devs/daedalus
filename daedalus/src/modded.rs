@@ -132,13 +132,7 @@ pub fn merge_partial_version(
                     args: BTreeMap<ArgumentType, Vec<Argument>>,
                 ) {
                     for (type_, arguments) in args {
-                        for arg in arguments {
-                            if let Some(vec) = new_map.get_mut(&type_) {
-                                vec.push(arg);
-                            } else {
-                                new_map.insert(type_, vec![arg]);
-                            }
-                        }
+                        new_map.entry(type_).or_default().extend(arguments);
                     }
                 }
 

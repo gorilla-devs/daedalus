@@ -292,6 +292,20 @@ pub enum RuleAction {
     Allow,
     /// The rule's status disallows something to be done
     Disallow,
+    #[serde(untagged)]
+    /// Catch-all for rule actions Mojang ships before we know about them.
+    /// Deserialises any unknown string so a single new action doesn't fail the
+    /// whole version JSON; the wrapped string round-trips on serialize.
+    /// Consumers evaluating rules should treat an unknown action as
+    /// non-matching and surface a warning.
+    Unknown(String),
+}
+
+impl RuleAction {
+    /// True if this is one of the recognised variants.
+    pub fn is_known(&self) -> bool {
+        !matches!(self, RuleAction::Unknown(_))
+    }
 }
 
 #[derive(
@@ -316,8 +330,21 @@ pub enum Os {
     LinuxArm32,
     /// Linux RISC-V 64
     LinuxRiscv64,
-    /// The OS is unknown
-    Unknown,
+    #[serde(untagged)]
+    /// Catch-all for OS names we don't recognise yet (Mojang's literal
+    /// "unknown" placeholder as well as any future OS/arch key like a new
+    /// natives platform). Deserialises any unknown string so one new OS name
+    /// doesn't fail the whole version JSON; the wrapped string round-trips on
+    /// serialize. Rule evaluation should treat an unrecognised OS as
+    /// non-matching.
+    Unknown(String),
+}
+
+impl Os {
+    /// True if this is one of the recognised variants.
+    pub fn is_known(&self) -> bool {
+        !matches!(self, Os::Unknown(_))
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
@@ -653,16 +680,7 @@ pub enum Argument {
 }
 
 #[derive(
-    Serialize,
-    Deserialize,
-    Debug,
-    Eq,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Clone,
-    Copy,
+    Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone,
 )]
 #[serde(rename_all = "kebab-case")]
 /// The type of argument
@@ -673,33 +691,47 @@ pub enum ArgumentType {
     Jvm,
     /// Default JVM arguments that users can customize
     DefaultUserJvm,
+    #[serde(untagged)]
+    /// Catch-all for argument map keys Mojang ships before we know about them
+    /// (this enum keys `VersionInfo::arguments`, so an unrecognised key would
+    /// otherwise fail the whole version JSON). The wrapped string is the raw
+    /// key and round-trips on serialize.
+    Unknown(String),
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone, Copy)]
+impl ArgumentType {
+    /// True if this is one of the recognised variants.
+    pub fn is_known(&self) -> bool {
+        !matches!(self, ArgumentType::Unknown(_))
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash, Clone)]
 #[serde(rename_all = "kebab-case")]
 /// Java Logging type
 pub enum LoggingType {
     /// Log4j XML config file
     Log4j2Xml,
+    #[serde(untagged)]
+    /// Catch-all for logging types Mojang ships before we know about them.
+    /// The wrapped string is the raw value and round-trips on serialize.
+    Unknown(String),
 }
 
 #[derive(
-    Serialize,
-    Deserialize,
-    Debug,
-    Eq,
-    PartialEq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Clone,
-    Copy,
+    Serialize, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Clone,
 )]
 #[serde(rename_all = "kebab-case")]
 /// Java Logging config names
 pub enum LoggingConfigName {
     /// Client logging config
     Client,
+    #[serde(untagged)]
+    /// Catch-all for logging config names Mojang ships before we know about
+    /// them (this enum keys `VersionInfo::logging`, so an unrecognised key
+    /// would otherwise fail the whole version JSON). The wrapped string is the
+    /// raw key and round-trips on serialize.
+    Unknown(String),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -960,5 +992,65 @@ mod schema_drift_tests {
             matches!(profile, MinecraftJavaProfile::Unknown(ref s) if s == "java-runtime-omega")
         );
         assert!(!profile.is_known());
+    }
+
+    #[test]
+    fn os_unknown_round_trips() {
+        let unknown: Os = serde_json::from_str("\"linux-loongarch64\"")
+            .expect("untagged Unknown deserialises");
+        assert!(matches!(unknown, Os::Unknown(ref s) if s == "linux-loongarch64"));
+        assert!(!unknown.is_known());
+        assert_eq!(
+            serde_json::to_string(&unknown).unwrap(),
+            "\"linux-loongarch64\""
+        );
+        // Mojang's literal "unknown" placeholder lands in the same bucket.
+        let literal: Os = serde_json::from_str("\"unknown\"").unwrap();
+        assert!(matches!(literal, Os::Unknown(ref s) if s == "unknown"));
+        // Known variants are unaffected.
+        let known: Os = serde_json::from_str("\"linux-riscv64\"").unwrap();
+        assert!(matches!(known, Os::LinuxRiscv64));
+    }
+
+    #[test]
+    fn rule_action_unknown_round_trips() {
+        let unknown: RuleAction = serde_json::from_str("\"audit\"")
+            .expect("untagged Unknown deserialises");
+        assert!(matches!(unknown, RuleAction::Unknown(ref s) if s == "audit"));
+        assert!(!unknown.is_known());
+        assert_eq!(serde_json::to_string(&unknown).unwrap(), "\"audit\"");
+        let known: RuleAction = serde_json::from_str("\"allow\"").unwrap();
+        assert!(matches!(known, RuleAction::Allow));
+    }
+
+    #[test]
+    fn argument_type_unknown_map_key_round_trips() {
+        // A new arguments key must not fail the whole map and must survive
+        // a deserialize → serialize round trip unchanged.
+        let json = r#"{"game": ["--demo"], "wasm": ["--experimental"]}"#;
+        let args: BTreeMap<ArgumentType, Vec<Argument>> =
+            serde_json::from_str(json).expect("unknown key tolerated");
+        assert!(args.contains_key(&ArgumentType::Game));
+        assert!(args.contains_key(&ArgumentType::Unknown("wasm".to_string())));
+        let back = serde_json::to_string(&args).unwrap();
+        assert!(back.contains("\"wasm\""));
+    }
+
+    #[test]
+    fn logging_unknown_keys_round_trip() {
+        let json = r#"{
+            "server": {
+                "file": {"id": "x.xml", "sha1": "a", "size": 1, "url": "u"},
+                "argument": "-Dlog4j",
+                "type": "json-config"
+            }
+        }"#;
+        let logging: BTreeMap<LoggingConfigName, LoggingConfig> =
+            serde_json::from_str(json).expect("unknown key+type tolerated");
+        let (name, config) = logging.iter().next().unwrap();
+        assert!(matches!(name, LoggingConfigName::Unknown(s) if s == "server"));
+        assert!(
+            matches!(&config.type_, LoggingType::Unknown(s) if s == "json-config")
+        );
     }
 }
