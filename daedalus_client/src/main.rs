@@ -923,12 +923,13 @@ async fn run_publish_cycle(
 
             match serde_json::to_vec_pretty(&root_manifest) {
                 Ok(root_bytes) => {
-                    // Write history backup FIRST so it always
-                    // covers any root we publish — previously
-                    // the backup ran after the root, leaving
-                    // a published manifest with no history
-                    // entry if the process was killed in
-                    // between.
+                    // The history backup is written FIRST and is load-bearing:
+                    // it is what makes the root we are about to publish
+                    // rollback-targetable. A root published without its
+                    // history entry cannot be restored once the next cycle
+                    // overwrites it, so a failed backup holds back the root
+                    // publish — the previous root stays live and the next
+                    // cycle retries.
                     let backup_path = format!(
                         "v{}/history/manifest-{}.json",
                         crate::services::cas::CAS_VERSION,
@@ -944,38 +945,40 @@ async fn run_publish_cycle(
                     )
                     .await
                     {
-                        Ok(_) => info!("Backup created successfully"),
-                        Err(e) => {
-                            warn!(error = %e, "Failed to create backup (non-fatal)")
-                        }
-                    }
-
-                    // §1.5: Acquire the shared root-write mutex so this PUT
-                    // cannot race with the control executor rollback handler
-                    // writing to the same path.
-                    let _root_write_guard = ROOT_WRITE_LOCK.lock().await;
-
-                    match upload_file_to_bucket(
-                        root_path.clone(),
-                        root_bytes,
-                        Some("application/json".to_string()),
-                        cycle_uploaded_paths.clone(),
-                        semaphore.clone(),
-                    )
-                    .await
-                    {
                         Ok(_) => {
-                            info!(
-                                "Root manifest uploaded successfully - all changes are now live"
+                            info!("Backup created successfully");
+
+                            // §1.5: Acquire the shared root-write mutex so this
+                            // PUT cannot race with the control executor rollback
+                            // handler writing to the same path.
+                            let _root_write_guard = ROOT_WRITE_LOCK.lock().await;
+
+                            match upload_file_to_bucket(
+                                root_path.clone(),
+                                root_bytes,
+                                Some("application/json".to_string()),
+                                cycle_uploaded_paths.clone(),
+                                semaphore.clone(),
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    info!(
+                                        "Root manifest uploaded successfully - all changes are now live"
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(error = %e, "Failed to upload root manifest - changes NOT committed");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                error = %e,
+                                "Failed to write the history backup — holding back the root publish this cycle so every published root stays rollback-targetable; the previous root remains live"
                             );
                         }
-                        Err(e) => {
-                            error!(error = %e, "Failed to upload root manifest - changes NOT committed");
-                        }
                     }
-
-                    // Release the root-write mutex before saving run-state.
-                    drop(_root_write_guard);
                 }
                 Err(e) => {
                     error!(error = %e, "Failed to serialize root manifest");

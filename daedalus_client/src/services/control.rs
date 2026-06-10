@@ -648,10 +648,18 @@ async fn execute_rollback(
         .await
     {
         Ok(resp) => Some(resp.bytes().to_vec()),
+        // No live root yet — nothing to back up; the rollback can proceed.
         Err(s3::error::S3Error::Http(404, _)) => None,
         Err(e) => {
-            warn!(error = %e, "Failed to read current live root; proceeding without backup");
-            None
+            // Without reading the live root we cannot write the pre-rollback
+            // backup, and a rollback with no undo point is not safe to run —
+            // abort; the operator's intent stays pending and the next poll
+            // retries.
+            warn!(error = %e, "Failed to read current live root; aborting rollback (no undo point)");
+            return Err(crate::infrastructure::error::s3_error(
+                e,
+                live_root_path,
+            ));
         }
     };
 
@@ -661,17 +669,35 @@ async fn execute_rollback(
         format!("v{CAS_VERSION}/history/manifest-{now_str}.meta.json");
 
     if let Some(ref live_bytes) = current_live_bytes {
-        if let Err(e) = bucket
-            .put_object_with_content_type(
-                &backup_path,
-                live_bytes,
-                "application/json",
-            )
-            .await
-        {
-            warn!(path = %backup_path, error = %e, "Failed to write pre-rollback backup; proceeding anyway");
-        } else {
-            info!(path = %backup_path, "Pre-rollback backup written");
+        // The backup is the undo point for a mistaken rollback — it must
+        // exist before the live root is overwritten. Retried twice; a final
+        // failure aborts the rollback (the intent stays pending for the next
+        // poll) instead of destroying the only copy of the current root.
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match bucket
+                .put_object_with_content_type(
+                    &backup_path,
+                    live_bytes,
+                    "application/json",
+                )
+                .await
+            {
+                Ok(_) => {
+                    info!(path = %backup_path, "Pre-rollback backup written");
+                    break;
+                }
+                Err(e) if attempts < 3 => {
+                    warn!(path = %backup_path, error = %e, attempt = attempts, "Pre-rollback backup write failed; retrying");
+                }
+                Err(e) => {
+                    return Err(crate::infrastructure::error::s3_error(
+                        e,
+                        backup_path,
+                    ));
+                }
+            }
         }
 
         let meta = serde_json::json!({
