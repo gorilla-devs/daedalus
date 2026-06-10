@@ -92,6 +92,17 @@ pub async fn retrieve_data(
     let mc_library_cache_mutex =
         Arc::new(Mutex::new(MinecraftVersionLibraryCache::new()));
 
+    // Processed version-JSON URL per MC id, from this run's minecraft
+    // manifest. The V1 vanilla-library filter sources its library sets from
+    // these CAS objects — processed version JSONs exist nowhere else.
+    let mc_version_urls: Arc<HashMap<String, String>> = Arc::new(
+        minecraft_versions
+            .versions
+            .iter()
+            .map(|v| (v.id.clone(), v.url.clone()))
+            .collect(),
+    );
+
     let versions = Arc::new(Mutex::new(Vec::new()));
 
     let visited_assets = Arc::new(DashSet::new());
@@ -169,6 +180,7 @@ pub async fn retrieve_data(
                 {
                     let loaders_futures = loaders.into_iter().map(|(loader_version_full, version)| async {
                         let mc_library_cache_mutex = Arc::clone(&mc_library_cache_mutex);
+                        let mc_version_urls = Arc::clone(&mc_version_urls);
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets);
                         let visited_lib_hashes = Arc::clone(&visited_lib_hashes);
@@ -253,8 +265,17 @@ pub async fn retrieve_data(
                                     let now = Instant::now();
 
                                     let minecraft_libs_filter = {
+                                        let Some(mc_version_url) = mc_version_urls.get(&profile.install.minecraft) else {
+                                            // The MC version this installer targets isn't in the
+                                            // published manifest this cycle — the vanilla-library
+                                            // filter has nothing to compare against.
+                                            return Err(crate::infrastructure::error::invalid_input(format!(
+                                                "Forge {} targets MC version {} which is not in this cycle's manifest",
+                                                loader_version_full, profile.install.minecraft
+                                            )));
+                                        };
                                         let mut mc_library_cache = mc_library_cache_mutex.lock().await;
-                                        mc_library_cache.load_minecraft_version_libs(&profile.install.minecraft).await?.clone()
+                                        mc_library_cache.load_minecraft_version_libs(&profile.install.minecraft, mc_version_url).await?.clone()
                                     };
                                     let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| {
                                         let semaphore = semaphore.clone();

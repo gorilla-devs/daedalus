@@ -1,25 +1,21 @@
 //! Version-related utilities for Forge processing
 
-use crate::format_url;
 use daedalus::GradleSpecifier;
 use std::collections::HashSet;
 
 // Re-export CAS utilities from common module
 pub use crate::common::cas::extract_hash_from_cas_url;
 
-/// Fetch generated version info from the CAS
+/// Fetch a processed Minecraft version JSON, given the CAS object URL
+/// recorded in this run's freshly built minecraft manifest. The URL must come
+/// from that manifest — processed version JSONs exist only as CAS objects,
+/// not at any per-version path.
 pub async fn fetch_generated_version_info(
-    version_id: &str,
+    url: &str,
 ) -> Result<daedalus::minecraft::VersionInfo, crate::infrastructure::error::Error>
 {
-    let path = format!(
-        "minecraft/v{}/versions/{}.json",
-        daedalus::minecraft::CURRENT_FORMAT_VERSION,
-        version_id
-    );
-
     Ok(serde_json::from_slice(
-        &daedalus::download_file(&format_url(&path), None).await?,
+        &daedalus::download_file(url, None).await?,
     )?)
 }
 

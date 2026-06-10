@@ -102,6 +102,7 @@ impl MinecraftVersionLibraryCache {
     pub async fn load_minecraft_version_libs(
         &mut self,
         version_id: &str,
+        version_url: &str,
     ) -> Result<&HashSet<GradleSpecifier>, crate::infrastructure::error::Error>
     {
         let index = self.versions.iter().position(|ver| ver.id == version_id);
@@ -112,7 +113,7 @@ impl MinecraftVersionLibraryCache {
             self.versions.insert(0, entry);
         } else {
             let generated_version =
-                super::fetch_generated_version_info(version_id).await?;
+                super::fetch_generated_version_info(version_url).await?;
 
             let libraries: HashSet<GradleSpecifier> = generated_version
                 .libraries
