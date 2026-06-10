@@ -122,6 +122,26 @@ pub fn merge_partial_version(
         )
         .dummy_replace_string;
 
+    // A loader library on the classpath shadows the vanilla library with the
+    // same package:artifact:classifier coordinates (legacy Forge ships its own
+    // log4j, jopt-simple, guava, ...): the vanilla copy is dropped so the
+    // merged version carries exactly one copy of each such library. Split
+    // natives use distinct classifiers, so they are only shadowed when the
+    // loader ships the same classifier itself.
+    let loader_classpath_coords = partial
+        .libraries
+        .iter()
+        .filter(|lib| lib.include_in_classpath)
+        .map(|lib| lib.name.get_computed_name())
+        .collect::<std::collections::HashSet<_>>();
+    let merge_libraries = merge
+        .libraries
+        .into_iter()
+        .filter(|lib| {
+            !loader_classpath_coords.contains(&lib.name.get_computed_name())
+        })
+        .collect::<Vec<_>>();
+
     VersionInfo {
         arguments: if let Some(partial_args) = partial.arguments {
             if let Some(merge_args) = merge.arguments {
@@ -155,7 +175,7 @@ pub fn merge_partial_version(
         libraries: partial
             .libraries
             .into_iter()
-            .chain(merge.libraries)
+            .chain(merge_libraries)
             .map(|x| Library {
                 downloads: x.downloads,
                 extract: x.extract,
@@ -230,4 +250,97 @@ pub struct LoaderVersion {
 /// Fetches the manifest of a mod loader
 pub async fn fetch_manifest(url: &str) -> Result<Manifest, Error> {
     Ok(serde_json::from_slice(&download_file(url, None).await?)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Branding;
+
+    fn version_info(libraries: serde_json::Value) -> VersionInfo {
+        serde_json::from_value(serde_json::json!({
+            "assetIndex": {
+                "id": "17",
+                "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+                "size": 1,
+                "totalSize": 1,
+                "url": "https://example.com/17.json"
+            },
+            "assets": "17",
+            "downloads": {},
+            "id": "1.20.1",
+            "libraries": libraries,
+            "mainClass": "net.minecraft.client.main.Main",
+            "minimumLauncherVersion": 21,
+            "releaseTime": "2023-06-12T13:25:51+00:00",
+            "time": "2023-06-12T13:25:51+00:00",
+            "type": "release"
+        }))
+        .unwrap()
+    }
+
+    fn partial_info(libraries: serde_json::Value) -> PartialVersionInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": "forge-47.2.0",
+            "inheritsFrom": "1.20.1",
+            "releaseTime": "2023-06-12T13:25:51+00:00",
+            "time": "2023-06-12T13:25:51+00:00",
+            "libraries": libraries,
+            "type": "release"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn merge_drops_vanilla_libraries_shadowed_by_the_loader() {
+        let _ = Branding::set_branding(Branding::default());
+
+        let vanilla = version_info(serde_json::json!([
+            {"name": "org.apache.logging.log4j:log4j-core:2.0-beta9"},
+            {"name": "org.lwjgl:lwjgl:3.3.3:natives-linux"},
+            {"name": "com.mojang:brigadier:1.1.8"}
+        ]));
+        let loader = partial_info(serde_json::json!([
+            {"name": "org.apache.logging.log4j:log4j-core:2.17.1"},
+            {"name": "net.minecraftforge:forge:1.20.1-47.2.0"}
+        ]));
+
+        let merged = merge_partial_version(loader, vanilla);
+        let names: Vec<String> =
+            merged.libraries.iter().map(|l| l.name.to_string()).collect();
+
+        // The loader's log4j wins; the vanilla copy is gone.
+        assert!(
+            names.contains(&"org.apache.logging.log4j:log4j-core:2.17.1".into())
+        );
+        assert!(
+            !names
+                .contains(&"org.apache.logging.log4j:log4j-core:2.0-beta9".into())
+        );
+        // Unrelated vanilla libraries and classifier'd natives survive.
+        assert!(names.contains(&"com.mojang:brigadier:1.1.8".into()));
+        assert!(names.contains(&"org.lwjgl:lwjgl:3.3.3:natives-linux".into()));
+    }
+
+    #[test]
+    fn merge_keeps_vanilla_when_loader_copy_is_off_classpath() {
+        let _ = Branding::set_branding(Branding::default());
+
+        let vanilla = version_info(serde_json::json!([
+            {"name": "org.apache.logging.log4j:log4j-core:2.0-beta9"}
+        ]));
+        let loader = partial_info(serde_json::json!([
+            {
+                "name": "org.apache.logging.log4j:log4j-core:2.17.1",
+                "include_in_classpath": false
+            }
+        ]));
+
+        let merged = merge_partial_version(loader, vanilla);
+        let names: Vec<String> =
+            merged.libraries.iter().map(|l| l.name.to_string()).collect();
+        assert!(
+            names.contains(&"org.apache.logging.log4j:log4j-core:2.0-beta9".into())
+        );
+    }
 }
