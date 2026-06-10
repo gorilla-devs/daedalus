@@ -14,10 +14,10 @@ use crate::common::{
 };
 use crate::services::upload::BatchUploader;
 use crate::{download_file, format_url};
-use daedalus::get_hash;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, SidedDataEntry};
-use dashmap::DashSet;
+use daedalus::{GradleSpecifier, get_hash};
+use dashmap::{DashMap, DashSet};
 use tracing::{info, warn};
 // Note: Using lenient_semver instead of semver::Version to handle
 // non-standard NeoForge versions like "26.1.0.0-alpha.1+snapshot-1"
@@ -85,6 +85,12 @@ pub async fn retrieve_data(
         Arc::new(Mutex::new(Vec::new()));
 
     let visited_assets = Arc::new(DashSet::new());
+    // Coordinate -> CAS hash, shared across every version processed this
+    // run. When a library is referenced by more than one version, later
+    // versions reuse the first upload's real CAS URL instead of emitting a
+    // `maven/` URL that nothing is ever uploaded to (which 404s clients).
+    let visited_lib_hashes: Arc<DashMap<GradleSpecifier, String>> =
+        Arc::new(DashMap::new());
 
     let mut version_futures = Vec::new();
 
@@ -106,6 +112,7 @@ pub async fn retrieve_data(
             let versions = Arc::clone(&versions);
             let old_versions = Arc::clone(&old_versions);
             let visited_assets = Arc::clone(&visited_assets);
+            let visited_lib_hashes = Arc::clone(&visited_lib_hashes);
             let semaphore = semaphore.clone();
             version_futures.push(async move {
                 let mut loaders_versions = Vec::new();
@@ -114,6 +121,7 @@ pub async fn retrieve_data(
                     let loaders_futures = loaders.into_iter().map(|(loader_version_full, new_forge)| async {
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets);
+                        let visited_lib_hashes = Arc::clone(&visited_lib_hashes);
                         let semaphore = Arc::clone(&semaphore);
 
                         async move {
@@ -279,23 +287,30 @@ pub async fn retrieve_data(
                                 let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| {
                                     let semaphore = semaphore.clone();
                                     let visited_assets = visited_assets.clone();
+                                    let visited_lib_hashes = visited_lib_hashes.clone();
                                     let local_libs = local_libs.clone();
 
                                     async move {
-                                    let artifact_path = &lib.name.path();
-
-                                    // Check if we've already processed this artifact (lock-free)
+                                    // If another version this run already processed this exact artifact,
+                                    // reuse its real CAS URL from the cached hash. The bytes live at
+                                    // v{CAS_VERSION}/objects/{hash} — never at a `maven/{path}` URL — so
+                                    // emitting `maven/...` here produced dangling library references that
+                                    // 404 on install/repair.
                                     if !visited_assets.insert(lib.name.clone()) {
-                                        // Already processed, skip download
-                                        if let Some(ref mut downloads) = lib.downloads {
-                                            if let Some(ref mut artifact) = downloads.artifact {
-                                                artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
+                                        if let Some(hash_entry) = visited_lib_hashes.get(&lib.name) {
+                                            let cas_url = crate::common::cas::build_cas_url(hash_entry.value())?;
+                                            if let Some(ref mut downloads) = lib.downloads {
+                                                if let Some(ref mut artifact) = downloads.artifact {
+                                                    artifact.url = Some(cas_url);
+                                                }
+                                            } else if lib.url.is_some() {
+                                                lib.url = Some(cas_url);
                                             }
-                                        } else if lib.url.is_some() {
-                                            lib.url = Some(format_url("maven/"));
+                                            return Ok::<Library, crate::infrastructure::error::Error>(lib);
                                         }
-
-                                        return Ok::<Library, crate::infrastructure::error::Error>(lib);
+                                        // No cached hash yet means the first claimer hasn't finished
+                                        // uploading — fall through and upload it ourselves rather than
+                                        // emit a broken URL.
                                     }
 
                                     let artifact_bytes = if let Some(ref mut downloads) = lib.downloads {
@@ -311,10 +326,6 @@ pub async fn retrieve_data(
                                                 local_libs.get(&lib.name.to_string()).cloned()
                                             };
 
-                                            if res.is_some() {
-                                                artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
-                                            }
-
                                             res
                                         } else { None }
                                     } else if let Some(ref mut url) = lib.url {
@@ -329,10 +340,6 @@ pub async fn retrieve_data(
                                                 .await?)
                                         };
 
-                                        if res.is_some() {
-                                            lib.url = Some(format_url("maven/"));
-                                        }
-
                                         res
                                     } else { None };
 
@@ -344,6 +351,10 @@ pub async fn retrieve_data(
                                             s3_client,
                                             semaphore.clone(),
                                         ).await?;
+
+                                        // Cache the hash so other versions referencing this same artifact
+                                        // this run dedup to the CAS URL above.
+                                        visited_lib_hashes.insert(lib.name.clone(), hash.clone());
 
                                         // Use common CAS URL building
                                         let cas_url = crate::common::cas::build_cas_url(&hash)?;

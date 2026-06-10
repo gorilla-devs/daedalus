@@ -97,8 +97,9 @@ pub async fn retrieve_data(
     let versions = Arc::new(Mutex::new(Vec::new()));
 
     let visited_assets = Arc::new(DashSet::new());
-    // Cache CAS hash per artifact for the V1 path so dedup can produce a real CAS URL.
-    let visited_v1_hashes: Arc<DashMap<GradleSpecifier, String>> =
+    // Cache CAS hash per artifact so dedup can produce a real CAS URL.
+    // Shared by both the V1 and V2 library paths.
+    let visited_lib_hashes: Arc<DashMap<GradleSpecifier, String>> =
         Arc::new(DashMap::new());
 
     let mut version_futures = Vec::new();
@@ -173,7 +174,7 @@ pub async fn retrieve_data(
                         let mc_library_cache_mutex = Arc::clone(&mc_library_cache_mutex);
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets);
-                        let visited_v1_hashes = Arc::clone(&visited_v1_hashes);
+                        let visited_lib_hashes = Arc::clone(&visited_lib_hashes);
                         let recommended_loaders = Arc::clone(&recommended_loaders);
                         let semaphore = Arc::clone(&semaphore);
                         let minecraft_version = minecraft_version.clone();
@@ -248,7 +249,7 @@ pub async fn retrieve_data(
                                     let libs = futures::future::try_join_all(profile.version_info.libraries.into_iter().map(|mut lib| {
                                         let semaphore = semaphore.clone();
                                         let visited_assets = visited_assets.clone();
-                                        let visited_v1_hashes = visited_v1_hashes.clone();
+                                        let visited_lib_hashes = visited_lib_hashes.clone();
                                         let forge_universal_bytes = forge_universal_bytes.clone();
                                         let forge_universal_path = forge_universal_path.clone();
                                         let minecraft_libs_filter = minecraft_libs_filter.clone();
@@ -262,7 +263,7 @@ pub async fn retrieve_data(
                                             // Check if we've already processed this artifact (lock-free)
                                             if !visited_assets.insert(lib.name.clone()) {
                                                 // Already processed: produce the real CAS URL from the cached hash.
-                                                if let Some(hash_entry) = visited_v1_hashes.get(&lib.name) {
+                                                if let Some(hash_entry) = visited_lib_hashes.get(&lib.name) {
                                                     lib.url = Some(crate::common::cas::build_cas_url(hash_entry.value())?);
                                                     return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
                                                 }
@@ -293,7 +294,7 @@ pub async fn retrieve_data(
                                             ).await?;
 
                                             // Cache hash for future dedup hits.
-                                            visited_v1_hashes.insert(lib.name.clone(), hash.clone());
+                                            visited_lib_hashes.insert(lib.name.clone(), hash.clone());
 
                                             // Store full CAS URL
                                             lib.url = Some(crate::common::cas::build_cas_url(&hash)?);
@@ -514,23 +515,30 @@ pub async fn retrieve_data(
                                     let libs = futures::future::try_join_all(libs.into_iter().map(|mut lib| {
                                         let semaphore = semaphore.clone();
                                         let visited_assets = visited_assets.clone();
+                                        let visited_lib_hashes = visited_lib_hashes.clone();
                                         let local_libs = local_libs.clone();
 
                                         async move {
-                                        let artifact_path = lib.name.path();
-
-                                        // Check if we've already processed this artifact (lock-free)
+                                        // If another version this run already processed this exact artifact,
+                                        // reuse its real CAS URL from the cached hash. The bytes live at
+                                        // v{CAS_VERSION}/objects/{hash} — never at a `maven/{path}` URL — so
+                                        // emitting `maven/...` here produced dangling library references that
+                                        // 404 on install/repair.
                                         if !visited_assets.insert(lib.name.clone()) {
-                                            // Already processed, skip download
-                                            if let Some(ref mut downloads) = lib.downloads {
-                                                if let Some(ref mut artifact) = downloads.artifact {
-                                                    artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
+                                            if let Some(hash_entry) = visited_lib_hashes.get(&lib.name) {
+                                                let cas_url = crate::common::cas::build_cas_url(hash_entry.value())?;
+                                                if let Some(ref mut downloads) = lib.downloads {
+                                                    if let Some(ref mut artifact) = downloads.artifact {
+                                                        artifact.url = Some(cas_url);
+                                                    }
+                                                } else if lib.url.is_some() {
+                                                    lib.url = Some(cas_url);
                                                 }
-                                            } else if lib.url.is_some() {
-                                                lib.url = Some(format_url("maven/"));
+                                                return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
                                             }
-
-                                            return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
+                                            // No cached hash yet means the first claimer hasn't finished
+                                            // uploading — fall through and upload it ourselves rather than
+                                            // emit a broken URL.
                                         }
 
                                         let artifact_bytes = if let Some(ref mut downloads) = lib.downloads {
@@ -545,9 +553,7 @@ pub async fn retrieve_data(
                                                     local_libs.get(&lib.name.to_string()).cloned().flatten()
                                                 };
 
-                                                if res.is_some() {
-                                                    artifact.url = Some(format_url(&format!("maven/{}", artifact_path)));
-                                                } else {
+                                                if res.is_none() {
                                                     artifact.url = None;
                                                 }
 
@@ -565,9 +571,7 @@ pub async fn retrieve_data(
                                                 ).await?)
                                             };
 
-                                            if res.is_some() {
-                                                lib.url = Some(format_url("maven/"));
-                                            } else {
+                                            if res.is_none() {
                                                 lib.url = None;
                                             }
 
@@ -589,6 +593,10 @@ pub async fn retrieve_data(
                                                 s3_client,
                                                 semaphore.clone(),
                                             ).await?;
+
+                                            // Cache the hash so other versions referencing this same artifact
+                                            // this run dedup to the CAS URL above.
+                                            visited_lib_hashes.insert(lib.name.clone(), hash.clone());
 
                                             // Store full CAS URL
                                             let cas_url = crate::common::cas::build_cas_url(&hash)?;
