@@ -14,7 +14,7 @@ use crate::common::manifest_merge::{
     merge_loader_versions, sort_by_minecraft_order, sort_loaders_by_metadata,
 };
 use crate::services::upload::BatchUploader;
-use crate::{download_file, download_file_mirrors, format_url};
+use crate::{download_file, download_file_mirrors};
 use daedalus::GradleSpecifier;
 use daedalus::minecraft::{Argument, ArgumentType, Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo};
@@ -77,19 +77,16 @@ pub async fn retrieve_data(
         "Loaded Forge promotions"
     );
 
-    let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
-        "forge/v{}/manifest.json",
-        crate::services::cas::CAS_VERSION,
-    )))
-    .await
-    .ok();
-
-    let old_versions =
-        Arc::new(Mutex::new(if let Some(old_manifest) = old_manifest {
-            old_manifest.game_versions
-        } else {
-            Vec::new()
-        }));
+    // Previous publish's forge versions, resolved through the previous root
+    // manifest — loader manifests live at timestamped keys that only the root
+    // records, so this is the only path that can actually find them.
+    let old_versions: Vec<daedalus::modded::Version> =
+        crate::services::cas::fetch_previous_loader_versions(
+            s3_client, "forge",
+        )
+        .await
+        .unwrap_or_default();
+    let old_versions = Arc::new(Mutex::new(old_versions));
 
     let mc_library_cache_mutex =
         Arc::new(Mutex::new(MinecraftVersionLibraryCache::new()));

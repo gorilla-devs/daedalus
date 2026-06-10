@@ -13,7 +13,7 @@ use crate::common::{
     },
 };
 use crate::services::upload::BatchUploader;
-use crate::{download_file, format_url};
+use crate::download_file;
 use daedalus::GradleSpecifier;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, SidedDataEntry};
@@ -67,19 +67,16 @@ pub async fn retrieve_data(
     );
 
     let maven_metadata = fetch_maven_metadata(semaphore.clone()).await?;
-    let old_manifest = daedalus::modded::fetch_manifest(&format_url(&format!(
-        "neoforge/v{}/manifest.json",
-        crate::services::cas::CAS_VERSION,
-    )))
-    .await
-    .ok();
-
-    let old_versions =
-        Arc::new(Mutex::new(if let Some(old_manifest) = old_manifest {
-            old_manifest.game_versions
-        } else {
-            Vec::new()
-        }));
+    // Previous publish's neoforge versions, resolved through the previous
+    // root manifest — loader manifests live at timestamped keys that only the
+    // root records, so this is the only path that can actually find them.
+    let old_versions: Vec<daedalus::modded::Version> =
+        crate::services::cas::fetch_previous_loader_versions(
+            s3_client, "neoforge",
+        )
+        .await
+        .unwrap_or_default();
+    let old_versions = Arc::new(Mutex::new(old_versions));
 
     let versions: Arc<Mutex<Vec<daedalus::modded::Version>>> =
         Arc::new(Mutex::new(Vec::new()));

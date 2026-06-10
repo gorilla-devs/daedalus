@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 /// Current CAS (Content-Addressable Storage) version
 ///
@@ -166,6 +166,102 @@ impl LoaderManifest {
         let versions = serde_json::to_value(&entries)
             .expect("LoaderManifestEntry should always serialize to JSON");
         Self::new(loader, versions)
+    }
+}
+
+/// Fetch the versions payload of the most recently PUBLISHED manifest for
+/// `loader`, by following the previous root manifest's loader reference.
+///
+/// This is the only correct source for "what did we publish last cycle":
+/// loader manifests live at timestamped keys
+/// (`v{N}/manifests/{loader}/{timestamp}.json`) and only the root manifest
+/// records which timestamp is live. Reads go to S3 (read-after-write
+/// consistent), not the CDN, so a stale edge cache can never feed an old
+/// manifest back in as the baseline.
+///
+/// Returns `None` when there is no previous publish (cold start, or the
+/// loader has never published) or when any step fails — callers treat that
+/// as "no baseline" and rebuild from scratch, which is always safe, just
+/// slower. Failures are logged: an unreadable baseline silently disables
+/// change detection, carry-forward and new-version notifications for the
+/// cycle, and that should be visible to operators.
+pub async fn fetch_previous_loader_versions<T: serde::de::DeserializeOwned>(
+    bucket: &s3::Bucket,
+    loader: &str,
+) -> Option<T> {
+    let root_path = format!("v{}/manifest.json", CAS_VERSION);
+    let root = match bucket.get_object(&root_path).await {
+        Ok(resp) => {
+            match serde_json::from_slice::<RootManifest>(resp.bytes()) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(
+                        loader,
+                        error = %e,
+                        "Previous root manifest exists but could not be parsed; proceeding without a baseline"
+                    );
+                    return None;
+                }
+            }
+        }
+        Err(s3::error::S3Error::Http(404, _)) => {
+            info!(loader, "No previous root manifest (first publish?)");
+            return None;
+        }
+        Err(e) => {
+            warn!(
+                loader,
+                error = %e,
+                "Failed to fetch previous root manifest; proceeding without a baseline"
+            );
+            return None;
+        }
+    };
+
+    let reference = root.loaders.get(loader)?;
+    let manifest = match bucket.get_object(&reference.url).await {
+        Ok(resp) => {
+            match serde_json::from_slice::<LoaderManifest>(resp.bytes()) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(
+                        loader,
+                        path = %reference.url,
+                        error = %e,
+                        "Previous loader manifest exists but could not be parsed; proceeding without a baseline"
+                    );
+                    return None;
+                }
+            }
+        }
+        Err(e) => {
+            warn!(
+                loader,
+                path = %reference.url,
+                error = %e,
+                "Failed to fetch previous loader manifest referenced by the root; proceeding without a baseline"
+            );
+            return None;
+        }
+    };
+
+    match serde_json::from_value::<T>(manifest.versions) {
+        Ok(v) => {
+            info!(
+                loader,
+                timestamp = %manifest.timestamp,
+                "Loaded previous loader versions as the cycle baseline"
+            );
+            Some(v)
+        }
+        Err(e) => {
+            warn!(
+                loader,
+                error = %e,
+                "Previous loader manifest versions payload has an unexpected shape; proceeding without a baseline"
+            );
+            None
+        }
     }
 }
 

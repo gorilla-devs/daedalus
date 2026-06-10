@@ -4,7 +4,7 @@ pub mod quilt;
 use crate::common::cas::build_cas_url;
 use crate::common::change_detection::detect_version_change;
 use crate::services::upload::BatchUploader;
-use crate::{download_file, format_url};
+use crate::download_file;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, Version};
 use daedalus::{BRANDING, get_hash};
@@ -111,14 +111,15 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         let list: Arc<V> =
             Arc::new(self.fetch_versions_list(None, semaphore.clone()).await?);
 
-        let old_manifest =
-            daedalus::modded::fetch_manifest(&format_url(&format!(
-                "{}/v{}/manifest.json",
+        // Previous publish's game-version entries, resolved through the
+        // previous root manifest — loader manifests live at timestamped keys
+        // that only the root records.
+        let old_versions: Option<Vec<Version>> =
+            crate::services::cas::fetch_previous_loader_versions(
+                s3_client,
                 self.strategy.manifest_path_prefix(),
-                crate::services::cas::CAS_VERSION,
-            )))
-            .await
-            .ok();
+            )
+            .await;
 
         // Treat "we successfully loaded a previous manifest" as the cold-start
         // signal for Discord notifications: on a brand-new deploy / first run
@@ -126,9 +127,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         // avoid spamming one message per historical Minecraft version. This
         // does mean a transient fetch failure of the previous manifest is
         // indistinguishable from a true cold start, which is acceptable.
-        let old_manifest_was_present = old_manifest.is_some();
-        let mut versions =
-            old_manifest.map(|m| m.game_versions).unwrap_or_default();
+        let old_manifest_was_present = old_versions.is_some();
+        let mut versions = old_versions.unwrap_or_default();
 
         let dummy_replace_string = BRANDING
             .get()

@@ -72,19 +72,21 @@ pub async fn retrieve_data(
 ) -> Result<VersionManifest, crate::infrastructure::error::Error> {
     info!(is_first_run = is_first_run, "Retrieving Minecraft data");
 
-    // TODO: Old manifest doesn't take LWJGL meta into account
-    let old_manifest = if is_first_run {
-        None
-    } else {
-        daedalus::minecraft::fetch_version_manifest(Some(&format_url(
-            &format!(
-                "minecraft/v{}/manifest.json",
-                daedalus::minecraft::CURRENT_FORMAT_VERSION
-            ),
-        )))
-        .await
-        .ok()
-    };
+    // Previous publish's minecraft entries, resolved through the previous
+    // root manifest — they carry the original_sha1/assets/java fields the
+    // skip-reuse path below depends on. The first cycle after a process start
+    // skips the baseline on purpose so the full version set reprocesses
+    // (self-heal after restarts).
+    let old_versions: Option<Vec<daedalus::minecraft::Version>> =
+        if is_first_run {
+            None
+        } else {
+            crate::services::cas::fetch_previous_loader_versions(
+                s3_client,
+                "minecraft",
+            )
+            .await
+        };
 
     let mut manifest =
         daedalus::minecraft::fetch_version_manifest(None).await?;
@@ -133,10 +135,10 @@ pub async fn retrieve_data(
     // call, so this guards both: cold-start and transient old-manifest fetch
     // failures (which would also make `old_manifest` None and trip the
     // notification path on a known set of versions).
-    if let Some(old) = &old_manifest {
+    if let Some(old) = &old_versions {
         if let Some(notifier) = crate::services::discord::notifier() {
             let known_ids: std::collections::HashSet<&str> =
-                old.versions.iter().map(|v| v.id.as_str()).collect();
+                old.iter().map(|v| v.id.as_str()).collect();
             for v in &manifest.versions {
                 if !known_ids.contains(v.id.as_str()) {
                     notifier.report_new_mc_version(
@@ -175,11 +177,9 @@ pub async fn retrieve_data(
 
     for version in manifest.versions.iter_mut().rev() {
         version_futures.push(async {
-            let old_version = if let Some(old_manifest) = &old_manifest {
-                old_manifest.versions.iter().find(|x| x.id == version.id)
-            } else {
-                None
-            };
+            let old_version = old_versions
+                .as_ref()
+                .and_then(|old| old.iter().find(|x| x.id == version.id));
 
             // Compare upstream Mojang SHA1 (`version.sha1` straight from the manifest)
             // against the `original_sha1` we stored in our previous publish. Comparing
