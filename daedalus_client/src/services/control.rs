@@ -31,7 +31,9 @@
 //! ## Retention
 //!
 //! Ack entries older than 30 days are pruned on every write to keep the file
-//! bounded.
+//! bounded — except entries whose intent is still present in `control.json`,
+//! which are kept regardless of age: the ack is the only thing preventing a
+//! still-listed intent from re-executing.
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -169,10 +171,18 @@ impl ControlAcks {
         self.processed.push(entry);
     }
 
-    /// Drop entries older than `retention` to keep the file bounded.
-    fn prune(&mut self, retention: Duration) {
+    /// Drop entries older than `retention` to keep the file bounded — except
+    /// entries whose `request_id` is still present in the live control file.
+    /// Intents stay in `control.json` indefinitely (enderium never clears
+    /// them), and the ack log is the ONLY thing standing between an old acked
+    /// rollback and its spontaneous re-execution: pruning an ack whose intent
+    /// is still live would re-run that intent on the next poll.
+    fn prune(&mut self, retention: Duration, live_intent_ids: &HashSet<&str>) {
         let cutoff = Utc::now() - retention;
-        self.processed.retain(|e| e.processed_at >= cutoff);
+        self.processed.retain(|e| {
+            e.processed_at >= cutoff
+                || live_intent_ids.contains(e.request_id.as_str())
+        });
     }
 }
 
@@ -353,9 +363,26 @@ pub async fn save_acks(
 ///
 /// Called after **each** processed intent so a crash mid-batch cannot lose the
 /// ack of an intent whose side effects already committed (which would otherwise
-/// re-execute it on the next poll). A failed write is logged, not fatal.
-async fn persist_acks(bucket: &s3::Bucket, acks: &mut ControlAcks) {
-    acks.prune(Duration::days(30));
+/// re-execute it on the next poll). Pruning keeps every ack still referenced
+/// by the live control file regardless of age. A failed write is logged, not
+/// fatal.
+async fn persist_acks(
+    bucket: &s3::Bucket,
+    acks: &mut ControlAcks,
+    control: &ControlFile,
+) {
+    let live_intent_ids: HashSet<&str> = control
+        .force_runs
+        .iter()
+        .map(|r| r.request_id.as_str())
+        .chain(
+            control
+                .rollback_request
+                .iter()
+                .map(|r| r.request_id.as_str()),
+        )
+        .collect();
+    acks.prune(Duration::days(30), &live_intent_ids);
     if let Err(e) = save_acks(bucket, acks).await {
         error!(error = %e, "Failed to save control_acks.json — outcome may be re-attempted on next poll");
     }
@@ -419,7 +446,23 @@ pub async fn process_pending(bucket: &s3::Bucket) {
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
             crate::MAX_CONCURRENT_UPLOADS,
         ));
-        crate::run_publish_cycle(false, semaphore).await;
+        let cycle = crate::run_publish_cycle(false, semaphore).await;
+
+        // The ack reflects what the cycle actually did — an operator
+        // force-running during an outage must see the failure (and may
+        // resubmit), not a success for a cycle that published nothing.
+        let cycle_outcome = if !cycle.published {
+            AckOutcome::error(
+                "publish cycle did not reach the publish phase (minecraft retrieval failed or was skipped)",
+            )
+        } else if cycle.failed_loaders.is_empty() {
+            AckOutcome::success()
+        } else {
+            AckOutcome::error(format!(
+                "publish cycle completed with failures: {}",
+                cycle.failed_loaders.join(", ")
+            ))
+        };
 
         // Ack every request the cycle satisfied. The requested `loader` is kept
         // in the ack details for observability even though execution always
@@ -429,14 +472,14 @@ pub async fn process_pending(bucket: &s3::Bucket) {
                 request_id: req.request_id.clone(),
                 kind: "force_run".to_string(),
                 processed_at: Utc::now(),
-                outcome: AckOutcome::success(),
+                outcome: cycle_outcome.clone(),
                 details: serde_json::json!({
                     "requested_loader": req.loader,
                     "note": "full publish cycle executed (all loaders); shared with any other force-runs pending in the same poll"
                 }),
             });
         }
-        persist_acks(bucket, &mut acks).await;
+        persist_acks(bucket, &mut acks, &control).await;
 
         info!(
             count = pending_force_runs.len(),
@@ -501,7 +544,7 @@ pub async fn process_pending(bucket: &s3::Bucket) {
                     });
                 }
             }
-            persist_acks(bucket, &mut acks).await;
+            persist_acks(bucket, &mut acks, &control).await;
         }
     }
 }
@@ -914,9 +957,36 @@ mod tests {
             outcome: AckOutcome::success(),
             details: serde_json::Value::Null,
         });
-        acks.prune(Duration::days(30));
+        acks.prune(Duration::days(30), &HashSet::new());
         assert_eq!(acks.processed.len(), 1);
         assert_eq!(acks.processed[0].request_id, "new");
+    }
+
+    #[test]
+    fn test_control_acks_prune_keeps_live_intents_regardless_of_age() {
+        let mut acks = ControlAcks::new();
+        // An old acked rollback whose intent is STILL in control.json: the
+        // ack must survive pruning or the rollback re-executes spontaneously.
+        acks.push(AckEntry {
+            request_id: "old-but-live".to_string(),
+            kind: "rollback".to_string(),
+            processed_at: Utc::now() - Duration::days(90),
+            outcome: AckOutcome::success(),
+            details: serde_json::Value::Null,
+        });
+        acks.push(AckEntry {
+            request_id: "old-and-gone".to_string(),
+            kind: "force_run".to_string(),
+            processed_at: Utc::now() - Duration::days(90),
+            outcome: AckOutcome::success(),
+            details: serde_json::Value::Null,
+        });
+
+        let live: HashSet<&str> = ["old-but-live"].into_iter().collect();
+        acks.prune(Duration::days(30), &live);
+
+        assert_eq!(acks.processed.len(), 1);
+        assert_eq!(acks.processed[0].request_id, "old-but-live");
     }
 
     #[test]
@@ -931,7 +1001,7 @@ mod tests {
                 details: serde_json::Value::Null,
             });
         }
-        acks.prune(Duration::days(30));
+        acks.prune(Duration::days(30), &HashSet::new());
         assert_eq!(acks.processed.len(), 5); // all within 30 days
     }
 

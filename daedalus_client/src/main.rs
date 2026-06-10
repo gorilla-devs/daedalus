@@ -318,12 +318,30 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
         })
 }
 
+/// Summary of one publish cycle, for callers that must report the outcome —
+/// operator force-runs ack against this instead of claiming unconditional
+/// success.
+#[derive(Default)]
+pub struct CycleOutcome {
+    /// Loaders that failed, were skipped, gate-blocked or failed to upload
+    /// this cycle, each with a short reason.
+    pub failed_loaders: Vec<String>,
+    /// Whether the cycle reached the publish phase at all (false when
+    /// minecraft retrieval failed or its circuit breaker was open — no other
+    /// loader ran either).
+    pub published: bool,
+}
+
 /// Execute one full publish cycle (all loaders).
 ///
 /// Extracted from the select! branch so the publish branch stays short and
 /// readable.  `is_first_run` controls whether first-cycle-specific behaviour
 /// fires (currently passed through to `minecraft::retrieve_data`).
-async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
+async fn run_publish_cycle(
+    is_first_run: bool,
+    semaphore: Arc<Semaphore>,
+) -> CycleOutcome {
+    let mut outcome = CycleOutcome::default();
     let uploader = services::upload::BatchUploader::new();
     let manifest_builder = services::cas::ManifestBuilder::new();
 
@@ -357,6 +375,9 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                     run_state
                         .loader_mut("minecraft")
                         .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
+                    outcome
+                        .failed_loaders
+                        .push("minecraft (circuit open)".to_string());
                     None
                 }
                 Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
@@ -364,6 +385,9 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                     run_state
                         .loader_mut("minecraft")
                         .record_failure(services::run_state::LoaderOutcome::FetchFailure);
+                    outcome
+                        .failed_loaders
+                        .push(format!("minecraft ({err})"));
                     None
                 }
             }
@@ -373,6 +397,7 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
     };
 
     if let Some(manifest) = versions {
+        outcome.published = true;
         if cfg!(feature = "fabric") {
             let span = tracing::info_span!("fabric_processing");
             async {
@@ -394,12 +419,14 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                         run_state
                             .loader_mut("fabric")
                             .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
+                        outcome.failed_loaders.push("fabric (circuit open)".to_string());
                     }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
                         error!(error = %err, "Fabric processing failed");
                         run_state
                             .loader_mut("fabric")
                             .record_failure(services::run_state::LoaderOutcome::FetchFailure);
+                        outcome.failed_loaders.push(format!("fabric ({err})"));
                     }
                 }
             }
@@ -428,12 +455,14 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                         run_state
                             .loader_mut("forge")
                             .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
+                        outcome.failed_loaders.push("forge (circuit open)".to_string());
                     }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
                         error!(error = %err, "Forge processing failed");
                         run_state
                             .loader_mut("forge")
                             .record_failure(services::run_state::LoaderOutcome::FetchFailure);
+                        outcome.failed_loaders.push(format!("forge ({err})"));
                     }
                 }
             }
@@ -462,12 +491,14 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                         run_state
                             .loader_mut("quilt")
                             .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
+                        outcome.failed_loaders.push("quilt (circuit open)".to_string());
                     }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
                         error!(error = %err, "Quilt processing failed");
                         run_state
                             .loader_mut("quilt")
                             .record_failure(services::run_state::LoaderOutcome::FetchFailure);
+                        outcome.failed_loaders.push(format!("quilt ({err})"));
                     }
                 }
             }
@@ -496,12 +527,14 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                         run_state
                             .loader_mut("neoforge")
                             .record_failure(services::run_state::LoaderOutcome::CircuitOpen);
+                        outcome.failed_loaders.push("neoforge (circuit open)".to_string());
                     }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Failed(err)) => {
                         error!(error = %err, "NeoForge processing failed");
                         run_state
                             .loader_mut("neoforge")
                             .record_failure(services::run_state::LoaderOutcome::FetchFailure);
+                        outcome.failed_loaders.push(format!("neoforge ({err})"));
                     }
                 }
             }
@@ -624,6 +657,9 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                                 run_state.loader_mut(loader).record_failure(
                                     services::run_state::LoaderOutcome::FetchFailure,
                                 );
+                                outcome.failed_loaders.push(format!(
+                                    "{loader} (sanity baseline unreadable)"
+                                ));
                                 continue;
                             }
                         },
@@ -633,6 +669,9 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                             run_state.loader_mut(loader).record_failure(
                                 services::run_state::LoaderOutcome::FetchFailure,
                             );
+                            outcome.failed_loaders.push(format!(
+                                "{loader} (sanity baseline unreadable)"
+                            ));
                             continue;
                         }
                     }
@@ -662,6 +701,9 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                         // §1.4: Record outcome.
                         run_state.loader_mut(loader)
                             .record_failure(services::run_state::LoaderOutcome::SanityGateBlocked);
+                        outcome
+                            .failed_loaders
+                            .push(format!("{loader} (sanity gate)"));
                         continue;
                     }
                 }
@@ -724,6 +766,11 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
                 loaders = ?upload_failures,
                 "Some loader manifests failed to upload this cycle; their previous references stay live in the root manifest"
             );
+            for loader in &upload_failures {
+                outcome
+                    .failed_loaders
+                    .push(format!("{loader} (manifest upload failed)"));
+            }
         }
 
         // §1.6: Apply pins uniformly. A pinned loader's root reference always
@@ -966,6 +1013,8 @@ async fn run_publish_cycle(is_first_run: bool, semaphore: Arc<Semaphore>) {
     // skipped — so the admin server always reflects the latest attempt even
     // after a process restart.
     services::run_state::save(&CLIENT, &mut run_state).await;
+
+    outcome
 }
 
 fn check_env_vars() -> bool {
