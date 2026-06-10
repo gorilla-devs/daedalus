@@ -307,18 +307,22 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
             let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS));
 
+            // Static CDN files are init state, not a degraded mode: published
+            // version JSONs embed ${BASE_URL}/maven/... URLs that resolve to
+            // objects sourced from this directory. A missing directory is a
+            // configuration error that can never heal — fail the process so
+            // the operator notices, instead of publishing dangling URLs
+            // forever.
             {
-                let uploaded_files = Arc::new(Mutex::new(Vec::new()));
-
-                match upload_static_files(uploaded_files.clone(), semaphore.clone())
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(err) => {
-                        error!("{:?}", err);
-                    }
+                let cdn_upload_dir = dotenvy::var("CDN_UPLOAD_DIR")
+                    .unwrap_or("./upload_cdn".to_string());
+                if !std::path::Path::new(&cdn_upload_dir).exists() {
+                    return Err(crate::infrastructure::error::invalid_input(format!(
+                        "CDN_UPLOAD_DIR '{cdn_upload_dir}' does not exist — refusing to start: published metadata references /maven objects sourced from it"
+                    )));
                 }
             }
+            ensure_static_files_synced(semaphore.clone()).await;
 
             let mut is_first_run = true;
             let mut shutdown = ShutdownListener::new();
@@ -383,6 +387,12 @@ async fn run_publish_cycle(
     semaphore: Arc<Semaphore>,
 ) -> CycleOutcome {
     let mut outcome = CycleOutcome::default();
+
+    // Static files retry at the start of every cycle until one pass completes
+    // clean — the /maven URLs baked into published version JSONs dangle until
+    // every object exists.
+    ensure_static_files_synced(semaphore.clone()).await;
+
     let uploader = services::upload::BatchUploader::new();
     let manifest_builder = services::cas::ManifestBuilder::new();
 
@@ -1001,45 +1011,7 @@ async fn run_publish_cycle(
                 .map(|p| format!("{}/{}", crate::common::BASE_URL.as_str(), p))
                 .collect();
 
-            if !uploaded_manifest_urls.is_empty() {
-                let cloudflare_enabled = dotenvy::var("CLOUDFLARE_INTEGRATION")
-                    .map(|v| v == "true")
-                    .unwrap_or(false);
-
-                if cloudflare_enabled {
-                    match (
-                        dotenvy::var("CLOUDFLARE_TOKEN"),
-                        dotenvy::var("CLOUDFLARE_ZONE_ID"),
-                    ) {
-                        (Ok(token), Ok(zone_id)) => {
-                            match services::cloudflare::purge_cloudflare_cache(
-                                &token,
-                                &zone_id,
-                                &uploaded_manifest_urls,
-                            )
-                            .await
-                            {
-                                Ok(_) => {
-                                    info!("Cloudflare cache purge successful");
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "Cloudflare cache purge failed, but continuing");
-                                }
-                            }
-                        }
-                        _ => {
-                            warn!(
-                                "CLOUDFLARE_INTEGRATION is enabled but CLOUDFLARE_TOKEN or \
-                                 CLOUDFLARE_ZONE_ID is missing"
-                            );
-                        }
-                    }
-                } else {
-                    info!(
-                        "Cloudflare cache purging disabled (set CLOUDFLARE_INTEGRATION=true to enable)"
-                    );
-                }
-            }
+            purge_cdn_urls(&uploaded_manifest_urls).await;
 
         } else {
             // No fresh loader manifests AND no carry-forward from the previous
@@ -1233,6 +1205,92 @@ pub fn format_url(path: &str) -> String {
     full_url
 }
 
+/// Purge the given absolute URLs from the CDN edge when the Cloudflare
+/// integration is enabled. Purge failures degrade to warnings — the objects
+/// are on S3 either way and the edge self-heals at TTL expiry.
+async fn purge_cdn_urls(urls: &[String]) {
+    if urls.is_empty() {
+        return;
+    }
+
+    let cloudflare_enabled = dotenvy::var("CLOUDFLARE_INTEGRATION")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    if !cloudflare_enabled {
+        info!(
+            "Cloudflare cache purging disabled (set CLOUDFLARE_INTEGRATION=true to enable)"
+        );
+        return;
+    }
+
+    match (
+        dotenvy::var("CLOUDFLARE_TOKEN"),
+        dotenvy::var("CLOUDFLARE_ZONE_ID"),
+    ) {
+        (Ok(token), Ok(zone_id)) => {
+            match services::cloudflare::purge_cloudflare_cache(
+                &token, &zone_id, urls,
+            )
+            .await
+            {
+                Ok(_) => {
+                    info!("Cloudflare cache purge successful");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Cloudflare cache purge failed, but continuing");
+                }
+            }
+        }
+        _ => {
+            warn!(
+                "CLOUDFLARE_INTEGRATION is enabled but CLOUDFLARE_TOKEN or \
+                 CLOUDFLARE_ZONE_ID is missing"
+            );
+        }
+    }
+}
+
+/// Whether a static-file pass has completed with zero failures this process
+/// lifetime. Checked (and retried) at the start of every publish cycle.
+static STATIC_FILES_SYNCED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Upload the static CDN files unless a previous pass already completed
+/// clean. On success the uploaded paths are purged from the CDN edge — they
+/// live at stable URLs, so without a purge an updated file keeps serving its
+/// old bytes for the full cache TTL.
+async fn ensure_static_files_synced(semaphore: Arc<Semaphore>) {
+    use std::sync::atomic::Ordering;
+
+    if STATIC_FILES_SYNCED.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let uploaded_files = Arc::new(Mutex::new(Vec::new()));
+    match upload_static_files(uploaded_files.clone(), semaphore).await {
+        Ok(()) => {
+            STATIC_FILES_SYNCED.store(true, Ordering::Relaxed);
+            let urls: Vec<String> = {
+                let guard = uploaded_files.lock().await;
+                guard
+                    .iter()
+                    .map(|p| {
+                        format!("{}/{}", crate::common::BASE_URL.as_str(), p)
+                    })
+                    .collect()
+            };
+            purge_cdn_urls(&urls).await;
+        }
+        Err(err) => {
+            error!(
+                error = %err,
+                "Static file upload incomplete; retrying at the next publish cycle (published /maven URLs may dangle until it succeeds)"
+            );
+        }
+    }
+}
+
 pub use services::download::{download_file, download_file_mirrors};
 
 /// Outcome of reading the previously-published root manifest at the start of a
@@ -1304,32 +1362,40 @@ pub async fn upload_static_files(
     info!(dir = %cdn_upload_dir, "Uploading static files");
 
     if !std::path::Path::new(&cdn_upload_dir).exists() {
-        // Returning Err lets the caller decide; main.rs treats this as
-        // non-fatal so the hourly loop still services Forge/etc. updates
-        // even if the bootstrap static-files directory is missing.
+        // Startup validates the directory and refuses to boot without it;
+        // this guard covers direct callers.
         return Err(crate::infrastructure::error::invalid_input(format!(
-            "CDN_UPLOAD_DIR '{cdn_upload_dir}' does not exist; skipping static files upload"
+            "CDN_UPLOAD_DIR '{cdn_upload_dir}' does not exist"
         )));
     }
 
+    // One failing file must not abandon the rest of the walk — every object
+    // skipped here is a dangling /maven URL in published metadata. Failures
+    // are counted and reported so the caller retries the pass.
+    let mut failed = 0usize;
+
     for entry in walkdir::WalkDir::new(&cdn_upload_dir) {
-        let entry = entry.map_err(|e| {
-            crate::infrastructure::error::ErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to walk directory: {}", e),
-            ))
-        })?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                warn!(error = %e, "Failed to walk a directory entry; continuing");
+                failed += 1;
+                continue;
+            }
+        };
         if entry.path().is_file() {
             let upload_path = entry.path()
                 .strip_prefix(&cdn_upload_dir)
                 .expect("Unwrap to be safe because we are striping the prefix to the directory walked")
-                 .to_slash()
-                .ok_or_else(|| {
-                    crate::infrastructure::error::invalid_input(format!(
-                        "Failed to convert path to utf8 string {}",
-                        entry.path().display()
-                    ))
-                })?;
+                 .to_slash();
+            let Some(upload_path) = upload_path else {
+                warn!(
+                    file = %entry.path().display(),
+                    "Static file path is not valid UTF-8; skipping"
+                );
+                failed += 1;
+                continue;
+            };
 
             if upload_path.ends_with(".DS_Store") {
                 continue;
@@ -1348,15 +1414,34 @@ pub async fn upload_static_files(
                     _ => None,
                 };
 
-            upload_file_to_bucket(
+            let bytes = match std::fs::read(entry.path()) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    warn!(file = %entry.path().display(), error = %e, "Failed to read static file; continuing");
+                    failed += 1;
+                    continue;
+                }
+            };
+
+            if let Err(e) = upload_file_to_bucket(
                 upload_path.to_string(), // NOTE: if path is non utf8 this will not be a pretty path
-                std::fs::read(entry.path())?,
+                bytes,
                 content_type,
                 uploaded_files.clone(),
                 semaphore.clone(),
             )
-            .await?;
+            .await
+            {
+                warn!(cdn_path = %upload_path, error = %e, "Failed to upload static file; continuing");
+                failed += 1;
+            }
         }
+    }
+
+    if failed > 0 {
+        return Err(crate::infrastructure::error::invalid_input(format!(
+            "{failed} static file(s) failed to upload"
+        )));
     }
     Ok(())
 }
