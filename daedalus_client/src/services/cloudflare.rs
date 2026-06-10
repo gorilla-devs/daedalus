@@ -45,8 +45,9 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 ///
 /// # Returns
 ///
-/// Ok(()) if at least some URLs were purged successfully
-/// Err if all batches failed (individual batch failures are logged as warnings)
+/// Ok(()) if at least some URLs were purged successfully (partial batch
+/// failures are logged as warnings).
+/// Err when every batch failed — callers must not report the purge as done.
 ///
 /// # Example
 ///
@@ -75,59 +76,35 @@ pub async fn purge_cloudflare_cache(
 
     // Cloudflare limit: 30 URLs per request
     for (batch_idx, chunk) in urls.chunks(30).enumerate() {
-        let batch_span = tracing::info_span!(
-            "cloudflare_purge_batch",
-            batch = batch_idx,
-            batch_size = chunk.len()
-        );
-        let result = async {
-            let response = HTTP_CLIENT
-                .post(format!(
-                    "https://api.cloudflare.com/client/v4/zones/{}/purge_cache",
-                    zone_id
-                ))
-                .header("Authorization", format!("Bearer {}", token))
-                .header("Content-Type", "application/json")
-                .json(&serde_json::json!({ "files": chunk }))
-                .send()
-                .await
-                .map_err(|e| fetch_error(e, "cloudflare purge"))?;
-
-            let status = response.status();
-            if status.is_success() {
-                info!(
+        // Purges are idempotent, so a transiently failed batch gets one
+        // retry — without it a single 5xx/network blip leaves the edge
+        // serving the previous root for the full cache TTL.
+        let mut result = purge_batch(token, zone_id, chunk, batch_idx).await;
+        if let Err((e, transient)) = &result {
+            if *transient {
+                warn!(
                     batch = batch_idx,
-                    purged = chunk.len(),
-                    "Cloudflare cache purge batch succeeded"
+                    error = %e,
+                    "Cloudflare purge batch failed transiently; retrying once"
                 );
-                Ok::<usize, Error>(chunk.len())
-            } else {
-                let error_text = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "Unable to read response".to_string());
-                error!(
-                    batch = batch_idx,
-                    status = %status,
-                    error = %error_text,
-                    "Cloudflare cache purge batch failed"
-                );
-                Err(invalid_input(format!(
-                    "Cloudflare API returned status {}: {}",
-                    status, error_text
-                )))
+                result = purge_batch(token, zone_id, chunk, batch_idx).await;
             }
         }
-        .instrument(batch_span)
-        .await;
 
         match result {
             Ok(count) => total_purged += count,
-            Err(e) => {
+            Err((e, _)) => {
                 failed_batches += 1;
                 warn!(error = %e, "Failed to purge batch, continuing with remaining batches");
             }
         }
+    }
+
+    if failed_batches > 0 && total_purged == 0 {
+        return Err(invalid_input(format!(
+            "Cloudflare cache purge failed for all {} batch(es)",
+            failed_batches
+        )));
     }
 
     if failed_batches > 0 {
@@ -144,4 +121,65 @@ pub async fn purge_cloudflare_cache(
     }
 
     Ok(())
+}
+
+/// Issue one purge request for up to 30 URLs. The boolean in the error tuple
+/// marks transient failures (network errors, 5xx, 429) that are worth one
+/// retry, as opposed to permanent ones (bad token, malformed request).
+async fn purge_batch(
+    token: &str,
+    zone_id: &str,
+    chunk: &[String],
+    batch_idx: usize,
+) -> Result<usize, (Error, bool)> {
+    let batch_span = tracing::info_span!(
+        "cloudflare_purge_batch",
+        batch = batch_idx,
+        batch_size = chunk.len()
+    );
+    async {
+        let response = HTTP_CLIENT
+            .post(format!(
+                "https://api.cloudflare.com/client/v4/zones/{}/purge_cache",
+                zone_id
+            ))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "files": chunk }))
+            .send()
+            .await
+            .map_err(|e| (fetch_error(e, "cloudflare purge"), true))?;
+
+        let status = response.status();
+        if status.is_success() {
+            info!(
+                batch = batch_idx,
+                purged = chunk.len(),
+                "Cloudflare cache purge batch succeeded"
+            );
+            Ok(chunk.len())
+        } else {
+            let transient =
+                status.is_server_error() || status.as_u16() == 429;
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read response".to_string());
+            error!(
+                batch = batch_idx,
+                status = %status,
+                error = %error_text,
+                "Cloudflare cache purge batch failed"
+            );
+            Err((
+                invalid_input(format!(
+                    "Cloudflare API returned status {}: {}",
+                    status, error_text
+                )),
+                transient,
+            ))
+        }
+    }
+    .instrument(batch_span)
+    .await
 }
