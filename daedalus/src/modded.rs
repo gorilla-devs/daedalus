@@ -1,4 +1,4 @@
-use crate::{BRANDING, Error, download_file};
+use crate::{Error, download_file};
 
 use crate::minecraft::{
     Argument, ArgumentType, Library, LoggingConfig, LoggingConfigName,
@@ -104,23 +104,14 @@ pub async fn fetch_partial_version(
 }
 
 /// Merges a partial version into a complete one
-///
-/// # Panics
-/// Panics if `Branding::set_branding` was never called. Previously this fell back
-/// to a hard-coded `unbranded` default, which silently no-op'd the dummy-version
-/// substitution for any consumer using a real brand. Calling `set_branding`
-/// before this function is required.
 pub fn merge_partial_version(
     partial: PartialVersionInfo,
     merge: VersionInfo,
 ) -> VersionInfo {
     let merge_id = merge.id.clone();
-    let dummy_replace_string = &BRANDING
-        .get()
-        .expect(
-            "Branding must be set via Branding::set_branding before merge_partial_version",
-        )
-        .dummy_replace_string;
+    // The placeholder is a compile-time constant shared by generator and
+    // consumers, so substitution works regardless of branding configuration.
+    let dummy_replace_string = crate::DUMMY_REPLACE_STRING;
 
     // A loader library on the classpath shadows the vanilla library with the
     // same package:artifact:classifier coordinates (legacy Forge ships its own
@@ -255,7 +246,6 @@ pub async fn fetch_manifest(url: &str) -> Result<Manifest, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Branding;
 
     fn version_info(libraries: serde_json::Value) -> VersionInfo {
         serde_json::from_value(serde_json::json!({
@@ -293,8 +283,6 @@ mod tests {
 
     #[test]
     fn merge_drops_vanilla_libraries_shadowed_by_the_loader() {
-        let _ = Branding::set_branding(Branding::default());
-
         let vanilla = version_info(serde_json::json!([
             {"name": "org.apache.logging.log4j:log4j-core:2.0-beta9"},
             {"name": "org.lwjgl:lwjgl:3.3.3:natives-linux"},
@@ -324,8 +312,6 @@ mod tests {
 
     #[test]
     fn merge_keeps_vanilla_when_loader_copy_is_off_classpath() {
-        let _ = Branding::set_branding(Branding::default());
-
         let vanilla = version_info(serde_json::json!([
             {"name": "org.apache.logging.log4j:log4j-core:2.0-beta9"}
         ]));

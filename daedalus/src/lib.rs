@@ -28,12 +28,25 @@ const CONNECT_TIMEOUT_SECS: u64 = 30;
 /// Maximum idle connections per host in the pool
 const MAX_IDLE_CONNECTIONS_PER_HOST: usize = 10;
 
+/// The placeholder token published inside dummy loader versions (fabric/quilt
+/// intermediary coordinates and version ids) and substituted by consumers with
+/// the actual game version at install time.
+///
+/// This is a fixed compile-time constant — NOT derived from the configured
+/// brand name — because the generator and every shipped launcher must agree on
+/// it byte-for-byte: a generator publishing a placeholder no launcher
+/// substitutes breaks every Fabric/Quilt install with no loud failure
+/// anywhere.
+pub const DUMMY_REPLACE_STRING: &str = "${gdlauncher.gameVersion}";
+
 /// Your branding, used for the user agent and similar
 #[derive(Debug)]
 pub struct Branding {
     /// The name of your application
     pub header_value: String,
-    /// The string to replace in the name of the application
+    /// The placeholder substituted into dummy loader versions. Always
+    /// [`DUMMY_REPLACE_STRING`]; kept as a field so existing call sites keep
+    /// working.
     pub dummy_replace_string: String,
 }
 
@@ -48,11 +61,13 @@ pub static BRANDING: OnceCell<Branding> = OnceCell::new();
 /// TLS initialization fails, which is extremely rare on modern systems).
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     let mut headers = reqwest::header::HeaderMap::new();
-    if let Ok(header) = reqwest::header::HeaderValue::from_str(
+    let header = reqwest::header::HeaderValue::from_str(
         &BRANDING.get_or_init(Branding::default).header_value,
-    ) {
-        headers.insert(reqwest::header::USER_AGENT, header);
-    }
+    )
+    .expect(
+        "branding (BRAND_NAME/SUPPORT_EMAIL) must form a valid User-Agent header value",
+    );
+    headers.insert(reqwest::header::USER_AGENT, header);
 
     reqwest::Client::builder()
         .tcp_keepalive(Some(Duration::from_secs(TCP_KEEPALIVE_SECS)))
@@ -65,7 +80,10 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 });
 
 impl Branding {
-    /// Creates a new branding instance
+    /// Creates a new branding instance. `name` feeds the User-Agent header
+    /// only; the dummy-version placeholder is the fixed
+    /// [`DUMMY_REPLACE_STRING`] regardless of branding, so generator output
+    /// and launcher substitution can never drift apart via configuration.
     pub fn new(name: String, email: String) -> Branding {
         let email = format!(
             "{}/daedalus/{} <{}>",
@@ -73,11 +91,10 @@ impl Branding {
             env!("CARGO_PKG_VERSION"),
             email
         );
-        let dummy_replace_string = format!("${{{}.gameVersion}}", name);
 
         Branding {
             header_value: email,
-            dummy_replace_string,
+            dummy_replace_string: DUMMY_REPLACE_STRING.to_string(),
         }
     }
 
