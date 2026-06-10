@@ -34,7 +34,6 @@ use crate::services::upload::BatchUploader;
 use daedalus::minecraft::{JavaVersion, MinecraftJavaProfile, VersionManifest};
 use dashmap::DashSet;
 use futures::future::join_all;
-use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Instant;
@@ -151,19 +150,12 @@ pub async fn retrieve_data(
         }
     }
 
-    // Pre-build an id → original-index map so the per-version mutex section can do an
-    // O(1) lookup instead of an O(N) `position(...)` scan. New versions inserted at the
-    // front of the Vec shift original indices forward by `inserts_count`, which we track
-    // alongside the manifest while holding the mutex.
-    let id_to_original_index: Arc<HashMap<String, usize>> = Arc::new(
-        manifest
-            .versions
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (v.id.clone(), i))
-            .collect(),
-    );
-    let cloned_manifest = Arc::new(Mutex::new((manifest.clone(), 0usize)));
+    // Every manifest write below locates its entry by id at write time. A
+    // prebuilt index map cannot be used here: the unknown-DownloadType path
+    // removes entries mid-run, which would shift every higher index and make
+    // frozen positions write into the wrong version's entry (or run out of
+    // bounds).
+    let cloned_manifest = Arc::new(Mutex::new(manifest.clone()));
 
     // Own the prebuilt patch index and share as an Arc to avoid borrowed refs in futures.
     let patches: Arc<LibraryPatchIndex> =
@@ -211,12 +203,11 @@ pub async fn retrieve_data(
                     let new_java_profile = old_version.java_profile.clone();
 
                     let mut guard = cloned_manifest.lock().await;
-                    let (cm, inserts_count) = &mut *guard;
-                    if let Some(position) = id_to_original_index
-                        .get(&version.id)
-                        .map(|orig| orig + *inserts_count)
+                    if let Some(entry) = guard
+                        .versions
+                        .iter_mut()
+                        .find(|v| v.id == version.id)
                     {
-                        let entry = &mut cm.versions[position];
                         entry.url = new_url;
                         entry.sha1 = new_sha1;
                         entry.original_sha1 = new_original_sha1;
@@ -234,7 +225,6 @@ pub async fn retrieve_data(
 
             let visited_assets = Arc::clone(&visited_assets);
             let cloned_manifest_mutex = Arc::clone(&cloned_manifest);
-            let id_to_original_index = Arc::clone(&id_to_original_index);
             let semaphore = Arc::clone(&semaphore);
             let patches = Arc::clone(&patches);
 
@@ -271,9 +261,10 @@ pub async fn retrieve_data(
                             );
                         }
                         // Remove the version from the manifest so it is never published.
+                        // Writes locate entries by id, so the removal cannot corrupt
+                        // other in-flight versions' writes.
                         let mut guard = cloned_manifest_mutex.lock().await;
-                        let (m, _) = &mut *guard;
-                        m.versions.retain(|v| v.id != version_info.id);
+                        guard.versions.retain(|v| v.id != version_info.id);
                         return Ok(());
                     }
                 }
@@ -429,81 +420,40 @@ pub async fn retrieve_data(
                 // Update manifest with CAS URL
                 {
                     let mut guard = cloned_manifest_mutex.lock().await;
-                    let (cloned_manifest, inserts_count) = &mut *guard;
-
-                    let position = id_to_original_index
-                        .get(&version.id)
-                        .map(|orig| orig + *inserts_count);
-
-                    if let Some(position) = position {
-                            cloned_manifest.versions[position].url = format!(
+                    if let Some(entry) = guard
+                        .versions
+                        .iter_mut()
+                        .find(|v| v.id == version_info.id)
+                    {
+                        entry.url = format!(
                             "{}/v{}/objects/{}/{}",
                             crate::common::BASE_URL.as_str(),
                             crate::services::cas::CAS_VERSION,
                             &version_hash[..2],
                             &version_hash[2..]
                         );
-                        cloned_manifest.versions[position].assets_index_sha1 =
+                        entry.assets_index_sha1 =
                             Some(version_info.asset_index.sha1.clone());
-                        cloned_manifest.versions[position].assets_index_url =
-                            Some(format_url(&assets_path));
+                        entry.assets_index_url = Some(format_url(&assets_path));
                         // try_from is infallible; map Unknown defensively to None.
-                        cloned_manifest.versions[position].java_profile =
+                        entry.java_profile =
                             version_info.java_version.as_ref().and_then(|x| {
                                 let profile = MinecraftJavaProfile::try_from(&*x.component)
                                     .unwrap_or(MinecraftJavaProfile::Unknown(x.component.clone()));
                                 if profile.is_known() { Some(profile) } else { None }
                             });
-                        cloned_manifest.versions[position].sha1 = version_hash.clone();
-                        cloned_manifest.versions[position].original_sha1 = Some(upstream_sha1.clone());
+                        entry.sha1 = version_hash.clone();
+                        entry.original_sha1 = Some(upstream_sha1.clone());
                     } else {
-                        cloned_manifest.versions.insert(
-                            0,
-                            daedalus::minecraft::Version {
-                                id: version_info.id.clone(),
-                                type_: version_info.type_.clone(),
-                                url: format!(
-                                    "{}/v{}/objects/{}/{}",
-                                    crate::common::BASE_URL.as_str(),
-                                    crate::services::cas::CAS_VERSION,
-                                    &version_hash[..2],
-                                    &version_hash[2..]
-                                ),
-                                time: version_info.time,
-                                release_time: version_info.release_time,
-                                sha1: version_hash.clone(),
-                                original_sha1: Some(upstream_sha1.clone()),
-                                // §1.3: `try_from` is infallible — unknown strings come
-                                // back as `MinecraftJavaProfile::Unknown(...)`. The
-                                // java_version was already sanitised above: if the
-                                // component string was unrecognised, version_info.java_version
-                                // was set to None by the `!parsed.is_known()` branch, so
-                                // any Some(x) here has a recognised component string.
-                                // Map Unknown back to None defensively so a future refactor
-                                // that changes the sanitisation path above can never cause
-                                // a panic via an Unknown variant reaching here.
-                                java_profile: version_info.java_version.as_ref().and_then(|x| {
-                                    // infallible: always returns Ok(...)
-                                    let profile = MinecraftJavaProfile::try_from(&*x.component)
-                                        .unwrap_or(MinecraftJavaProfile::Unknown(x.component.clone()));
-                                    if profile.is_known() {
-                                        Some(profile)
-                                    } else {
-                                        warn!(
-                                            component = %x.component,
-                                            version_id = %version_info.id,
-                                            "Unknown java profile on new-version insert; \
-                                             omitting java_profile from manifest entry"
-                                        );
-                                        None
-                                    }
-                                }),
-                                compliance_level: 1,
-                                assets_index_url: Some(format_url(&assets_path)),
-                                assets_index_sha1: Some(version_info.asset_index.sha1.clone()),
-                            },
+                        // The processing set is the manifest's own version list,
+                        // so an id can only be missing if something removed it —
+                        // and the only removal path (unknown DownloadType)
+                        // returns before reaching this write. Surface loudly
+                        // instead of inventing an entry.
+                        warn!(
+                            version_id = %version_info.id,
+                            "Processed Minecraft version is no longer in the manifest; dropping its result"
                         );
-                        *inserts_count += 1;
                     }
                 }
 
@@ -572,14 +522,11 @@ pub async fn retrieve_data(
     // manifest.
     let final_manifest = {
         let mut guard = cloned_manifest.lock().await;
-        let placeholder = (
-            daedalus::minecraft::VersionManifest {
-                latest: guard.0.latest.clone(),
-                versions: Vec::new(),
-            },
-            0usize,
-        );
-        std::mem::replace(&mut *guard, placeholder).0
+        let placeholder = daedalus::minecraft::VersionManifest {
+            latest: guard.latest.clone(),
+            versions: Vec::new(),
+        };
+        std::mem::replace(&mut *guard, placeholder)
     };
 
     // Set the full Minecraft versions JSON in manifest_builder
