@@ -29,10 +29,8 @@ pub use library_patches::LibraryPatchIndex;
 pub use types::LibraryPatch;
 
 use crate::download_file;
-use crate::format_url;
 use crate::services::upload::BatchUploader;
 use daedalus::minecraft::{JavaVersion, MinecraftJavaProfile, VersionManifest};
-use dashmap::DashSet;
 use futures::future::join_all;
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -161,7 +159,13 @@ pub async fn retrieve_data(
     let patches: Arc<LibraryPatchIndex> =
         Arc::new(library_patches::get_library_patches().await?);
 
-    let visited_assets = Arc::new(DashSet::new());
+    // Asset-index CAS URLs, keyed by "{id}:{sha1}" so an index Mojang updates
+    // in place under the same id still gets its own object. Every version
+    // sharing an index resolves to the same URL; a map miss re-sources the
+    // bytes (identical bytes hash to the same object, so concurrent misses
+    // are merely duplicate work, never divergent output).
+    let asset_cas_urls: Arc<dashmap::DashMap<String, String>> =
+        Arc::new(dashmap::DashMap::new());
 
     let now = Instant::now();
 
@@ -189,6 +193,14 @@ pub async fn retrieve_data(
                     .as_deref()
                     .map(|orig| orig == version.sha1)
                     .unwrap_or(false)
+                    // Only reuse entries whose assets pointer already targets a
+                    // CAS object; older publishes carried a legacy assets path
+                    // here, and reusing those would keep the legacy pointer
+                    // alive forever. Reprocessing once upgrades the entry.
+                    && old_version
+                        .assets_index_url
+                        .as_deref()
+                        .is_some_and(|u| u.contains("/objects/"))
                 {
                     // Content is unchanged since our last publish, so reuse the
                     // previously-processed entry — CAS url, original_sha1,
@@ -228,12 +240,14 @@ pub async fn retrieve_data(
             // Capture upstream sha1 before we mutate `version.sha1` later in the loop.
             let upstream_sha1 = version.sha1.clone();
 
-            let visited_assets = Arc::clone(&visited_assets);
+            let asset_cas_urls = Arc::clone(&asset_cas_urls);
             let cloned_manifest_mutex = Arc::clone(&cloned_manifest);
             let semaphore = Arc::clone(&semaphore);
             let patches = Arc::clone(&patches);
 
             let assets_hash = old_version.and_then(|x| x.assets_index_sha1.clone());
+            let old_assets_index_url =
+                old_version.and_then(|x| x.assets_index_url.clone());
 
             async move {
                 let mut version_info = daedalus::minecraft::fetch_version_info(version).await?;
@@ -366,51 +380,58 @@ pub async fn retrieve_data(
                     }
                 };
 
-                let assets_path = format!(
-                    "minecraft/v{}/assets/{}.json",
-                    daedalus::minecraft::CURRENT_FORMAT_VERSION,
-                    version_info.asset_index.id
+                // Resolve the CAS URL for this version's asset index. Every
+                // version sharing the same (id, sha1) gets the identical URL
+                // — there is no winner race and a published version JSON can
+                // never silently revert to the piston-meta URL.
+                let asset_index_key = format!(
+                    "{}:{}",
+                    version_info.asset_index.id, version_info.asset_index.sha1
                 );
-                let assets_index_url = version_info.asset_index.url.clone();
+                let asset_cas_url = if let Some(url) =
+                    asset_cas_urls.get(&asset_index_key)
+                {
+                    url.clone()
+                } else {
+                    // The previous publish already has the object when the
+                    // index is unchanged — reuse its URL instead of
+                    // re-downloading the index for nothing.
+                    let reused = assets_hash
+                        .as_deref()
+                        .filter(|prev_sha| {
+                            *prev_sha == version_info.asset_index.sha1
+                        })
+                        .and_then(|_| old_assets_index_url.as_deref())
+                        .filter(|prev_url| prev_url.contains("/objects/"))
+                        .map(str::to_string);
 
-                let mut download_assets = false;
+                    let url = match reused {
+                        Some(url) => url,
+                        None => {
+                            let assets_index = download_file(
+                                &version_info.asset_index.url,
+                                Some(&version_info.asset_index.sha1),
+                                semaphore.clone(),
+                            )
+                            .await?;
 
-                if visited_assets.insert(version_info.asset_index.id.clone()) {
-                    if let Some(assets_hash) = assets_hash {
-                        if version_info.asset_index.sha1 != assets_hash {
-                            download_assets = true;
+                            let asset_hash = uploader
+                                .upload_cas(
+                                    assets_index.to_vec(),
+                                    Some("application/json".to_string()),
+                                    s3_client,
+                                    semaphore.clone(),
+                                )
+                                .await?;
+
+                            crate::common::cas::build_cas_url(&asset_hash)?
                         }
-                    } else {
-                        download_assets = true;
-                    }
-                }
+                    };
+                    asset_cas_urls.insert(asset_index_key, url.clone());
+                    url
+                };
 
-                if download_assets {
-                    let assets_index = download_file(
-                        &assets_index_url,
-                        Some(&version_info.asset_index.sha1),
-                        semaphore.clone(),
-                    )
-                    .await?;
-
-                    let asset_bytes = assets_index.to_vec();
-                    let asset_hash = uploader
-                        .upload_cas(
-                            asset_bytes.clone(),
-                            Some("application/json".to_string()),
-                            s3_client,
-                            semaphore.clone(),
-                        )
-                        .await?;
-
-                    version_info.asset_index.url = format!(
-                        "{}/v{}/objects/{}/{}",
-                        crate::common::BASE_URL.as_str(),
-                        crate::services::cas::CAS_VERSION,
-                        &asset_hash[..2],
-                        &asset_hash[2..]
-                    );
-                }
+                version_info.asset_index.url = asset_cas_url.clone();
 
                 let version_bytes = serde_json::to_vec(&version_info)?;
                 let version_hash = uploader
@@ -439,7 +460,7 @@ pub async fn retrieve_data(
                         );
                         entry.assets_index_sha1 =
                             Some(version_info.asset_index.sha1.clone());
-                        entry.assets_index_url = Some(format_url(&assets_path));
+                        entry.assets_index_url = Some(asset_cas_url.clone());
                         // try_from is infallible; map Unknown defensively to None.
                         entry.java_profile =
                             version_info.java_version.as_ref().and_then(|x| {
