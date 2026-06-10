@@ -260,15 +260,10 @@ pub async fn retrieve_data(
                                         }
 
                                         if let Some(url) = lib.url {
-                                            // Check if we've already processed this artifact (lock-free)
-                                            if !visited_assets.insert(lib.name.clone()) {
-                                                // Already processed: produce the real CAS URL from the cached hash.
-                                                if let Some(hash_entry) = visited_lib_hashes.get(&lib.name) {
-                                                    lib.url = Some(crate::common::cas::build_cas_url(hash_entry.value())?);
-                                                    return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
-                                                }
-                                                // No cached hash means the previous attempt failed before recording it
-                                                // — fall through and try uploading again rather than emit a broken URL.
+                                            // Reuse the CAS URL when another task already uploaded this artifact.
+                                            if let Some(hash) = crate::common::cas::claim_or_reuse(&visited_assets, &visited_lib_hashes, &lib.name) {
+                                                lib.url = Some(crate::common::cas::build_cas_url(&hash)?);
+                                                return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
                                             }
 
                                             let artifact_path = lib.name.path();
@@ -519,26 +514,11 @@ pub async fn retrieve_data(
                                         let local_libs = local_libs.clone();
 
                                         async move {
-                                        // If another version this run already processed this exact artifact,
-                                        // reuse its real CAS URL from the cached hash. The bytes live at
-                                        // v{CAS_VERSION}/objects/{hash} — never at a `maven/{path}` URL — so
-                                        // emitting `maven/...` here produced dangling library references that
-                                        // 404 on install/repair.
-                                        if !visited_assets.insert(lib.name.clone()) {
-                                            if let Some(hash_entry) = visited_lib_hashes.get(&lib.name) {
-                                                let cas_url = crate::common::cas::build_cas_url(hash_entry.value())?;
-                                                if let Some(ref mut downloads) = lib.downloads {
-                                                    if let Some(ref mut artifact) = downloads.artifact {
-                                                        artifact.url = Some(cas_url);
-                                                    }
-                                                } else if lib.url.is_some() {
-                                                    lib.url = Some(cas_url);
-                                                }
-                                                return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
-                                            }
-                                            // No cached hash yet means the first claimer hasn't finished
-                                            // uploading — fall through and upload it ourselves rather than
-                                            // emit a broken URL.
+                                        // Reuse the CAS URL when another version this run already
+                                        // uploaded this exact artifact.
+                                        if let Some(hash) = crate::common::cas::claim_or_reuse(&visited_assets, &visited_lib_hashes, &lib.name) {
+                                            crate::common::cas::set_library_url(&mut lib, crate::common::cas::build_cas_url(&hash)?);
+                                            return Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib));
                                         }
 
                                         let artifact_bytes = if let Some(ref mut downloads) = lib.downloads {
@@ -599,16 +579,7 @@ pub async fn retrieve_data(
                                             visited_lib_hashes.insert(lib.name.clone(), hash.clone());
 
                                             // Store full CAS URL
-                                            let cas_url = crate::common::cas::build_cas_url(&hash)?;
-
-                                            // Update library URL with CAS URL
-                                            if let Some(ref mut downloads) = lib.downloads {
-                                                if let Some(ref mut artifact) = downloads.artifact {
-                                                    artifact.url = Some(cas_url);
-                                                }
-                                            } else if lib.url.is_some() {
-                                                lib.url = Some(cas_url);
-                                            }
+                                            crate::common::cas::set_library_url(&mut lib, crate::common::cas::build_cas_url(&hash)?);
                                         }
 
                                         Ok::<Option<Library>, crate::infrastructure::error::Error>(Some(lib))
