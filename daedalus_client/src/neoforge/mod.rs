@@ -182,19 +182,40 @@ pub async fn retrieve_data(
                                     patched: false,
                                 })).filter(|lib| !lib.name.is_log4j() ).collect();
 
-                                let mut local_libs : HashMap<String, bytes::Bytes> = HashMap::new();
+                                let mut local_libs : HashMap<String, Option<bytes::Bytes>> = HashMap::new();
 
+                                // Same predicate as the forge pipeline: bundled libraries are
+                                // declared either with an empty downloads.artifact.url or with
+                                // the maven-style url field, and both forms source their bytes
+                                // from the installer jar's maven/ tree.
                                 for lib in &libs {
-                                    if lib.downloads.as_ref().and_then(|x| x.artifact.as_ref().and_then(|x| x.url.as_ref().map(|url| url.is_empty()))).unwrap_or(false) {
+                                    if crate::forge::libraries::is_local_lib(lib) {
                                         let mut archive_clone = archive.clone();
                                         let lib_name_clone = lib.name.clone();
 
                                         let lib_bytes = tokio::task::spawn_blocking(move || {
-                                            let mut lib_file = archive_clone.by_name(&format!("maven/{}", &lib_name_clone.path()))?;
+                                            let entry_name = format!("maven/{}", lib_name_clone.path());
+                                            let lib_file = archive_clone.by_name(&entry_name).map_err(|err| {
+                                                crate::infrastructure::error::invalid_input(format!("Failed to find entry {} in installer jar: {}", entry_name, err))
+                                            });
+
+                                            // NeoForge tracks Forge's installer layout, which since
+                                            // 1.20.4 declares a self-referencing library whose jar is
+                                            // not bundled under maven/ — tolerate the missing entry
+                                            // for the loader's own artifacts instead of failing the
+                                            // version on every cycle.
+                                            if lib_file.is_err()
+                                                && (&*lib_name_clone.artifact == "neoforge"
+                                                    || &*lib_name_clone.artifact == "forge")
+                                            {
+                                                return Ok::<_, crate::infrastructure::error::Error>(None);
+                                            }
+
+                                            let mut lib_file = lib_file?;
                                             let mut lib_bytes =  Vec::new();
                                             lib_file.read_to_end(&mut lib_bytes)?;
 
-                                            Ok::<bytes::Bytes, crate::infrastructure::error::Error>(bytes::Bytes::from(lib_bytes))
+                                            Ok::<_, crate::infrastructure::error::Error>(Some(bytes::Bytes::from(lib_bytes)))
                                         }).await??;
 
                                         local_libs.insert(lib.name.to_string(), lib_bytes);
@@ -250,7 +271,7 @@ pub async fn retrieve_data(
                                                             ).as_str().try_into()?;
                                                             let path = name.to_string();
                                                             $value = format!("[{}]", &path);
-                                                            local_libs.insert(path.clone(), bytes::Bytes::from(lib_bytes));
+                                                            local_libs.insert(path.clone(), Some(bytes::Bytes::from(lib_bytes)));
 
                                                             libs.push(Library {
                                                                 downloads: None,
@@ -310,7 +331,7 @@ pub async fn retrieve_data(
                                                 )
                                                 .await?)
                                             } else {
-                                                local_libs.get(&lib.name.to_string()).cloned()
+                                                local_libs.get(&lib.name.to_string()).cloned().flatten()
                                             };
 
                                             if res.is_none() {
@@ -321,11 +342,21 @@ pub async fn retrieve_data(
                                         } else { None }
                                     } else if let Some(ref mut url) = lib.url {
                                         let res = if url.is_empty() {
-                                            local_libs.get(&lib.name.to_string()).cloned()
+                                            local_libs.get(&lib.name.to_string()).cloned().flatten()
                                         } else {
+                                            // The url field is a maven repository base — join the
+                                            // artifact path like the forge pipeline does; fetching
+                                            // the base verbatim downloads the repository's index
+                                            // page as 'jar bytes'.
+                                            let lib_url = format!("{}/{}", url, lib.name.path());
+                                            let checksum = lib
+                                                .checksums
+                                                .as_ref()
+                                                .and_then(|c| c.first())
+                                                .cloned();
                                             Some(download_file(
-                                                url,
-                                                None,
+                                                &lib_url,
+                                                checksum.as_deref(),
                                                 semaphore.clone(),
                                             )
                                                 .await?)
@@ -416,13 +447,21 @@ pub async fn retrieve_data(
                                 // Use common CAS URL building
                                 let cas_url = crate::common::cas::build_cas_url(&version_hash)?;
 
+                                // NeoForge's own versioning marks prereleases with a dash
+                                // suffix ("26.1.2.70-beta", "...-alpha.1+snapshot-1"); plain
+                                // dotted versions are releases. Legacy forge-alias ids
+                                // ("1.20.1-47.x") stay unstable — no promotions data exists
+                                // for that coordinate.
+                                let stable = &*new_forge == "true"
+                                    && !loader_version_full.contains('-');
+
                                 // Trust profile.minecraft over the maven-derived inferred id —
                                 // Mojang's "no 1.x prefix" versioning makes reverse-engineering
                                 // from the NeoForge coordinate brittle.
                                 return Ok(Some((profile.minecraft.clone(), LoaderVersion {
                                     id: loader_version_full,
                                     url: cas_url,
-                                    stable: false
+                                    stable,
                                 })));
                             }
 
