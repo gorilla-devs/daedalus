@@ -1081,6 +1081,27 @@ fn check_env_vars() -> bool {
     failed |= check_var::<String>("BRAND_NAME");
     failed |= check_var::<String>("SUPPORT_EMAIL");
 
+    // The Cloudflare integration is opt-in, but enabling it without its
+    // credentials is a misconfiguration: every publish would skip the purge
+    // with only a per-cycle warning while the CDN serves a stale root for the
+    // full edge TTL. Validate at startup per the fail-loud policy — and
+    // reject values other than true/false, since a typo'd value silently
+    // disabled the integration via the exact `== "true"` comparison.
+    match dotenvy::var("CLOUDFLARE_INTEGRATION").ok().as_deref() {
+        None | Some("false") => {}
+        Some("true") => {
+            failed |= check_var::<String>("CLOUDFLARE_TOKEN");
+            failed |= check_var::<String>("CLOUDFLARE_ZONE_ID");
+        }
+        Some(other) => {
+            warn!(
+                value = %other,
+                "CLOUDFLARE_INTEGRATION must be \"true\" or \"false\""
+            );
+            failed = true;
+        }
+    }
+
     failed
 }
 
