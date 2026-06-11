@@ -4,6 +4,7 @@ pub mod cloudflare;
 pub mod control;
 pub mod discord;
 pub mod download;
+pub mod lease;
 pub mod pins;
 pub mod run_state;
 pub mod s3_json;

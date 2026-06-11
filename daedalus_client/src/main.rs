@@ -311,6 +311,15 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
             let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS));
 
+            // Single-writer lease: a rolling deploy's new instance waits here
+            // until the old instance releases (graceful shutdown) or expires
+            // (crash), so two instances never interleave root PUTs or
+            // double-execute control intents. Advisory — see services::lease.
+            let lease_holder = services::lease::holder_id();
+            services::lease::acquire(&CLIENT, &lease_holder).await;
+            let _lease_heartbeat =
+                services::lease::spawn_heartbeat(&CLIENT, lease_holder.clone());
+
             // Static CDN files are init state, not a degraded mode: published
             // version JSONs embed ${BASE_URL}/maven/... URLs that resolve to
             // objects sourced from this directory. A missing directory is a
@@ -352,6 +361,10 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                     }
                 }
             }
+
+            // Release the lease first so a waiting successor can take over
+            // without sitting out the TTL.
+            services::lease::release(&CLIENT, &lease_holder).await;
 
             // Drain Betterstack + Discord buffers and ship one final batch
             // before process exit.
