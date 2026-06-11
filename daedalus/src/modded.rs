@@ -179,6 +179,8 @@ pub fn merge_partial_version(
                         "Gradle specifier to still be valid after branding",
                     ),
                 url: x.url,
+                sha1: x.sha1,
+                size: x.size,
                 natives: x.natives,
                 rules: x.rules,
                 checksums: x.checksums,

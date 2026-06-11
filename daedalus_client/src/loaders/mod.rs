@@ -628,6 +628,12 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                         lib.name = coord_with_placeholder.parse()?;
                         lib.version_hashes = Some(version_hashes);
                         lib.url = None;
+                        // The meta's sha1/size describe the DUMMY game
+                        // version's mapping jar; the resolved artifact differs
+                        // per game version, so publishing them would fail
+                        // checksum validation everywhere.
+                        lib.sha1 = None;
+                        lib.size = None;
                         return Ok(lib);
                     }
 
@@ -656,6 +662,11 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                             None
                         };
 
+                    // Loader metas publish the artifact's sha1 alongside its
+                    // url; verifying it keeps a maven's 200-with-wrong-body
+                    // from being immortalised as the CAS object every loader
+                    // version reuses.
+                    let expected_sha1 = lib.sha1.clone();
                     let artifact = download_file(
                         &format!(
                             "{}{}",
@@ -664,7 +675,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                                 .unwrap_or(&maven_fallback),
                             artifact_path
                         ),
-                        None,
+                        expected_sha1.as_deref(),
                         semaphore.clone(),
                     )
                     .await?;

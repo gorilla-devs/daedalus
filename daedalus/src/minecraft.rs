@@ -437,6 +437,14 @@ pub struct Library {
     /// The URL to the repository where the library can be downloaded
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// SHA1 of the artifact, as published by loader metas (fabric/quilt
+    /// profile libraries carry one alongside `url`). Verified when the
+    /// artifact is mirrored and republished for consumers.
+    pub sha1: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Size in bytes of the artifact, when the loader meta provides it.
+    pub size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Native files that the library relies on
     pub natives: Option<BTreeMap<Os, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

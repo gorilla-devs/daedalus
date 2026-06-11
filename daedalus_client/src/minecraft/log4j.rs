@@ -123,6 +123,8 @@ pub fn create_log4j_replacement_library(
         }),
         extract: None,
         url: None,
+        sha1: None,
+        size: None,
         natives: None,
         rules: None,
         checksums: None,
