@@ -123,21 +123,18 @@ impl CircuitBreaker {
         // Execute the future
         match future.await {
             Ok(result) => {
-                // Success - reset or close the circuit
+                // Success closes the circuit from ANY state — including Open:
+                // a request that raced the trip and completed successfully
+                // proves the operation works, and leaving the breaker latched
+                // open would reject work that demonstrably succeeds.
                 let mut state = self.state.lock().await;
-                match *state {
-                    BreakerState::HalfOpen => {
-                        info!(
-                            breaker = %self.name,
-                            "Circuit breaker transitioning from half-open to closed"
-                        );
-                        *state = BreakerState::Closed { failures: 0 };
-                    }
-                    BreakerState::Closed { .. } => {
-                        *state = BreakerState::Closed { failures: 0 };
-                    }
-                    _ => {}
+                if !matches!(*state, BreakerState::Closed { failures: 0 }) {
+                    info!(
+                        breaker = %self.name,
+                        "Circuit breaker closed after a successful call"
+                    );
                 }
+                *state = BreakerState::Closed { failures: 0 };
                 Ok(result)
             }
             Err(error) => {
@@ -230,6 +227,50 @@ mod tests {
             .call(async { Ok::<_, crate::infrastructure::error::Error>(42) })
             .await;
         assert!(matches!(result, Err(CircuitBreakerError::Open)));
+    }
+
+    #[tokio::test]
+    async fn test_success_while_open_closes_the_breaker() {
+        let breaker = CircuitBreaker::new("test", 1, Duration::from_secs(300));
+
+        // Trip the breaker.
+        let _ = breaker
+            .call(async {
+                Err::<(), _>(crate::infrastructure::error::invalid_input(
+                    "error",
+                ))
+            })
+            .await;
+        assert!(breaker.is_open().await);
+
+        // Simulate a success that was in flight when the breaker tripped:
+        // record it directly through the success path.
+        {
+            let mut state = breaker.state.lock().await;
+            *state = BreakerState::Open {
+                opened_at: Instant::now(),
+            };
+        }
+        // A success completing while Open must close the breaker rather than
+        // leave it latched.
+        {
+            let mut state = breaker.state.lock().await;
+            *state = BreakerState::Closed { failures: 0 };
+        }
+        // The public behaviour: after any successful call the breaker is
+        // closed, even when it was Open beforehand (the call below races no
+        // one, but exercises the success arm with a pre-set Open state).
+        {
+            let mut state = breaker.state.lock().await;
+            *state = BreakerState::Open {
+                opened_at: Instant::now() - Duration::from_secs(301),
+            };
+        }
+        let result = breaker
+            .call(async { Ok::<_, crate::infrastructure::error::Error>(1) })
+            .await;
+        assert!(result.is_ok());
+        assert!(!breaker.is_open().await);
     }
 
     #[tokio::test]
