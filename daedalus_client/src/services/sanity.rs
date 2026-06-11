@@ -24,6 +24,13 @@ pub enum SanityViolation {
         covered: usize,
         minimum: usize,
     },
+    /// Total loader-build count dropped below 90% of the previous count.
+    LoaderBuildCountDrop {
+        loader: String,
+        previous: usize,
+        current: usize,
+        minimum: usize,
+    },
     /// The latest release in the new Minecraft manifest is older than in the previous one.
     MinecraftLatestReleaseRegressed {
         previous_latest: String,
@@ -61,6 +68,16 @@ impl std::fmt::Display for SanityViolation {
                 f,
                 "sanity gate: minecraft latest release regressed from {previous_latest} to \
                  {new_latest}"
+            ),
+            SanityViolation::LoaderBuildCountDrop {
+                loader,
+                previous,
+                current,
+                minimum,
+            } => write!(
+                f,
+                "sanity gate: {loader} total loader-build count dropped from {previous} to \
+                 {current} (minimum {minimum}, i.e. 90% of previous)"
             ),
         }
     }
@@ -123,12 +140,37 @@ pub fn check_loader_health(
                 .iter()
                 .filter(|id| new_mc_ids.contains(*id))
                 .count();
-            let minimum = floor_90_percent(prev_mc_ids.len());
+            // `.max(1)` closes the same low-end hole as invariant 1: with a
+            // single previously-covered id, floor(0.9 * 1) == 0 would let
+            // coverage collapse to zero unchecked.
+            let minimum = floor_90_percent(prev_mc_ids.len()).max(1);
             if covered < minimum {
                 return Err(SanityViolation::MinecraftCoverageDrop {
                     loader: loader.to_string(),
                     previous_mc_ids: prev_mc_ids.len(),
                     covered,
+                    minimum,
+                });
+            }
+        }
+
+        // Invariant 4: total loader-build count ≥ 90% of previous. Invariants
+        // 1–2 count top-level entries and MC-id coverage, which for the
+        // fabric/quilt placeholder shape never inspect the builds themselves —
+        // a manifest that lost EVERY loader build (placeholder entry gone or
+        // emptied) differs from its predecessor by a single entry and passes
+        // both. Counting the builds directly closes that hole, and tightens
+        // forge/neoforge too (per-MC build losses below the coverage
+        // threshold were previously invisible).
+        let prev_builds = total_loader_builds(&prev.versions);
+        let new_builds = total_loader_builds(&new.versions);
+        if prev_builds > 0 {
+            let minimum = floor_90_percent(prev_builds).max(1);
+            if new_builds < minimum {
+                return Err(SanityViolation::LoaderBuildCountDrop {
+                    loader: loader.to_string(),
+                    previous: prev_builds,
+                    current: new_builds,
                     minimum,
                 });
             }
@@ -167,6 +209,20 @@ fn version_count(versions: &Value) -> usize {
 /// floor(n * 0.9)
 fn floor_90_percent(n: usize) -> usize {
     (n as f64 * 0.9).floor() as usize
+}
+
+/// Total number of loader builds across all entries — the sum of every
+/// `loaders` array's length. For fabric/quilt this is effectively the
+/// placeholder entry's build list; for forge/neoforge the per-MC build lists.
+fn total_loader_builds(versions: &Value) -> usize {
+    let Value::Array(arr) = versions else {
+        return 0;
+    };
+    arr.iter()
+        .filter_map(|item| {
+            Some(item.as_object()?.get("loaders")?.as_array()?.len())
+        })
+        .sum()
 }
 
 /// Extract the set of Minecraft version IDs a non-minecraft loader manifest
@@ -492,6 +548,63 @@ mod tests {
             json!([placeholder, mc("1.20.1"), mc("1.19.4"), mc("1.21.0")]),
         );
         assert_eq!(check_loader_health("quilt", &new, Some(&prev)), Ok(()));
+    }
+
+    #[test]
+    fn test_total_build_collapse_is_caught_for_placeholder_shape() {
+        // The exact failure invariants 1–2 cannot see: the new manifest keeps
+        // every per-MC entry (empty loaders) but the placeholder entry — and
+        // with it EVERY loader build — is gone. Counts differ by one entry,
+        // coverage loses one id of many; only the build-count invariant fires.
+        let placeholder = json!({
+            "id": "${gameVersion}", "stable": true,
+            "loaders": (0..20).map(|i| json!({
+                "id": format!("0.16.{i}"), "url": "https://example/x.json", "stable": true
+            })).collect::<Vec<_>>(),
+        });
+        let mc = |v: String| json!({ "id": v, "stable": true, "loaders": [] });
+
+        let mut prev_entries = vec![placeholder];
+        prev_entries
+            .extend((0..30).map(|i| mc(format!("1.{i}.0"))));
+        let prev = make_manifest("quilt", json!(prev_entries));
+
+        let new_entries: Vec<serde_json::Value> =
+            (0..30).map(|i| mc(format!("1.{i}.0"))).collect();
+        let new = make_manifest("quilt", json!(new_entries));
+
+        let result = check_loader_health("quilt", &new, Some(&prev));
+        assert!(
+            matches!(
+                result,
+                Err(SanityViolation::LoaderBuildCountDrop {
+                    previous: 20,
+                    current: 0,
+                    ..
+                })
+            ),
+            "Expected LoaderBuildCountDrop(prev=20, current=0), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_single_covered_mc_id_cannot_drop_to_zero() {
+        // floor(0.9 * 1) == 0 — without the .max(1) floor a loader covering a
+        // single MC id could lose it entirely and still pass invariant 2.
+        let prev =
+            make_manifest("forge", json!([modded_version("1.20.1", &["47.0.1"])]));
+        // Same entry count (invariant 1 passes via .max(1)? no — count drops
+        // 1→1 here: keep one entry but swap its id so coverage is what fires).
+        let new =
+            make_manifest("forge", json!([modded_version("1.21.0", &["50.0.1"])]));
+        let result = check_loader_health("forge", &new, Some(&prev));
+        assert!(
+            matches!(
+                result,
+                Err(SanityViolation::MinecraftCoverageDrop { covered: 0, .. })
+            ),
+            "Expected MinecraftCoverageDrop(covered=0), got {result:?}"
+        );
     }
 
     // ── invariant 3: minecraft latest release ─────────────────────────────────
