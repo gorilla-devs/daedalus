@@ -7,7 +7,9 @@
 //! Daedalus does NOT read this file back for correctness — it is purely
 //! observability data derived from the S3 history + in-memory circuit-breaker
 //! state.  Missing / malformed admin JSON is therefore treated as "not yet
-//! written" and the file is simply overwritten on the next cycle.
+//! written" and the file is simply overwritten on the next cycle. A transient
+//! fetch failure is different: the process reuses its last known state so the
+//! per-loader failure streaks aren't wiped by an S3 blip.
 
 use crate::services::cas::CAS_VERSION;
 use chrono::{DateTime, Utc};
@@ -145,26 +147,61 @@ impl RunState {
     }
 }
 
+/// Last run state this process successfully loaded or saved. A transient S3
+/// read failure must NOT reset the document to defaults: the end-of-cycle
+/// save would persist the wipe, erasing every loader's failure streak and
+/// build history that operators (and streak-based escalation) read.
+static LAST_KNOWN: std::sync::Mutex<Option<RunState>> =
+    std::sync::Mutex::new(None);
+
 /// Load run state from S3.
 ///
-/// Returns an empty `RunState` on 404 (first deploy) or any parse error —
-/// the file is treated as purely advisory observability data.
+/// Returns an empty `RunState` on 404 (first deploy) or a parse error (the
+/// stored document is junk either way). A transient fetch error instead
+/// reuses the last state this process loaded or saved, so the failure
+/// history survives an S3 blip.
 pub async fn load(bucket: &s3::Bucket) -> RunState {
-    crate::services::s3_json::load_or_else(
-        bucket,
-        &run_state_s3_path(),
-        "run state",
-        RunState::new,
-    )
-    .await
+    let path = run_state_s3_path();
+    let fresh: Option<RunState> = match bucket.get_object(&path).await {
+        Ok(resp) => match serde_json::from_slice::<RunState>(resp.bytes()) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                warn!(path = %path, error = %e, "run_state.json exists but could not be parsed; starting a fresh record");
+                Some(RunState::new())
+            }
+        },
+        Err(s3::error::S3Error::Http(404, _)) => Some(RunState::new()),
+        Err(e) => {
+            warn!(path = %path, error = %e, "Failed to fetch run_state.json; reusing the last known state from this process");
+            None
+        }
+    };
+
+    let mut cache = LAST_KNOWN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match fresh {
+        Some(state) => {
+            *cache = Some(state.clone());
+            state
+        }
+        None => cache.clone().unwrap_or_else(RunState::new),
+    }
 }
 
 /// Persist run state to S3.
 ///
 /// Failure is non-fatal — a missed write just means the admin server sees
-/// stale data until the next cycle.
+/// stale data until the next cycle. The in-memory copy becomes the new
+/// last-known state either way.
 pub async fn save(bucket: &s3::Bucket, state: &mut RunState) {
     state.written_at = Some(Utc::now());
+    {
+        let mut cache = LAST_KNOWN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *cache = Some(state.clone());
+    }
     let path = run_state_s3_path();
     match crate::services::s3_json::save_json(bucket, &path, state).await {
         Ok(_) => info!(path = %path, "Run state saved to S3"),
