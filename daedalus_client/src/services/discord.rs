@@ -21,13 +21,18 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{OnceCell, RwLock, mpsc, oneshot};
+use tokio::sync::{OnceCell, mpsc, oneshot};
 use tracing::{info, warn};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 
 /// Maximum embeds per Discord message (Discord API limit).
 const MAX_EMBEDS_PER_MESSAGE: usize = 10;
+/// Character budget for one webhook message: Discord rejects messages whose
+/// embeds total more than 6000 characters across titles, descriptions and
+/// fields. Kept under the hard limit for headroom (markdown rendering counts
+/// can differ slightly).
+const MESSAGE_CHAR_BUDGET: usize = 5800;
 /// Maximum events buffered before drop.
 const CHANNEL_CAPACITY: usize = 400;
 /// Default flush interval.
@@ -84,8 +89,10 @@ pub enum DiscordEvent {
 /// Notifier — cheap clone, send freely.
 pub struct DiscordNotifier {
     tx: mpsc::Sender<DiscordEvent>,
-    /// Tracks recent error fingerprints to suppress duplicates.
-    error_dedup: RwLock<HashMap<String, Instant>>,
+    /// Tracks recent error fingerprints to suppress duplicates. A std mutex
+    /// (not an async lock): the critical section is a map probe/insert, and
+    /// the callers are synchronous tracing contexts that cannot await.
+    error_dedup: std::sync::Mutex<HashMap<String, Instant>>,
 }
 
 pub struct DiscordHandle {
@@ -123,7 +130,7 @@ impl DiscordNotifier {
 
         let notifier = Arc::new(Self {
             tx,
-            error_dedup: RwLock::new(HashMap::new()),
+            error_dedup: std::sync::Mutex::new(HashMap::new()),
         });
 
         (
@@ -188,8 +195,6 @@ impl DiscordNotifier {
     }
 
     /// True if the same error message hasn't been pushed recently.
-    /// Synchronous dedupe with a read-then-write pattern; the small chance
-    /// of double-emit under contention is acceptable.
     fn should_send_error(&self, message: &str) -> bool {
         self.should_send_fingerprint(message)
     }
@@ -199,19 +204,23 @@ impl DiscordNotifier {
     /// per-version warnings differing in their fields stay distinct; the
     /// explicit `report_*` helpers fingerprint by message alone since the
     /// caller already shaped the string to be unique.
+    ///
+    /// Takes the mutex unconditionally: the only time dedup matters is
+    /// concurrent bursts of identical events, which is exactly when a
+    /// try-lock would fail open and let every duplicate through.
     pub fn should_send_fingerprint(&self, fingerprint: &str) -> bool {
         let now = Instant::now();
-        if let Ok(map) = self.error_dedup.try_read() {
-            if let Some(last) = map.get(fingerprint) {
-                if now.duration_since(*last) < ERROR_DEDUP_TTL {
-                    return false;
-                }
+        let mut map = self
+            .error_dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(last) = map.get(fingerprint) {
+            if now.duration_since(*last) < ERROR_DEDUP_TTL {
+                return false;
             }
         }
-        if let Ok(mut map) = self.error_dedup.try_write() {
-            map.retain(|_, t| now.duration_since(*t) < ERROR_DEDUP_TTL);
-            map.insert(fingerprint.to_string(), now);
-        }
+        map.retain(|_, t| now.duration_since(*t) < ERROR_DEDUP_TTL);
+        map.insert(fingerprint.to_string(), now);
         true
     }
 }
@@ -470,17 +479,80 @@ async fn flush(
     username: &str,
     events: Vec<DiscordEvent>,
 ) {
-    let embeds: Vec<Embed> = events.into_iter().map(event_to_embed).collect();
-    for chunk in embeds.chunks(MAX_EMBEDS_PER_MESSAGE) {
-        let payload = WebhookPayload {
-            username: username.to_string(),
-            embeds: chunk.to_vec(),
-        };
+    // Pack greedily under BOTH webhook caps: at most 10 embeds per message
+    // AND a total character budget across the whole message. Chunking by
+    // count alone made a bursty batch of verbose warnings exceed the 6000
+    // character message limit — Discord 400s and the entire chunk of alerts
+    // is dropped, precisely during incidents.
+    let mut batch: Vec<Embed> = Vec::new();
+    let mut batch_chars = 0usize;
 
-        if let Err(e) = post_webhook(client, webhook_url, &payload).await {
-            warn!(error = %e, embed_count = chunk.len(), "Discord webhook flush failed");
+    for event in events {
+        let embed =
+            shrink_embed_to_budget(event_to_embed(event), MESSAGE_CHAR_BUDGET);
+        let chars = embed_char_count(&embed);
+
+        if !batch.is_empty()
+            && (batch.len() >= MAX_EMBEDS_PER_MESSAGE
+                || batch_chars + chars > MESSAGE_CHAR_BUDGET)
+        {
+            send_batch(client, webhook_url, username, std::mem::take(&mut batch))
+                .await;
+            batch_chars = 0;
+        }
+
+        batch_chars += chars;
+        batch.push(embed);
+    }
+
+    if !batch.is_empty() {
+        send_batch(client, webhook_url, username, batch).await;
+    }
+}
+
+async fn send_batch(
+    client: &reqwest::Client,
+    webhook_url: &str,
+    username: &str,
+    embeds: Vec<Embed>,
+) {
+    let embed_count = embeds.len();
+    let payload = WebhookPayload {
+        username: username.to_string(),
+        embeds,
+    };
+
+    if let Err(e) = post_webhook(client, webhook_url, &payload).await {
+        warn!(error = %e, embed_count, "Discord webhook flush failed");
+    }
+}
+
+/// Characters this embed contributes to the message-wide limit.
+fn embed_char_count(embed: &Embed) -> usize {
+    embed.title.chars().count()
+        + embed.description.chars().count()
+        + embed
+            .fields
+            .iter()
+            .map(|f| f.name.chars().count() + f.value.chars().count())
+            .sum::<usize>()
+}
+
+/// Cut a single embed down to the message budget so it can always ship alone:
+/// the description shrinks first, then trailing fields drop. An embed built
+/// from a long message plus several 1000-character field values can exceed
+/// the whole-message budget by itself.
+fn shrink_embed_to_budget(mut embed: Embed, budget: usize) -> Embed {
+    let overflow = embed_char_count(&embed).saturating_sub(budget);
+    if overflow > 0 {
+        let desc_chars = embed.description.chars().count();
+        let keep = desc_chars.saturating_sub(overflow).max(16);
+        embed.description = truncate_for_discord(embed.description, keep);
+        while embed_char_count(&embed) > budget && !embed.fields.is_empty() {
+            embed.fields.pop();
         }
     }
+    embed
 }
 
 async fn post_webhook(
