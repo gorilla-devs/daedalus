@@ -87,6 +87,18 @@ where
     S: tracing::Subscriber,
 {
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        // Never ship this module's own logging: the consumer's flush logs an
+        // info!/warn! per batch, which would re-enter here, re-feed the
+        // queue, and keep the consumer shipping one self-generated event per
+        // tick forever (and crowd out real logs during a Betterstack outage).
+        if event
+            .metadata()
+            .target()
+            .starts_with("daedalus_client::services::betterstack")
+        {
+            return;
+        }
+
         let mut visitor = JsonVisitor::new();
         event.record(&mut visitor);
 
