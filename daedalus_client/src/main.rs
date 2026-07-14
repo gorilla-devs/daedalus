@@ -311,21 +311,14 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
             let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS));
 
-            // Single-writer lease: a rolling deploy's new instance waits here
-            // until the old instance releases (graceful shutdown) or expires
-            // (crash), so two instances never interleave root PUTs or
-            // double-execute control intents. Advisory — see services::lease.
-            let lease_holder = services::lease::holder_id();
-            services::lease::acquire(&CLIENT, &lease_holder).await;
-            let _lease_heartbeat =
-                services::lease::spawn_heartbeat(&CLIENT, lease_holder.clone());
-
             // Static CDN files are init state, not a degraded mode: published
             // version JSONs embed ${BASE_URL}/maven/... URLs that resolve to
             // objects sourced from this directory. A missing directory is a
             // configuration error that can never heal — fail the process so
             // the operator notices, instead of publishing dangling URLs
-            // forever.
+            // forever. Checked BEFORE acquiring the lease so a crash-looping
+            // misconfiguration doesn't hold the lease for the full TTL on each
+            // restart (this early return runs before the lease is released).
             {
                 let cdn_upload_dir = dotenvy::var("CDN_UPLOAD_DIR")
                     .unwrap_or("./upload_cdn".to_string());
@@ -335,6 +328,16 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                     )));
                 }
             }
+
+            // Single-writer lease: a rolling deploy's new instance waits here
+            // until the old instance releases (graceful shutdown) or expires
+            // (crash), so two instances never interleave root PUTs or
+            // double-execute control intents. Advisory — see services::lease.
+            let lease_holder = services::lease::holder_id();
+            services::lease::acquire(&CLIENT, &lease_holder).await;
+            let _lease_heartbeat =
+                services::lease::spawn_heartbeat(&CLIENT, lease_holder.clone());
+
             ensure_static_files_synced(semaphore.clone()).await;
 
             let mut is_first_run = true;
