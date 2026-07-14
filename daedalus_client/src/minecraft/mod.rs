@@ -78,11 +78,24 @@ pub async fn retrieve_data(
         if is_first_run {
             None
         } else {
-            crate::services::cas::fetch_previous_loader_versions(
+            // Unlike the merge-based loaders (forge/neoforge/fabric/quilt),
+            // minecraft rebuilds from the full upstream Mojang manifest every
+            // cycle and uses this baseline only for the skip-reuse optimisation
+            // and per-version carry-forward. An unreadable baseline therefore
+            // cannot silently drop entries the way an empty merge base can, and
+            // aborting here would skip the entire publish cycle (minecraft gates
+            // every other loader). So both Absent and Unreadable fall back to
+            // "no baseline" — reprocess everything, which is always safe.
+            match crate::services::cas::fetch_previous_loader_versions(
                 s3_client,
                 "minecraft",
             )
             .await
+            {
+                crate::services::cas::PreviousVersions::Loaded(v) => Some(v),
+                crate::services::cas::PreviousVersions::Absent
+                | crate::services::cas::PreviousVersions::Unreadable => None,
+            }
         };
 
     let mut manifest =
@@ -282,16 +295,23 @@ pub async fn retrieve_data(
                                 version_id = %version_info.id,
                                 download_key = %key,
                                 "Mojang shipped a new DownloadType we don't recognise; \
-                                 excluding version from manifest until support is added \
-                                 in daedalus::minecraft::DownloadType"
+                                 not publishing a fresh entry for this version until \
+                                 support is added in daedalus::minecraft::DownloadType"
                             );
                         }
-                        // Remove the version from the manifest so it is never published.
-                        // Writes locate entries by id, so the removal cannot corrupt
-                        // other in-flight versions' writes.
-                        let mut guard = cloned_manifest_mutex.lock().await;
-                        guard.versions.retain(|v| v.id != version_info.id);
-                        return Ok(());
+                        // Bail via Err so the shared failure handler below carries the
+                        // previously-published entry forward instead of dropping the
+                        // version outright: a bulk upstream re-publish that adds an
+                        // unknown download key to existing versions must not unpublish
+                        // them. Only a version with no baseline is removed from the
+                        // manifest (the failure handler does that when there is nothing
+                        // to carry forward).
+                        return Err(crate::infrastructure::error::invalid_input(
+                            format!(
+                                "version {} has unrecognised DownloadType key(s): {:?}",
+                                version_info.id, unknown_keys
+                            ),
+                        ));
                     }
                 }
 

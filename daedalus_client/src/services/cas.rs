@@ -169,6 +169,30 @@ impl LoaderManifest {
     }
 }
 
+/// Outcome of reading the previous publish's versions for a loader.
+///
+/// The distinction between `Absent` and `Unreadable` is load-bearing for the
+/// merge-based loaders (forge, neoforge, and — for its full re-fetch — the
+/// fabric/quilt processor): merging fresh builds onto an *empty* base is only
+/// safe when there genuinely is no previous publish. When a previous publish
+/// exists but can't be read, an empty base silently drops every entry this
+/// cycle cannot regenerate (skip-listed builds, installers that now 404, ids
+/// pruned upstream), and the shrunk manifest then becomes the next cycle's
+/// base — permanent loss. Those callers must abort the loader on `Unreadable`
+/// and let carry-forward keep the last-good manifest live.
+pub enum PreviousVersions<T> {
+    /// The previous versions were read successfully.
+    Loaded(T),
+    /// There is no previous publish for this loader: the root manifest is a
+    /// genuine 404 (cold start), or the root exists but has no reference for
+    /// this loader (it has never published). An empty merge base is correct.
+    Absent,
+    /// A previous publish exists but could not be read — a transient S3 fetch
+    /// error, or a parse/shape failure on the root or the loader manifest.
+    /// Merge-based callers must NOT treat this as a cold start.
+    Unreadable,
+}
+
 /// Fetch the versions payload of the most recently PUBLISHED manifest for
 /// `loader`, by following the previous root manifest's loader reference.
 ///
@@ -179,16 +203,15 @@ impl LoaderManifest {
 /// consistent), not the CDN, so a stale edge cache can never feed an old
 /// manifest back in as the baseline.
 ///
-/// Returns `None` when there is no previous publish (cold start, or the
-/// loader has never published) or when any step fails — callers treat that
-/// as "no baseline" and rebuild from scratch, which is always safe, just
-/// slower. Failures are logged: an unreadable baseline silently disables
-/// change detection, carry-forward and new-version notifications for the
-/// cycle, and that should be visible to operators.
+/// Returns [`PreviousVersions::Absent`] for a genuine cold start (root 404, or
+/// this loader missing from the root) and [`PreviousVersions::Unreadable`] when
+/// a publish exists but any read/parse step fails — see the enum docs for why
+/// callers must handle the two differently. Failures are logged: an unreadable
+/// baseline should be visible to operators.
 pub async fn fetch_previous_loader_versions<T: serde::de::DeserializeOwned>(
     bucket: &s3::Bucket,
     loader: &str,
-) -> Option<T> {
+) -> PreviousVersions<T> {
     let root_path = format!("v{}/manifest.json", CAS_VERSION);
     let root = match bucket.get_object(&root_path).await {
         Ok(resp) => {
@@ -198,27 +221,34 @@ pub async fn fetch_previous_loader_versions<T: serde::de::DeserializeOwned>(
                     warn!(
                         loader,
                         error = %e,
-                        "Previous root manifest exists but could not be parsed; proceeding without a baseline"
+                        "Previous root manifest exists but could not be parsed; treating the baseline as unreadable (loader will be held back this cycle)"
                     );
-                    return None;
+                    return PreviousVersions::Unreadable;
                 }
             }
         }
         Err(s3::error::S3Error::Http(404, _)) => {
             info!(loader, "No previous root manifest (first publish?)");
-            return None;
+            return PreviousVersions::Absent;
         }
         Err(e) => {
             warn!(
                 loader,
                 error = %e,
-                "Failed to fetch previous root manifest; proceeding without a baseline"
+                "Failed to fetch previous root manifest; treating the baseline as unreadable (loader will be held back this cycle)"
             );
-            return None;
+            return PreviousVersions::Unreadable;
         }
     };
 
-    let reference = root.loaders.get(loader)?;
+    // Root loaded, but this loader has no reference in it — it has never
+    // published. That is a genuine cold start for this loader, so an empty
+    // base is correct.
+    let Some(reference) = root.loaders.get(loader) else {
+        info!(loader, "Loader has no reference in the previous root (never published)");
+        return PreviousVersions::Absent;
+    };
+
     let manifest = match bucket.get_object(&reference.url).await {
         Ok(resp) => {
             match serde_json::from_slice::<LoaderManifest>(resp.bytes()) {
@@ -228,9 +258,9 @@ pub async fn fetch_previous_loader_versions<T: serde::de::DeserializeOwned>(
                         loader,
                         path = %reference.url,
                         error = %e,
-                        "Previous loader manifest exists but could not be parsed; proceeding without a baseline"
+                        "Previous loader manifest exists but could not be parsed; treating the baseline as unreadable"
                     );
-                    return None;
+                    return PreviousVersions::Unreadable;
                 }
             }
         }
@@ -239,9 +269,9 @@ pub async fn fetch_previous_loader_versions<T: serde::de::DeserializeOwned>(
                 loader,
                 path = %reference.url,
                 error = %e,
-                "Failed to fetch previous loader manifest referenced by the root; proceeding without a baseline"
+                "Failed to fetch previous loader manifest referenced by the root; treating the baseline as unreadable"
             );
-            return None;
+            return PreviousVersions::Unreadable;
         }
     };
 
@@ -252,15 +282,15 @@ pub async fn fetch_previous_loader_versions<T: serde::de::DeserializeOwned>(
                 timestamp = %manifest.timestamp,
                 "Loaded previous loader versions as the cycle baseline"
             );
-            Some(v)
+            PreviousVersions::Loaded(v)
         }
         Err(e) => {
             warn!(
                 loader,
                 error = %e,
-                "Previous loader manifest versions payload has an unexpected shape; proceeding without a baseline"
+                "Previous loader manifest versions payload has an unexpected shape; treating the baseline as unreadable"
             );
-            None
+            PreviousVersions::Unreadable
         }
     }
 }

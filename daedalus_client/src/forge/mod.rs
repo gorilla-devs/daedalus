@@ -64,15 +64,19 @@ pub async fn retrieve_data(
     // and "latest" build. We mirror Prism's approach and surface "recommended"
     // as LoaderVersion.stable. The set is keyed by full loader id (e.g.
     // "1.20.1-47.4.10") for direct lookup at LoaderVersion construction time.
-    let recommended_loaders: Arc<HashSet<String>> = Arc::new(
-        match fetch_forge_promotions(semaphore.clone()).await {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(error = %e, "Failed to fetch Forge promotions; marking all as unstable");
-                HashSet::new()
-            }
-        },
-    );
+    // A promotions fetch failure must abort the cycle rather than fall back to
+    // an empty set: merge_loader_versions overwrites existing entries wholesale,
+    // so publishing with an empty recommended set would republish every Forge
+    // build as unstable and wipe the "recommended" markers until the next
+    // successful cycle. Aborting lets carry-forward keep the last-good manifest.
+    let recommended_loaders: Arc<HashSet<String>> =
+        Arc::new(fetch_forge_promotions(semaphore.clone()).await.map_err(|e| {
+            crate::infrastructure::error::invalid_input(format!(
+                "forge: failed to fetch promotions_slim.json ({e}); aborting this cycle \
+                 so carry-forward keeps the last-good stable flags instead of \
+                 republishing every build as unstable"
+            ))
+        })?);
     info!(
         recommended_count = recommended_loaders.len(),
         "Loaded Forge promotions"
@@ -82,11 +86,21 @@ pub async fn retrieve_data(
     // manifest — loader manifests live at timestamped keys that only the root
     // records, so this is the only path that can actually find them.
     let old_versions: Vec<daedalus::modded::Version> =
-        crate::services::cas::fetch_previous_loader_versions(
+        match crate::services::cas::fetch_previous_loader_versions(
             s3_client, "forge",
         )
         .await
-        .unwrap_or_default();
+        {
+            crate::services::cas::PreviousVersions::Loaded(v) => v,
+            crate::services::cas::PreviousVersions::Absent => Vec::new(),
+            crate::services::cas::PreviousVersions::Unreadable => {
+                return Err(crate::infrastructure::error::invalid_input(
+                    "forge: previous manifest baseline is unreadable (transient S3 \
+                     error or parse failure); aborting this cycle so carry-forward \
+                     keeps the last-good manifest instead of rebuilding from an empty base",
+                ));
+            }
+        };
     let old_versions = Arc::new(Mutex::new(old_versions));
 
     let mc_library_cache_mutex =
@@ -735,11 +749,25 @@ pub async fn retrieve_data(
                     }
                 }
 
-                versions.lock().await.push(daedalus::modded::Version {
-                    id: minecraft_version,
-                    stable: true,
-                    loaders: loaders_versions
-                });
+                if loaders_versions.is_empty() {
+                    // Every loader build for this MC version failed to process
+                    // this cycle (e.g. a maven outage while the version first
+                    // appeared). Don't add an MC-version entry with no installable
+                    // builds — it would show launchers an empty version picker.
+                    // merge_loader_versions preserves any previously-published
+                    // entry for this id, and a later cycle adds it once its builds
+                    // process.
+                    warn!(
+                        minecraft_version = %minecraft_version,
+                        "Forge - no loader builds processed for this MC version this cycle; not adding an empty entry"
+                    );
+                } else {
+                    versions.lock().await.push(daedalus::modded::Version {
+                        id: minecraft_version,
+                        stable: true,
+                        loaders: loaders_versions,
+                    });
+                }
 
                 Ok::<(), crate::infrastructure::error::Error>(())
             });

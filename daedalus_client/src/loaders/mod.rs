@@ -144,18 +144,33 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         // previous root manifest — loader manifests live at timestamped keys
         // that only the root records.
         let old_versions: Option<Vec<Version>> =
-            crate::services::cas::fetch_previous_loader_versions(
+            match crate::services::cas::fetch_previous_loader_versions(
                 s3_client,
                 self.strategy.manifest_path_prefix(),
             )
-            .await;
+            .await
+            {
+                crate::services::cas::PreviousVersions::Loaded(v) => Some(v),
+                crate::services::cas::PreviousVersions::Absent => None,
+                crate::services::cas::PreviousVersions::Unreadable => {
+                    return Err(crate::infrastructure::error::invalid_input(
+                        format!(
+                            "{}: previous manifest baseline is unreadable (transient \
+                             S3 error or parse failure); aborting this cycle so \
+                             carry-forward keeps the last-good manifest instead of \
+                             rebuilding from an empty base",
+                            self.strategy.name()
+                        ),
+                    ));
+                }
+            };
 
-        // Treat "we successfully loaded a previous manifest" as the cold-start
-        // signal for Discord notifications: on a brand-new deploy / first run
-        // (no previous manifest), we suppress per-MC-version notifications to
-        // avoid spamming one message per historical Minecraft version. This
-        // does mean a transient fetch failure of the previous manifest is
-        // indistinguishable from a true cold start, which is acceptable.
+        // `old_manifest_was_present` is the cold-start signal for Discord
+        // notifications: on a brand-new deploy (Absent) we suppress the
+        // per-MC-version notifications that would otherwise fire once per
+        // historical Minecraft version. An unreadable baseline is handled above
+        // (the loader is aborted for the cycle), so this now only distinguishes
+        // a genuine cold start from a successfully loaded baseline.
         let old_manifest_was_present = old_versions.is_some();
         let mut versions = old_versions.unwrap_or_default();
 

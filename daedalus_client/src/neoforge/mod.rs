@@ -71,11 +71,21 @@ pub async fn retrieve_data(
     // root manifest — loader manifests live at timestamped keys that only the
     // root records, so this is the only path that can actually find them.
     let old_versions: Vec<daedalus::modded::Version> =
-        crate::services::cas::fetch_previous_loader_versions(
+        match crate::services::cas::fetch_previous_loader_versions(
             s3_client, "neoforge",
         )
         .await
-        .unwrap_or_default();
+        {
+            crate::services::cas::PreviousVersions::Loaded(v) => v,
+            crate::services::cas::PreviousVersions::Absent => Vec::new(),
+            crate::services::cas::PreviousVersions::Unreadable => {
+                return Err(crate::infrastructure::error::invalid_input(
+                    "neoforge: previous manifest baseline is unreadable (transient S3 \
+                     error or parse failure); aborting this cycle so carry-forward \
+                     keeps the last-good manifest instead of rebuilding from an empty base",
+                ));
+            }
+        };
     let old_versions = Arc::new(Mutex::new(old_versions));
 
     let versions: Arc<Mutex<Vec<daedalus::modded::Version>>> =
