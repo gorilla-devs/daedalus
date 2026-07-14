@@ -527,10 +527,12 @@ pub async fn retrieve_data(
                                                     let split = $value.split('/').last();
 
                                                     if let Some(last) = split {
-                                                        let mut file = last.split('.');
-
-                                                        if let Some(file_name) = file.next() {
-                                                            if let Some(ext) = file.next() {
+                                                        // rsplit_once handles multi-dot names such as
+                                                        // `foo.tar.gz` (file_name = "foo.tar", ext = "gz");
+                                                        // the previous split('.') + two next() calls dropped
+                                                        // everything after the first dot. Matches the
+                                                        // neoforge extraction path.
+                                                        if let Some((file_name, ext)) = last.rsplit_once('.') {
                                                                 // Use consistent namespace (synced with Modrinth daedalus approach).
                                                                 // The map key must be the GradleSpecifier's canonical Display form —
                                                                 // that is what the consumption lookup uses, and Display omits a
@@ -555,7 +557,6 @@ pub async fn retrieve_data(
                                                                     version_hashes: None,
                                                                     patched: false,
                                                                 });
-                                                            }
                                                         }
                                                     }
                                                 }
