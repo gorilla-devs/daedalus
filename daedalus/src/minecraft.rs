@@ -64,10 +64,14 @@ pub struct Version {
     pub time: DateTime<Utc>,
     /// The time this version was released
     pub release_time: DateTime<Utc>,
-    /// The SHA1 hash of the additional information about the version.
-    /// For published manifests this is the hash of the post-processed JSON we serve,
-    /// so it changes whenever our processing pipeline tweaks the file. Compare against
-    /// `original_sha1` to detect upstream changes from Mojang.
+    /// Hash of the version JSON. The algorithm depends on which manifest this
+    /// came from: on the UPSTREAM Mojang manifest it is the upstream SHA-1; on a
+    /// GDLauncher-PUBLISHED manifest it is instead the **SHA-256** of the
+    /// post-processed JSON we serve (the CAS object key), so it changes whenever
+    /// our pipeline tweaks the file. Compare against `original_sha1` to detect
+    /// upstream changes from Mojang. Because the two manifests use different
+    /// algorithms in this one field, only verify it with SHA-1 against upstream
+    /// data — see [`fetch_version_info`].
     pub sha1: String,
     /// Whether the version supports the latest player safety features
     pub compliance_level: u32,
@@ -895,7 +899,15 @@ impl LWJGLEntry {
     }
 }
 
-/// Fetches detailed information about a version from the manifest
+/// Fetches detailed information about a version from the manifest.
+///
+/// The download is verified with **SHA-1** against `version.sha1`, so this is
+/// for the UPSTREAM Mojang manifest, where that field is the upstream SHA-1 of
+/// the version JSON. It must NOT be used on a GDLauncher-published manifest:
+/// there `sha1` holds the SHA-256 of the post-processed JSON (the CAS object
+/// key — see [`Version::sha1`]), so this SHA-1 check would always fail.
+/// Published version JSONs are content-addressed by their URL, so a consumer
+/// needs no separate checksum.
 pub async fn fetch_version_info(
     version: &Version,
 ) -> Result<VersionInfo, Error> {
