@@ -605,6 +605,26 @@ pub async fn retrieve_data(
     let mut final_versions =
         merge_loader_versions(old_manifest_versions, new_versions, "NeoForge");
 
+    // Drop phantom MC-version groups: entries whose id is not a currently-valid
+    // Minecraft version. The fresh path filters builds to valid MC ids
+    // (profile.minecraft), but merge_loader_versions only adds/updates, so
+    // entries published under an earlier inference heuristic's bogus ids (MC
+    // versions that never existed) would otherwise persist forever. Mojang's
+    // manifest is monotonic — real versions never disappear from it — so any id
+    // absent here is genuinely phantom. NOTE: a one-time cleanup of a LARGE
+    // pre-existing phantom set can trip the sanity gate's MC-coverage check (a
+    // big drop looks like a regression); that is the gate working as designed
+    // and may need an operator to inspect once.
+    let before = final_versions.len();
+    final_versions.retain(|v| valid_mc_versions.contains(&v.id));
+    let pruned = before - final_versions.len();
+    if pruned > 0 {
+        warn!(
+            "⚠️  NeoForge - Pruned {} phantom MC-version group(s) not present in the Minecraft manifest",
+            pruned
+        );
+    }
+
     // Use common sorting utilities
     sort_by_minecraft_order(&mut final_versions, minecraft_versions);
 
