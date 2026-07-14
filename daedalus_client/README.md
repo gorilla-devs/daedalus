@@ -5,7 +5,7 @@ Daedalus Client is a Rust-based metadata processing and distribution system for 
 ## Features
 
 - **Content-Addressable Storage (CAS)**: Files stored by SHA256 hash for deduplication and immutability
-- **Unified Versioning**: Single version entrypoint (v3) for all metadata types
+- **Unified Versioning**: Single version entrypoint (v5) for all metadata types
 - **Multi-Loader Support**: Minecraft, Forge, Fabric, Quilt, and NeoForge
 - **S3-Compatible Storage**: Works with AWS S3, Cloudflare R2, and other S3-compatible services
 - **Atomic Updates**: Root manifest provides atomic switching between versions
@@ -18,16 +18,16 @@ Daedalus Client is a Rust-based metadata processing and distribution system for 
 The CAS architecture provides several key benefits:
 
 ```
-Root Manifest (v3/manifest.json)
-  ├─> minecraft manifest (v3/manifests/minecraft/<timestamp>.json)
-  ├─> forge manifest (v3/manifests/forge/<timestamp>.json)
-  ├─> fabric manifest (v3/manifests/fabric/<timestamp>.json)
-  ├─> quilt manifest (v3/manifests/quilt/<timestamp>.json)
-  └─> neoforge manifest (v3/manifests/neoforge/<timestamp>.json)
+Root Manifest (v5/manifest.json)
+  ├─> minecraft manifest (v5/manifests/minecraft/<timestamp>.json)
+  ├─> forge manifest (v5/manifests/forge/<timestamp>.json)
+  ├─> fabric manifest (v5/manifests/fabric/<timestamp>.json)
+  ├─> quilt manifest (v5/manifests/quilt/<timestamp>.json)
+  └─> neoforge manifest (v5/manifests/neoforge/<timestamp>.json)
 
 Each loader manifest contains:
   ├─> version entries with content hashes
-  └─> references to v3/objects/<hash[0..2]>/<hash[2..]>
+  └─> references to v5/objects/<hash[0..2]>/<hash[2..]>
 ```
 
 **Benefits:**
@@ -173,7 +173,7 @@ RUST_LOG=debug cargo run
 The client generates the following structure in your S3 bucket:
 
 ```
-v3/
+v5/
 ├── manifest.json                              # Root manifest (atomic pointer)
 ├── manifests/
 │   ├── minecraft/<timestamp>.json             # Minecraft version manifest
