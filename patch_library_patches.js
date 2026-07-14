@@ -4,6 +4,10 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+// Match the Rust client's default so an unset CDN_UPLOAD_DIR mirrors into
+// ./upload_cdn instead of the literal string "undefined/maven/...".
+const CDN_UPLOAD_DIR = process.env.CDN_UPLOAD_DIR || "./upload_cdn";
+
 const requiresMirroring = (_url) => {
   const url = new URL(_url);
   const domain = url.hostname;
@@ -18,22 +22,32 @@ function downloadFile(url, dest) {
 
     const file = fs.createWriteStream(dest);
 
+    // createWriteStream has already truncated `dest`, so on any failure we must
+    // close and remove it — otherwise a non-200 body (or a partial write) is
+    // left in place as a corrupt jar, later republished to the CDN at the same
+    // stable /maven URL. fs.unlink needs a callback or it throws on modern Node.
+    const fail = (err) => {
+      file.close(() => {
+        fs.unlink(dest, () => reject(err));
+      });
+    };
+
     followRedirects.https
       .get(url, function (response) {
         if (response.statusCode !== 200) {
           console.log(`Error ${response.statusCode} downloading ${url}`);
-          reject(new Error(`Error ${response.statusCode} downloading ${url}`));
+          response.resume(); // drain so the socket frees up
+          fail(new Error(`Error ${response.statusCode} downloading ${url}`));
+          return;
         }
 
         response.pipe(file);
         file.on("finish", function () {
           file.close(() => resolve(true));
         });
+        file.on("error", fail);
       })
-      .on("error", function (err) {
-        fs.unlink(dest);
-        reject(err);
-      });
+      .on("error", fail);
   });
 }
 
@@ -90,7 +104,7 @@ async function main() {
           if (requiresMirroring(lib.downloads.artifact.url)) {
             await downloadFile(
               lib.downloads.artifact.url,
-              `${process.env.CDN_UPLOAD_DIR}/maven/${libPath}`
+              `${CDN_UPLOAD_DIR}/maven/${libPath}`
             );
 
             lib.downloads.artifact.url = "${BASE_URL}" + `/maven/${libPath}`;
@@ -107,7 +121,7 @@ async function main() {
             if (requiresMirroring(lib.downloads.classifiers[classifier].url)) {
               await downloadFile(
                 lib.downloads.classifiers[classifier].url,
-                `${process.env.CDN_UPLOAD_DIR}/maven/${libPath}`
+                `${CDN_UPLOAD_DIR}/maven/${libPath}`
               );
 
               lib.downloads.classifiers[classifier].url =
@@ -126,7 +140,7 @@ async function main() {
         if (requiresMirroring(lib.downloads.artifact.url)) {
           await downloadFile(
             lib.downloads.artifact.url,
-            `${process.env.CDN_UPLOAD_DIR}/maven/${libPath}`
+            `${CDN_UPLOAD_DIR}/maven/${libPath}`
           );
 
           lib.downloads.artifact.url = "${BASE_URL}" + `/maven/${libPath}`;
@@ -140,7 +154,7 @@ async function main() {
           if (requiresMirroring(lib.downloads.classifiers[classifier].url)) {
             await downloadFile(
               lib.downloads.classifiers[classifier].url,
-              `${process.env.CDN_UPLOAD_DIR}/maven/${libPath}`
+              `${CDN_UPLOAD_DIR}/maven/${libPath}`
             );
 
             lib.downloads.classifiers[classifier].url =
