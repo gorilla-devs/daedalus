@@ -386,12 +386,43 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         // loader support that resolves to nothing.
         let mapped_set: HashSet<&str> =
             mapped_game_versions.iter().map(String::as_str).collect();
+
+        // Game versions whose mapping artifact actually resolved this cycle. The
+        // shared intermediary expansion above downloads one mapping jar per
+        // mapped game version; a version whose jar the maven doesn't serve yet
+        // (upstream lag, or a wrong-body 200) is omitted from the hash table.
+        // Advertising such a version as installable would publish a loader whose
+        // mapping library resolves to nothing, and the cache would then re-emit
+        // it every cycle. So a NEW game version is only added below once its
+        // mapping resolved; one left out is re-seen as "new" next cycle and
+        // picked up automatically once its jar appears. This set is only
+        // consulted for versions not already in the manifest, and new additions
+        // only happen when a new mapped version appeared (which forces the full
+        // expansion to run), so an empty set on a fully-cached cycle can never
+        // drop an already-published version.
+        let installable_game_versions: HashSet<String> = caches
+            .intermediary_hashes
+            .iter()
+            .filter_map(|entry| entry.value().get().cloned())
+            .flat_map(|map| map.into_keys())
+            .collect();
+
         let notifier = crate::services::discord::notifier();
         for version in list.game() {
             if !mapped_set.contains(version.version()) {
                 continue;
             }
             if !versions.iter().any(|x| x.id == version.version()) {
+                // Only advertise a NEW game version once its mapping artifact
+                // resolved this cycle (see installable_game_versions above).
+                if !installable_game_versions.contains(version.version()) {
+                    warn!(
+                        loader = %self.strategy.name(),
+                        game_version = %version.version(),
+                        "New mapped game version has no resolved mapping artifact yet; not advertising it as installable this cycle"
+                    );
+                    continue;
+                }
                 if old_manifest_was_present {
                     if let Some(n) = notifier.as_ref() {
                         n.report_new_loader_support(
@@ -595,6 +626,23 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                                                 }
                                                 Err(e) => return Err(e),
                                             };
+
+                                            // The meta lists the mapping version but
+                                            // not its jar hash, so a full checksum
+                                            // isn't possible here. Reject an obvious
+                                            // wrong-body 200 (soft-404 HTML page,
+                                            // truncated proxy error) by requiring the
+                                            // ZIP local-file magic — otherwise the bad
+                                            // bytes become the CAS object baked into
+                                            // version_hashes for every cached re-emit.
+                                            if !artifact.starts_with(b"PK") {
+                                                warn!(
+                                                    coordinate = %coord_with_placeholder,
+                                                    game_version = %game_version,
+                                                    "Mapping artifact is not a ZIP (wrong-body 200?); omitting this game version"
+                                                );
+                                                return Ok(None);
+                                            }
 
                                             let hash = uploader
                                                 .upload_cas(
