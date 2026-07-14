@@ -496,6 +496,8 @@ impl Library {
     ///     extract: None,
     ///     natives: None,
     ///     rules: None,
+    ///     sha1: None,
+    ///     size: None,
     ///     checksums: None,
     ///     include_in_classpath: true,
     ///     patched: false,
