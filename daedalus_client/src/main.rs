@@ -523,6 +523,7 @@ async fn run_publish_cycle(
                         &manifest_builder,
                         &CLIENT,
                         semaphore.clone(),
+                        is_first_run,
                     )
                     .await
                 })
@@ -595,6 +596,7 @@ async fn run_publish_cycle(
                         &manifest_builder,
                         &CLIENT,
                         semaphore.clone(),
+                        is_first_run,
                     )
                     .await
                 })
@@ -1360,7 +1362,9 @@ async fn ensure_static_files_synced(semaphore: Arc<Semaphore>) {
     }
 }
 
-pub use services::download::{download_file, download_file_mirrors};
+pub use services::download::{
+    download_file, download_file_mirrors, fetch_sha1_sidecar,
+};
 
 /// Outcome of reading the previously-published root manifest at the start of a
 /// publish cycle.

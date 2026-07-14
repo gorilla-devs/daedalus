@@ -55,8 +55,9 @@ pub async fn retrieve_data(
     manifest_builder: &crate::services::cas::ManifestBuilder,
     s3_client: &s3::Bucket,
     semaphore: Arc<Semaphore>,
+    is_first_run: bool,
 ) -> Result<(), crate::infrastructure::error::Error> {
-    info!("Retrieving Forge data ...");
+    info!(is_first_run, "Retrieving Forge data ...");
 
     let maven_metadata = fetch_maven_metadata(None, semaphore.clone()).await?;
 
@@ -201,6 +202,7 @@ pub async fn retrieve_data(
                         let recommended_loaders = Arc::clone(&recommended_loaders);
                         let semaphore = Arc::clone(&semaphore);
                         let minecraft_version = minecraft_version.clone();
+                        let is_first_run = is_first_run;
 
                         async move {
                             /// These forge versions are not worth supporting!
@@ -235,8 +237,59 @@ pub async fn retrieve_data(
                             };
 
 
+                            let installer_url = format!(
+                                "https://maven.minecraftforge.net/net/minecraftforge/forge/{0}/forge-{0}-installer.jar",
+                                loader_version_full
+                            );
+
+                            // D3: skip an already-published version without
+                            // re-downloading its (immutable) installer. On steady
+                            // cycles we trust that immutability; on the first cycle
+                            // after a restart we verify against the maven .sha1
+                            // sidecar (a ~40-byte GET) so an upstream re-publish is
+                            // still caught.
+                            let existing = {
+                                let versions = versions_mutex.lock().await;
+                                versions
+                                    .iter()
+                                    .find(|v| v.id == minecraft_version)
+                                    .and_then(|v| {
+                                        v.loaders.iter().find(|l| l.id == loader_version_full)
+                                    })
+                                    .cloned()
+                            };
+                            if let Some(existing) =
+                                existing.filter(|e| e.url.contains("/objects/"))
+                            {
+                                let unchanged = if is_first_run {
+                                    match (
+                                        existing.original_sha1.as_deref(),
+                                        crate::fetch_sha1_sidecar(&installer_url, semaphore.clone()).await,
+                                    ) {
+                                        (Some(stored), Ok(upstream)) => stored == upstream,
+                                        // No stored hash (legacy entry) or the
+                                        // sidecar fetch failed → reprocess to be safe.
+                                        _ => false,
+                                    }
+                                } else {
+                                    true
+                                };
+                                if unchanged {
+                                    info!("↩️  Forge - {} unchanged; re-emitting without re-download", loader_version_full);
+                                    return Ok(Some(LoaderVersion {
+                                        stable: recommended_loaders.contains(&promotion_key),
+                                        id: loader_version_full,
+                                        url: existing.url,
+                                        original_sha1: existing.original_sha1,
+                                    }));
+                                }
+                            }
+
                             info!("Forge - Installer Start {}", loader_version_full.clone());
-                            let bytes = download_file(&format!("https://maven.minecraftforge.net/net/minecraftforge/forge/{0}/forge-{0}-installer.jar", loader_version_full), None, semaphore.clone()).await?;
+                            let bytes = download_file(&installer_url, None, semaphore.clone()).await?;
+                            // Upstream SHA-1 of the installer, stored so the next
+                            // first-run sidecar check can detect a re-publish.
+                            let installer_sha1 = daedalus::get_hash(bytes.clone()).await.ok();
 
                             let reader = std::io::Cursor::new(bytes);
 
@@ -414,6 +467,7 @@ pub async fn retrieve_data(
                                         stable: recommended_loaders.contains(&promotion_key),
                                         id: loader_version_full,
                                         url: cas_url,
+                                        original_sha1: installer_sha1.clone(),
                                     }));
                                 } else if FORGE_MANIFEST_V2_QUERY.matches(&version) || FORGE_MANIFEST_V3_QUERY.matches(&version) {
                                     let mut archive_clone = archive.clone();
@@ -717,6 +771,7 @@ pub async fn retrieve_data(
                                         stable: recommended_loaders.contains(&promotion_key),
                                         id: loader_version_full,
                                         url: cas_url,
+                                        original_sha1: installer_sha1.clone(),
                                     }));
                                 }
                             }

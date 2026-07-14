@@ -51,8 +51,9 @@ pub async fn retrieve_data(
     manifest_builder: &crate::services::cas::ManifestBuilder,
     s3_client: &s3::Bucket,
     semaphore: Arc<Semaphore>,
+    is_first_run: bool,
 ) -> Result<(), crate::infrastructure::error::Error> {
-    info!("Retrieving NeoForge data ...");
+    info!(is_first_run, "Retrieving NeoForge data ...");
 
     // Build a fast lookup of MC version ids from the published manifest. Any
     // NeoForge installer whose profile.minecraft doesn't appear in this set
@@ -121,6 +122,7 @@ pub async fn retrieve_data(
             let visited_assets = Arc::clone(&visited_assets);
             let visited_lib_hashes = Arc::clone(&visited_lib_hashes);
             let semaphore = semaphore.clone();
+            let is_first_run = is_first_run;
             version_futures.push(async move {
                 let mut loaders_versions = Vec::new();
 
@@ -138,11 +140,59 @@ pub async fn retrieve_data(
                                 return Ok::<Option<(String, LoaderVersion)>, crate::infrastructure::error::Error>(None);
                             }
 
-                            info!("Neoforge - Installer Start {}", loader_version_full.clone());
-
                             let download_url = format!("https://maven.neoforged.net/releases/net/neoforged/{1}/{0}/{1}-{0}-installer.jar", loader_version_full, if &*new_forge == "true" { "neoforge" } else { "forge" });
 
+                            // D3: skip an already-published version without
+                            // re-downloading its immutable installer. Loader ids are
+                            // globally unique, so find the existing entry (and the MC
+                            // it was published under) by id. Steady cycles trust
+                            // immutability; the first cycle after a restart verifies
+                            // via the .sha1 sidecar to catch a re-publish.
+                            let existing = {
+                                let versions = versions_mutex.lock().await;
+                                versions.iter().find_map(|v| {
+                                    v.loaders
+                                        .iter()
+                                        .find(|l| l.id == loader_version_full)
+                                        .map(|l| (v.id.clone(), l.clone()))
+                                })
+                            };
+                            if let Some((existing_mc, existing_loader)) =
+                                existing.filter(|(_, l)| l.url.contains("/objects/"))
+                            {
+                                let unchanged = if is_first_run {
+                                    match (
+                                        existing_loader.original_sha1.as_deref(),
+                                        crate::fetch_sha1_sidecar(&download_url, semaphore.clone()).await,
+                                    ) {
+                                        (Some(s), Ok(u)) => s == u,
+                                        _ => false,
+                                    }
+                                } else {
+                                    true
+                                };
+                                if unchanged {
+                                    let stable = &*new_forge == "true"
+                                        && !loader_version_full.contains('-');
+                                    info!("↩️  NeoForge - {} unchanged; re-emitting without re-download", loader_version_full);
+                                    return Ok(Some((
+                                        existing_mc,
+                                        LoaderVersion {
+                                            id: loader_version_full,
+                                            url: existing_loader.url,
+                                            stable,
+                                            original_sha1: existing_loader.original_sha1,
+                                        },
+                                    )));
+                                }
+                            }
+
+                            info!("Neoforge - Installer Start {}", loader_version_full.clone());
+
                             let bytes = download_file(&download_url, None, semaphore.clone()).await?;
+                            // Upstream SHA-1 of the installer, stored so the next
+                            // first-run sidecar check can detect a re-publish.
+                            let installer_sha1 = daedalus::get_hash(bytes.clone()).await.ok();
                             let reader = std::io::Cursor::new(bytes);
 
                             let archive = match zip::ZipArchive::new(reader) {
@@ -476,6 +526,7 @@ pub async fn retrieve_data(
                                     id: loader_version_full,
                                     url: cas_url,
                                     stable,
+                                    original_sha1: installer_sha1.clone(),
                                 })));
                             }
 

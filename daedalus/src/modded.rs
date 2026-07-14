@@ -238,6 +238,12 @@ pub struct LoaderVersion {
     pub url: String,
     /// Whether the loader is stable or not
     pub stable: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    /// (GDLauncher Provided) The upstream SHA-1 of the loader's installer jar
+    /// (from the maven `.sha1` sidecar), preserved across runs so a cheap
+    /// sidecar check can detect an upstream re-publish without re-downloading
+    /// the installer. `None` for loaders that have no installer (fabric/quilt).
+    pub original_sha1: Option<String>,
 }
 
 /// Fetches the manifest of a mod loader
@@ -330,5 +336,41 @@ mod tests {
         assert!(
             names.contains(&"org.apache.logging.log4j:log4j-core:2.0-beta9".into())
         );
+    }
+
+    #[test]
+    fn loader_version_original_sha1_roundtrips_and_is_backward_compatible() {
+        // Round-trips when present.
+        let v = LoaderVersion {
+            id: "1.20.1-47.1.0".to_string(),
+            url: "https://cdn/v5/objects/ab/cd".to_string(),
+            stable: true,
+            original_sha1: Some(
+                "3c60231dd737ff84073c1693af0fdf58dce09e96".to_string(),
+            ),
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        assert!(json.contains("original_sha1"));
+        let back: LoaderVersion = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.original_sha1.as_deref(),
+            Some("3c60231dd737ff84073c1693af0fdf58dce09e96")
+        );
+
+        // None is omitted, so published JSON is byte-unchanged for loaders
+        // without an installer (fabric/quilt).
+        let none = LoaderVersion {
+            id: "x".to_string(),
+            url: "y".to_string(),
+            stable: false,
+            original_sha1: None,
+        };
+        assert!(!serde_json::to_string(&none).unwrap().contains("original_sha1"));
+
+        // An OLD manifest entry with no original_sha1 field deserialises to None
+        // (the first-run sidecar check then treats it as "reprocess to be safe").
+        let old = r#"{"id":"x","url":"y","stable":true}"#;
+        let parsed: LoaderVersion = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.original_sha1, None);
     }
 }

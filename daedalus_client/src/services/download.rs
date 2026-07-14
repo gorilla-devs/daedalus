@@ -68,6 +68,32 @@ pub async fn download_file(
     Ok(val)
 }
 
+/// Fetch and parse a maven `.sha1` sidecar for an artifact — a tiny GET
+/// (~40 bytes) used to detect an upstream re-publish without downloading the
+/// artifact itself. Returns the lowercase 40-char hex hash.
+#[instrument(skip(semaphore))]
+pub async fn fetch_sha1_sidecar(
+    artifact_url: &str,
+    semaphore: Arc<Semaphore>,
+) -> Result<String, Error> {
+    let bytes =
+        download_file(&format!("{artifact_url}.sha1"), None, semaphore).await?;
+    let text = String::from_utf8_lossy(&bytes);
+    let hash = text
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(hash)
+    } else {
+        Err(crate::infrastructure::error::invalid_input(format!(
+            "malformed .sha1 sidecar for {artifact_url}"
+        )))
+    }
+}
+
 /// Download a file from multiple mirror URLs with automatic fallback.
 ///
 /// Tries each mirror in order, falling through to the next on a non-retryable

@@ -801,6 +801,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             id: loader,
             url: cas_url,
             stable,
+            // Fabric/Quilt loader profiles have no installer jar to hash.
+            original_sha1: None,
         })
     }
 }

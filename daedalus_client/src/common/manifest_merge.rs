@@ -185,6 +185,7 @@ mod tests {
                 id: "forge-47.1.0".to_string(),
                 url: "test_url".to_string(),
                 stable: true,
+                original_sha1: None,
             }],
         }];
 
@@ -205,6 +206,7 @@ mod tests {
                 id: "forge-47.1.0".to_string(),
                 url: "old_url".to_string(),
                 stable: true,
+                original_sha1: None,
             }],
         }];
 
@@ -215,6 +217,7 @@ mod tests {
                 id: "forge-47.1.0".to_string(),
                 url: "new_url".to_string(),
                 stable: true,
+                original_sha1: None,
             }],
         }];
 
@@ -234,6 +237,7 @@ mod tests {
                 id: "forge-47.1.0".to_string(),
                 url: "url1".to_string(),
                 stable: true,
+                original_sha1: None,
             }],
         }];
 
@@ -244,6 +248,7 @@ mod tests {
                 id: "forge-47.2.0".to_string(),
                 url: "url2".to_string(),
                 stable: true,
+                original_sha1: None,
             }],
         }];
 
