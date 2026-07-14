@@ -392,6 +392,14 @@ pub struct CycleOutcome {
     /// minecraft retrieval failed or its circuit breaker was open — no other
     /// loader ran either).
     pub published: bool,
+    /// Whether a new root manifest was actually committed to the live pointer
+    /// this cycle. False when the root publish was held back (admin state
+    /// unreadable), the history/root upload failed, or there was nothing to
+    /// publish. `published` can be true while this is false — the loaders ran
+    /// but the live root was deliberately not repointed — so an operator
+    /// force-run must ack against THIS, not `published`, to avoid reporting a
+    /// success for a cycle whose changes never went live.
+    pub root_committed: bool,
 }
 
 /// Execute one full publish cycle (all loaders).
@@ -990,6 +998,7 @@ async fn run_publish_cycle(
                             .await
                             {
                                 Ok(_) => {
+                                    outcome.root_committed = true;
                                     info!(
                                         "Root manifest uploaded successfully - all changes are now live"
                                     );
@@ -1054,13 +1063,19 @@ fn check_env_vars() -> bool {
     let mut failed = false;
 
     fn check_var<T: std::str::FromStr>(var: &str) -> bool {
+        // An empty value must fail: parse::<String>() accepts "" and every
+        // required var here is checked as String, so without the emptiness
+        // filter `BASE_URL=` (an easy .env slip) would pass and every published
+        // URL would be built with an empty base — corrupting the root manifest
+        // and every loader/version reference at the atomic commit.
         if dotenvy::var(var)
             .ok()
+            .filter(|s| !s.trim().is_empty())
             .and_then(|s| s.parse::<T>().ok())
             .is_none()
         {
             warn!(
-                "Variable `{}` missing in dotenvy or not of type `{}`",
+                "Variable `{}` missing/empty in dotenvy or not of type `{}`",
                 var,
                 std::any::type_name::<T>()
             );
@@ -1071,6 +1086,19 @@ fn check_env_vars() -> bool {
     }
 
     failed |= check_var::<String>("BASE_URL");
+    // Beyond non-empty, BASE_URL must be an absolute http(s) URL: it is
+    // concatenated as `{BASE_URL}/v{N}/objects/...` into every published
+    // reference, so a schemeless or relative value silently produces
+    // unresolvable URLs for every client.
+    if let Ok(base) = dotenvy::var("BASE_URL") {
+        let base = base.trim();
+        if !base.is_empty()
+            && !(base.starts_with("http://") || base.starts_with("https://"))
+        {
+            warn!(base_url = %base, "BASE_URL must be an absolute http(s) URL");
+            failed = true;
+        }
+    }
 
     failed |= check_var::<String>("S3_ACCESS_TOKEN");
     failed |= check_var::<String>("S3_SECRET");

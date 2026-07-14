@@ -455,6 +455,10 @@ pub async fn process_pending(bucket: &s3::Bucket) {
             AckOutcome::error(
                 "publish cycle did not reach the publish phase (minecraft retrieval failed or was skipped)",
             )
+        } else if !cycle.root_committed {
+            AckOutcome::error(
+                "publish cycle did not commit a new root manifest (admin state unreadable, or the history/root upload failed); the live root is unchanged — resubmit once the underlying issue clears",
+            )
         } else if cycle.failed_loaders.is_empty() {
             AckOutcome::success()
         } else {
