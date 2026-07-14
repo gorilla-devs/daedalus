@@ -1,24 +1,27 @@
-name: Rust building
+name: CI
 
 on:
   push:
     branches: [master]
   pull_request:
+
 env:
   CARGO_TERM_COLOR: always
+
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Install toolchain
-        uses: actions-rs/toolchain@v1
+        # Honours rust-toolchain.toml (channel 1.85, Rust 2024 edition).
+        uses: dtolnay/rust-toolchain@1.85.0
         with:
-          toolchain: 1.75.0
-
-        env:
-          SQLX_OFFLINE: true
-      - uses: actions-rs/cargo@v1
-        name: Build program
-        with:
-          command: build
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --all-features
+      - name: Test
+        run: cargo test --workspace --all-features
+      - name: Clippy
+        run: cargo clippy --workspace --all-features
