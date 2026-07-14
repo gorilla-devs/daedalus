@@ -27,24 +27,33 @@ pub fn should_ignore_artifact(
     libs: &HashSet<GradleSpecifier>,
     name: &GradleSpecifier,
 ) -> bool {
-    if let Some(ver) = libs.iter().find(|ver| {
+    let Some(ver) = libs.iter().find(|ver| {
         ver.package == name.package
             && ver.artifact == name.artifact
             && ver.identifier == name.identifier
-    }) {
-        if ver.version == name.version
-            || lenient_semver::parse(&ver.version)
-                > lenient_semver::parse(&name.version)
-        {
-            // new version is lower or equal
-            true
-        } else {
-            // no match or new version is higher and this is an upgrade
-            false
-        }
-    } else {
-        // no match in set
-        false
+    }) else {
+        // No matching artifact in the set.
+        return false;
+    };
+
+    // Same version already present — ignore (dedup).
+    if ver.version == name.version {
+        return true;
+    }
+
+    // Different version: ignore only when we can prove the existing one is
+    // strictly newer. `lenient_semver::parse` returns a Result, and comparing
+    // two Results directly relies on `Err` sorting after `Ok`, which scrambled
+    // the decision whenever either version string failed to parse. Parse both
+    // explicitly; if either is unparseable we cannot prove the existing is
+    // newer, so we do NOT ignore (process the artifact) rather than risk
+    // dropping a library that should be included.
+    match (
+        lenient_semver::parse(&ver.version),
+        lenient_semver::parse(&name.version),
+    ) {
+        (Ok(existing), Ok(candidate)) => existing > candidate,
+        _ => false,
     }
 }
 
@@ -134,5 +143,31 @@ mod tests {
                 "Should NOT ignore when libs is empty"
             );
         }
+    }
+
+    #[test]
+    fn test_unparseable_version_is_not_treated_as_newer() {
+        let spec = |v: &str| {
+            GradleSpecifier::from_str(&format!("org.example:library:{v}"))
+                .expect("valid GradleSpecifier")
+        };
+        // The existing version is unparseable by lenient_semver (a real Forge
+        // form — underscores fail to parse). We cannot prove it is newer, so a
+        // different candidate must NOT be ignored (it must be processed). Guards
+        // the Result-comparison regression where Err sorted after Ok and
+        // scrambled the decision.
+        let mut libs = HashSet::new();
+        libs.insert(spec("1.7.10_pre4"));
+        assert!(
+            !should_ignore_artifact(&libs, &spec("1.0.0")),
+            "Unparseable existing version must not be treated as newer"
+        );
+        // The exact-equal short-circuit still dedups without parsing.
+        let mut libs2 = HashSet::new();
+        libs2.insert(spec("1.7.10_pre4"));
+        assert!(
+            should_ignore_artifact(&libs2, &spec("1.7.10_pre4")),
+            "Identical version must still dedup via string equality"
+        );
     }
 }

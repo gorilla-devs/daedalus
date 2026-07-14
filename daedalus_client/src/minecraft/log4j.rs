@@ -22,12 +22,29 @@ pub fn map_log4j_artifact(
     version: &str,
 ) -> Result<Option<(String, String)>, crate::infrastructure::error::Error> {
     debug!("log4j version: {}", version);
-    let x = lenient_semver::parse(version);
-    if x <= lenient_semver::parse("2.0") {
+    // SECURITY-CRITICAL: the CVE-cutoff comparison must not silently fall
+    // through on an unparseable version. `lenient_semver::parse` returns a
+    // Result, and comparing Result values directly relies on `Err` sorting
+    // AFTER `Ok` — so an unparseable version made both `<= 2.0` and `< 2.17.1`
+    // false and shipped the jar UNPATCHED. Parse explicitly and fail loudly:
+    // an unrecognised log4j version is surfaced (and the affected Minecraft
+    // version carries forward its last-good, patched entry) rather than
+    // published vulnerable.
+    let parsed = lenient_semver::parse(version).map_err(|e| {
+        crate::infrastructure::error::invalid_input(format!(
+            "unparseable log4j version '{version}' in a security-critical patch decision: {e}"
+        ))
+    })?;
+    let cutoff_2_0 =
+        lenient_semver::parse("2.0").expect("constant \"2.0\" parses");
+    let cutoff_2_17_1 =
+        lenient_semver::parse("2.17.1").expect("constant \"2.17.1\" parses");
+
+    if parsed <= cutoff_2_0 {
         debug!("log4j use beta9 patch");
         return Ok(Some(("2.0-beta9-fixed".to_string(), format_url("maven/"))));
     }
-    if x < lenient_semver::parse("2.17.1") {
+    if parsed < cutoff_2_17_1 {
         debug!("bump log4j to 2.17.1");
         return Ok(Some((
             "2.17.1".to_string(),
@@ -299,5 +316,28 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn map_log4j_old_versions_bump_to_2_17_1() {
+        let (v, url) = map_log4j_artifact("2.8.1").unwrap().unwrap();
+        assert_eq!(v, "2.17.1");
+        assert_eq!(url, "https://repo1.maven.org/maven2/");
+    }
+
+    #[test]
+    fn map_log4j_patched_versions_need_no_change() {
+        assert!(map_log4j_artifact("2.17.1").unwrap().is_none());
+        assert!(map_log4j_artifact("2.18.0").unwrap().is_none());
+    }
+
+    #[test]
+    fn map_log4j_unparseable_version_errors_not_silently_skips() {
+        // SECURITY: an unparseable version must be a loud Err, never Ok(None) —
+        // Ok(None) would ship the log4j jar unpatched. Guards the Result-
+        // comparison regression where Err sorted after Ok, making both CVE
+        // range checks false.
+        assert!(map_log4j_artifact("not-a-version").is_err());
+        assert!(map_log4j_artifact("").is_err());
     }
 }
