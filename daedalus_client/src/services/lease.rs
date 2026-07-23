@@ -115,13 +115,12 @@ async fn write(
     bucket: &s3::Bucket,
     doc: &LeaseDoc,
 ) -> Result<(), crate::infrastructure::error::Error> {
-    let path = lease_s3_path();
-    let bytes = serde_json::to_vec_pretty(doc)?;
-    bucket
-        .put_object_with_content_type(&path, &bytes, "application/json")
-        .await
-        .map_err(|e| crate::infrastructure::error::s3_error(e, path))?;
-    Ok(())
+    // Route through the shared retrying helper (5 attempts, 60s cap) that every
+    // other admin write uses, rather than a bare PUT. Without retries a single
+    // transient renewal write failure stalls the S3 lease's `expires_at` for a
+    // whole heartbeat, and a run of them lets a reader (the enderium admin) see
+    // a live holder's lease as expired.
+    crate::services::s3_json::save_json(bucket, &lease_s3_path(), doc).await
 }
 
 /// Block until this instance holds the lease.
