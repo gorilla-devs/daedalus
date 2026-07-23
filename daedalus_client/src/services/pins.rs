@@ -181,7 +181,7 @@ pub fn warn_stale_pins(pins: &Pins, threshold: chrono::Duration) {
                 pinned_to = %entry.pinned_to,
                 age_hours = age_hours,
                 reason = %entry.reason,
-                "Loader is still pinned (set {} hours ago). Unpin via DELETE /admin/v1/pins/{loader} once upstream has recovered.",
+                "Loader is still pinned (set {} hours ago). Clear it from the enderium admin (daedalus → loader → Clear pin) once upstream has recovered.",
                 age_hours,
             );
         }
