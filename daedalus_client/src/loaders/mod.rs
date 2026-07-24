@@ -260,6 +260,17 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             to_fetch.len(),
         );
 
+        // The builds this cycle set out to refresh. On a refresh cycle nothing is
+        // served from cache, so every build upstream still lists — and that the
+        // strategy did not exclude — is in here. An id absent from this set was
+        // delisted upstream or excluded, not left unrefreshed, which is what keeps
+        // the merge below from dropping entries it never attempted.
+        let attempted: HashSet<String> = if has_new_mapped_version {
+            to_fetch.iter().map(|(_, id)| id.clone()).collect()
+        } else {
+            HashSet::new()
+        };
+
         // Fetch new loader profiles in parallel (semaphore controls real concurrency).
         let fetch_futures =
             to_fetch.into_iter().map(|(stable, loader_version)| {
@@ -364,6 +375,23 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                         .into_iter()
                         .map(|l| (l.id.clone(), l))
                         .collect();
+
+                // A refresh cycle exists to widen every build's mapping table to
+                // the game version that just appeared. A build that was attempted
+                // and failed still holds the narrower table, and re-emitting it
+                // would advertise the new version as installable on a build whose
+                // intermediary library cannot resolve it. Drop it instead: with no
+                // cached entry it is fetched again next cycle, which repairs it in
+                // one hour rather than waiting for the next new mapped version,
+                // and the other builds keep the version available meanwhile.
+                if has_new_mapped_version {
+                    let refreshed: HashSet<&str> =
+                        processed.iter().map(|e| e.id.as_str()).collect();
+                    existing_by_id.retain(|id, _| {
+                        carries_forward(id, &attempted, &refreshed)
+                    });
+                }
+
                 for entry in processed {
                     existing_by_id.insert(entry.id.clone(), entry);
                 }
@@ -387,25 +415,34 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         let mapped_set: HashSet<&str> =
             mapped_game_versions.iter().map(String::as_str).collect();
 
-        // Game versions whose mapping artifact actually resolved this cycle. The
-        // shared intermediary expansion above downloads one mapping jar per
-        // mapped game version; a version whose jar the maven doesn't serve yet
-        // (upstream lag, or a wrong-body 200) is omitted from the hash table.
-        // Advertising such a version as installable would publish a loader whose
-        // mapping library resolves to nothing, and the cache would then re-emit
-        // it every cycle. So a NEW game version is only added below once its
-        // mapping resolved; one left out is re-seen as "new" next cycle and
-        // picked up automatically once its jar appears. This set is only
-        // consulted for versions not already in the manifest, and new additions
-        // only happen when a new mapped version appeared (which forces the full
-        // expansion to run), so an empty set on a fully-cached cycle can never
-        // drop an already-published version.
-        let installable_game_versions: HashSet<String> = caches
-            .intermediary_hashes
-            .iter()
-            .filter_map(|entry| entry.value().get().cloned())
-            .flat_map(|map| map.into_keys())
-            .collect();
+        // Game versions whose mapping artifacts all resolved this cycle. The
+        // shared expansion above downloads one mapping jar per mapped game
+        // version per coordinate; a version whose jar the maven doesn't serve
+        // yet (upstream lag, or a wrong-body 200) is omitted from that
+        // coordinate's table. Advertising such a version as installable would
+        // publish a loader whose mapping library resolves to nothing, and the
+        // cache would then re-emit it every cycle. A version left out is re-seen
+        // as "new" next cycle and picked up once its jar appears.
+        //
+        // A loader profile can reference more than one mapping coordinate —
+        // quilt carries both org.quiltmc:hashed and net.fabricmc:intermediary —
+        // and every coordinate it references has to resolve. Fabric's maven
+        // serves intermediary for game versions quilt has never mapped, so
+        // taking the union across coordinates would advertise quilt on versions
+        // whose hashed jar is missing. `caches` is per-loader, so intersecting
+        // its coordinates applies exactly that loader's requirements: a
+        // single-coordinate loader like fabric is unaffected.
+        //
+        // This set is only consulted for versions not already in the manifest,
+        // and new additions only happen when a new mapped version appeared
+        // (which forces the full expansion to run), so an empty set on a
+        // fully-cached cycle can never drop an already-published version.
+        let installable_game_versions = installable_across_coordinates(
+            caches
+                .intermediary_hashes
+                .iter()
+                .map(|entry| entry.value().get().cloned()),
+        );
 
         let notifier = crate::services::discord::notifier();
         for version in list.game() {
@@ -808,3 +845,130 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
 }
 
 const DUMMY_GAME_VERSION: &str = "1.19.4-rc2";
+
+/// Game versions resolved by *every* mapping coordinate a loader references.
+///
+/// Each item is one coordinate's `game_version -> hash` table, or `None` when
+/// that coordinate's expansion failed. A failed coordinate resolves nothing, so
+/// it contributes an empty set and the cycle advertises no new versions rather
+/// than guessing. With a single coordinate this is just that coordinate's keys.
+/// Whether a previously-published loader entry survives a refresh cycle.
+///
+/// An entry the cycle attempted to refresh but did not get back still holds the
+/// mapping table from before the new game version appeared, so re-emitting it
+/// would advertise that version on a build whose intermediary library cannot
+/// resolve it. An entry that was never attempted — delisted upstream, or excluded
+/// by the strategy — is kept, because this cycle made no claim about it.
+fn carries_forward(
+    id: &str,
+    attempted: &HashSet<String>,
+    refreshed: &HashSet<&str>,
+) -> bool {
+    !attempted.contains(id) || refreshed.contains(id)
+}
+
+fn installable_across_coordinates(
+    coordinate_tables: impl IntoIterator<Item = Option<BTreeMap<String, String>>>,
+) -> HashSet<String> {
+    coordinate_tables
+        .into_iter()
+        .map(|table| -> HashSet<String> {
+            table.map(|t| t.into_keys().collect()).unwrap_or_default()
+        })
+        .reduce(|mut acc, resolved| {
+            acc.retain(|version| resolved.contains(version));
+            acc
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table(versions: &[&str]) -> Option<BTreeMap<String, String>> {
+        Some(
+            versions
+                .iter()
+                .map(|v| (v.to_string(), format!("hash-{v}")))
+                .collect(),
+        )
+    }
+
+    fn sorted(set: HashSet<String>) -> Vec<String> {
+        let mut out: Vec<String> = set.into_iter().collect();
+        out.sort();
+        out
+    }
+
+    fn established(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn a_build_that_failed_its_refresh_is_dropped() {
+        // It still holds the mapping table from before the new game version
+        // appeared, so re-emitting it would advertise that version on a build
+        // whose intermediary library cannot resolve it. Dropping it leaves no
+        // cached entry, so the next cycle fetches it again.
+        let attempted = established(&["0.15.3", "0.16.0"]);
+        let refreshed: HashSet<&str> = ["0.16.0"].into_iter().collect();
+
+        assert!(!carries_forward("0.15.3", &attempted, &refreshed));
+    }
+
+    #[test]
+    fn a_build_that_refreshed_is_kept() {
+        let attempted = established(&["0.15.3", "0.16.0"]);
+        let refreshed: HashSet<&str> = ["0.15.3", "0.16.0"].into_iter().collect();
+
+        assert!(carries_forward("0.15.3", &attempted, &refreshed));
+    }
+
+    #[test]
+    fn a_build_upstream_no_longer_lists_is_kept() {
+        // Never attempted, so this cycle made no claim about it. Dropping it
+        // here would unpublish builds purely because upstream stopped listing
+        // them, which is not what a refresh cycle is for.
+        let attempted = established(&["0.16.0"]);
+        let refreshed: HashSet<&str> = ["0.16.0"].into_iter().collect();
+
+        assert!(carries_forward("0.14.9", &attempted, &refreshed));
+    }
+
+    #[test]
+    fn a_single_coordinate_yields_its_own_versions() {
+        // Fabric references only net.fabricmc:intermediary.
+        let resolved =
+            installable_across_coordinates(vec![table(&["1.21", "1.21.1"])]);
+
+        assert_eq!(sorted(resolved), vec!["1.21", "1.21.1"]);
+    }
+
+    #[test]
+    fn a_version_missing_from_one_coordinate_is_not_installable() {
+        // Quilt: fabric's maven serves intermediary for 1.21.1, but quilt's
+        // hashed jar for it did not resolve, so quilt cannot be installed there.
+        let resolved = installable_across_coordinates(vec![
+            table(&["1.21"]),
+            table(&["1.21", "1.21.1"]),
+        ]);
+
+        assert_eq!(sorted(resolved), vec!["1.21"]);
+    }
+
+    #[test]
+    fn a_failed_coordinate_resolves_nothing() {
+        let resolved = installable_across_coordinates(vec![
+            None,
+            table(&["1.21", "1.21.1"]),
+        ]);
+
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn no_coordinates_resolves_nothing() {
+        assert!(installable_across_coordinates(Vec::new()).is_empty());
+    }
+}
