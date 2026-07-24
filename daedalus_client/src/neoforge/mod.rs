@@ -110,9 +110,9 @@ pub async fn retrieve_data(
 
         for (loader_version, new_forge) in loader_versions {
             // No upfront version-format validation: lenient_semver accepts essentially
-            // any string (including non-semver garbage), so the gate previously here
-            // was misleading. Trust the maven-metadata XML and let downstream
-            // processing surface real errors per version.
+            // any string (including non-semver garbage), so a format gate here would
+            // reject nothing meaningful. Trust the maven-metadata XML and let
+            // downstream processing surface real errors per version.
             loaders.push((loader_version, new_forge.to_string()))
         }
 
@@ -548,14 +548,14 @@ pub async fn retrieve_data(
                                 }
                                 Ok(None) => {}
                                 Err(e) => {
-                                    warn!("⚠️  NeoForge - Failed to process version {}/{len}: {}", idx + 1, e);
+                                    warn!("NeoForge - Failed to process version {}/{len}: {}", idx + 1, e);
                                     failed += 1;
                                 }
                             }
                         }
 
                         if failed > 0 {
-                            warn!("⚠️  NeoForge - Skipped {} versions due to errors, {} succeeded", failed, successful);
+                            warn!("NeoForge - Skipped {} versions due to errors, {} succeeded", failed, successful);
                         }
                     }
                 }
@@ -573,7 +573,7 @@ pub async fn retrieve_data(
                         // entry rather than emit a manifest reference that
                         // can't resolve.
                         warn!(
-                            "⚠️  NeoForge - Dropping loader {} for unknown MC version '{}'",
+                            "NeoForge - Dropping loader {} for unknown MC version '{}'",
                             loader.id, actual_mc
                         );
                         dropped_unknown_mc += 1;
@@ -583,7 +583,7 @@ pub async fn retrieve_data(
                 }
                 if dropped_unknown_mc > 0 {
                     warn!(
-                        "⚠️  NeoForge - Dropped {} loader(s) referencing unpublished MC versions",
+                        "NeoForge - Dropped {} loader(s) referencing unpublished MC versions",
                         dropped_unknown_mc
                     );
                 }
@@ -623,7 +623,7 @@ pub async fn retrieve_data(
                 Ok(()) => successful_mc_versions += 1,
                 Err(e) => {
                     warn!(
-                        "⚠️  NeoForge - Failed to process Minecraft version {}/{len}: {}",
+                        "NeoForge - Failed to process Minecraft version {}/{len}: {}",
                         idx + 1,
                         e
                     );
@@ -634,7 +634,7 @@ pub async fn retrieve_data(
 
         if failed_mc_versions > 0 {
             warn!(
-                "⚠️  NeoForge - {} Minecraft versions failed to process, {} succeeded",
+                "NeoForge - {} Minecraft versions failed to process, {} succeeded",
                 failed_mc_versions, successful_mc_versions
             );
         }
@@ -678,7 +678,7 @@ pub async fn retrieve_data(
         prune_phantom_mc_groups(&mut final_versions, upstream_mc_version_ids);
     if pruned > 0 {
         warn!(
-            "⚠️  NeoForge - Pruned {} phantom MC-version group(s) absent from Mojang's version manifest",
+            "NeoForge - Pruned {} phantom MC-version group(s) absent from Mojang's version manifest",
             pruned
         );
     }

@@ -15,7 +15,7 @@ Daedalus Client is a Rust-based metadata processing and distribution system for 
 
 ## Architecture
 
-The CAS architecture provides several key benefits:
+Content is addressed by hash and reached through a small tree of manifests:
 
 ```
 Root Manifest (v5/manifest.json)
@@ -30,11 +30,10 @@ Each loader manifest contains:
   └─> references to v5/objects/<hash[0..2]>/<hash[2..]>
 ```
 
-**Benefits:**
-- **Atomic updates**: Single root manifest update makes all changes visible
-- **Rollback**: Keep historical manifests, update root to point to previous version
-- **Deduplication**: Same content = same hash = stored once
-- **Immutability**: Content never changes, only manifest pointers
+Swapping the root manifest in a single write makes a run's changes visible
+atomically; the timestamped manifests it supersedes are kept to roll back to,
+and content identical to something already stored reuses its hash rather than
+being written again.
 
 ## Requirements
 
@@ -280,7 +279,8 @@ BETTERSTACK_TOKEN=your-token cargo run
 
 ## License
 
-This project is part of the daedalus ecosystem for Minecraft launcher metadata management.
+See [`LICENSE-BSL1.1`](../LICENSE-BSL1.1) and [`LICENSE-MIT`](../LICENSE-MIT) at
+the repository root.
 
 ## Contributing
 

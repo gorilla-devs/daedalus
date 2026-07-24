@@ -8,16 +8,12 @@ use daedalus::minecraft::VersionManifest;
 use daedalus::modded::Version;
 use tracing::info;
 
-/// Merge old and new loader versions
+/// Merge newly generated loader versions onto the previous manifest.
 ///
-/// This function:
-/// 1. Starts with the old versions as a base
-/// 2. For each new version:
-///    - If the Minecraft version exists in old versions, merge loaders
-///    - If the Minecraft version is new, add it
-/// 3. When merging loaders:
-///    - Update existing loaders if found
-///    - Add new loaders if not found
+/// The previous versions are the base. Each new version is merged in by its
+/// Minecraft version: a loader already present for that version is updated and
+/// one that isn't is added, and a Minecraft version not in the base is added
+/// wholesale.
 ///
 /// # Arguments
 ///
@@ -55,13 +51,13 @@ pub fn merge_loader_versions(
                     let loader_id = new_loader.id.clone();
                     *existing_loader = new_loader;
                     info!(
-                        "✅ {} - Updated loader: {}/{}",
+                        "{} - Updated loader: {}/{}",
                         loader_name, existing.id, loader_id
                     );
                 } else {
                     // Add new loader
                     info!(
-                        "✅ {} - Added new loader: {}/{}",
+                        "{} - Added new loader: {}/{}",
                         loader_name, existing.id, new_loader.id
                     );
                     // Notify Discord about the first build for an existing
@@ -82,7 +78,7 @@ pub fn merge_loader_versions(
         } else {
             // Add new Minecraft version
             info!(
-                "✅ {} - Added new Minecraft version: {}",
+                "{} - Added new Minecraft version: {}",
                 loader_name, new_version.id
             );
             // First time we're seeing this MC version for this loader. Skip

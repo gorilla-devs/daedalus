@@ -335,7 +335,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
             // double-execute control intents. Advisory — see services::lease.
             let lease_holder = services::lease::holder_id();
             services::lease::acquire(&CLIENT, &lease_holder).await;
-            let _lease_heartbeat =
+            let lease_heartbeat =
                 services::lease::spawn_heartbeat(&CLIENT, lease_holder.clone());
 
             ensure_static_files_synced(semaphore.clone()).await;
@@ -372,8 +372,18 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
                 }
             }
 
-            // Release the lease first so a waiting successor can take over
-            // without sitting out the TTL.
+            // Stop renewing before the lease is given up, and wait for the task
+            // to actually stop. A tick landing after the tombstone is written
+            // would push its expiry back out and make the successor sit out the
+            // full TTL this release exists to avoid; a tick landing after the
+            // successor has claimed the lease would see another holder and exit
+            // the process here, dropping the buffered Discord and Betterstack
+            // batches the drain below is about to ship.
+            lease_heartbeat.abort();
+            let _ = lease_heartbeat.await;
+
+            // Release the lease so a waiting successor can take over without
+            // sitting out the TTL.
             services::lease::release(&CLIENT, &lease_holder).await;
 
             // Drain Betterstack + Discord buffers and ship one final batch

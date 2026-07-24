@@ -7,14 +7,8 @@ use daedalus::minecraft::Library;
 
 /// Check if a library uses split natives
 ///
-/// Split natives are identified by an identifier starting with "natives-"
-/// (e.g., "natives-linux", "natives-windows", "natives-osx")
-///
-/// # Arguments
-/// - `lib`: The library to check
-///
-/// # Returns
-/// `true` if the library has a split natives identifier, `false` otherwise
+/// Whether `lib` is a split-natives library — one whose identifier starts with
+/// `natives-` (e.g. `natives-linux`, `natives-windows`, `natives-osx`).
 pub fn lib_is_split_natives(lib: &Library) -> bool {
     lib.name
         .identifier

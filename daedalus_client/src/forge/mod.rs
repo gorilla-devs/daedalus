@@ -153,10 +153,10 @@ pub async fn retrieve_data(
                 };
 
                 // Don't `?` out of the whole MC-version loop on a single
-                // malformed Forge version; just skip it. Previously a single
-                // bad version (e.g. Forge ships `1.20.1-47.1.0.HOTFIX`) would
-                // drop ALL loaders for that MC version silently — the error
-                // surfaced as "failed to process Minecraft version".
+                // malformed Forge version; skip just that one. Forge occasionally
+                // ships an unparseable id (e.g. `1.20.1-47.1.0.HOTFIX`), and
+                // bailing here would drop every loader for that Minecraft version
+                // and surface only as "failed to process Minecraft version".
                 let version = match Version::parse(&loader_version) {
                     Ok(v) => v,
                     Err(e) => {
@@ -177,9 +177,9 @@ pub async fn retrieve_data(
                     loaders.push((loader_version_full, version))
                 } else {
                     // Version parses but falls into none of our supported
-                    // installer-format ranges. Surface so we notice when
-                    // Forge ships a new family that needs a new query
-                    // range — previously this dropped silently.
+                    // installer-format ranges. Warn rather than drop it
+                    // silently, so a new Forge family that needs its own query
+                    // range gets noticed instead of vanishing.
                     warn!(
                         forge_id = %loader_version_full,
                         "Forge - version matches no installer-format query range; skipping"
@@ -795,13 +795,13 @@ pub async fn retrieve_data(
                                 }
                                 Ok(None) => {}
                                 Err(e) => {
-                                    warn!("⚠️  Forge - Failed to process version {}/{len}: {}", idx + 1, e);
+                                    warn!("Forge - Failed to process version {}/{len}: {}", idx + 1, e);
                                     failed += 1;
                                 }
                             }
                         }
 
-                        info!("📊 Forge - Loader processing complete: {} successful, {} failed", successful, failed);
+                        info!("Forge - Loader processing complete: {} successful, {} failed", successful, failed);
                     }
                 }
 
@@ -844,7 +844,7 @@ pub async fn retrieve_data(
                 Ok(_) => successful += 1,
                 Err(e) => {
                     warn!(
-                        "⚠️  Forge - Failed to process Minecraft version {}/{len}: {}",
+                        "Forge - Failed to process Minecraft version {}/{len}: {}",
                         idx + 1,
                         e
                     );
@@ -854,7 +854,7 @@ pub async fn retrieve_data(
         }
 
         info!(
-            "📊 Forge - Minecraft version processing complete: {} successful, {} failed",
+            "Forge - Minecraft version processing complete: {} successful, {} failed",
             successful, failed
         );
     }

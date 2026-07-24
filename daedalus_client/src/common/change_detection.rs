@@ -15,16 +15,9 @@ pub struct ChangeResult {
     pub old_hash: Option<String>,
 }
 
-/// Detect if a loader version has changed by comparing hashes
-///
-/// This function:
-/// 1. Extracts the old hash from the old version URL (if it exists)
-/// 2. Compares it with the new hash
-/// 3. Logs an appropriate message:
-///    - "✓ {loader} {version} unchanged" if hashes match
-///    - "↻ {loader} {version} changed" if hashes differ
-///    - "+ {loader} {version} is new" if no old version exists
-/// 4. Returns whether the version should be uploaded
+/// Detect whether a loader version has changed by comparing its freshly
+/// computed content hash against the one embedded in the previous manifest's
+/// object URL, logging whether it is unchanged, changed, or new.
 ///
 /// # Arguments
 ///
@@ -62,7 +55,7 @@ pub fn detect_version_change(
         if let Some(old_hash) = extract_hash_from_cas_url(old_url) {
             if old_hash == new_hash {
                 info!(
-                    "✓ {} {} unchanged (hash: {})",
+                    "{} {} unchanged (hash: {})",
                     loader_name,
                     version_id,
                     &new_hash[..8.min(new_hash.len())]

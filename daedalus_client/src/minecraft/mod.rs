@@ -574,7 +574,7 @@ pub async fn retrieve_data(
                     Err(e) => {
                         warn!(
                             version_id = %version_id,
-                            "⚠️  Minecraft - Failed to process version: {}",
+                            "Minecraft - Failed to process version: {}",
                             e
                         );
                         failed += 1;
@@ -620,13 +620,13 @@ pub async fn retrieve_data(
 
             let elapsed = now.elapsed();
             info!(
-                "Chunk {} Elapsed: {:.2?} (✓ {} ✗ {})",
+                "Chunk {} Elapsed: {:.2?} ({} ok, {} failed)",
                 chunk_index, elapsed, successful, failed
             );
         }
 
         info!(
-            "📊 Minecraft - Processing complete: {} successful, {} failed",
+            "Minecraft - Processing complete: {} successful, {} failed",
             successful, failed
         );
     }

@@ -5,11 +5,8 @@ use daedalus::minecraft::VersionManifest;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-/// Retrieve Fabric loader data using the strategy pattern
-///
-/// This is now a thin wrapper around the generic LoaderProcessor.
-/// All the common logic has been extracted to the strategy pattern,
-/// eliminating hundreds of lines of duplicated code.
+/// Retrieve Fabric loader data by running the generic `LoaderProcessor` with
+/// the Fabric strategy.
 pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
     uploader: &BatchUploader,

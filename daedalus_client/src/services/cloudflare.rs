@@ -30,12 +30,11 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("Failed to build Cloudflare HTTP client")
 });
 
-/// Purges Cloudflare cache for the given URLs
+/// Purges Cloudflare's cache for the given URLs.
 ///
-/// This function handles batching URLs according to Cloudflare's API limits
-/// (30 URLs per request) and provides detailed error handling for individual
-/// batch failures. This ensures that CDN serves the latest content immediately
-/// after uploads.
+/// The list is split into Cloudflare's limit of 30 URLs per request and each
+/// batch is purged, so the CDN serves freshly uploaded content instead of a
+/// stale copy. A batch that fails is logged and does not abort the rest.
 ///
 /// # Arguments
 ///

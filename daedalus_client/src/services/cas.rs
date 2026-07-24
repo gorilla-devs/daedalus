@@ -48,13 +48,9 @@ pub fn now_timestamp() -> String {
 ///   └─> references to objects/<hash>
 /// ```
 ///
-/// # Benefits
-///
-/// - **Atomic updates**: Single root manifest update makes all changes visible
-/// - **Rollback**: Keep historical manifests, update root to point to previous version
-/// - **Deduplication**: Same content = same hash = stored once
-/// - **Immutability**: Content never changes, only manifest pointers
-/// - **Version history**: Timestamped manifests enable auditing and rollback
+/// A run swaps the root manifest in one write once every object it points at is
+/// uploaded, so readers only ever see a fully-consistent tree; the timestamped
+/// per-loader manifests it supersedes stay in place to roll back to.
 ///
 /// Reference to a loader manifest with its location
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

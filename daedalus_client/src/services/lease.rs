@@ -123,6 +123,28 @@ async fn write(
     crate::services::s3_json::save_json(bucket, &lease_s3_path(), doc).await
 }
 
+/// Single-attempt write, used only for the acquisition claim.
+///
+/// The claim's whole correctness argument is the settle window: write, wait,
+/// read back, and whoever's PUT landed last wins. Routing it through the
+/// retrying helper defeats that — a racing claimant whose first attempt fails
+/// lands its retry seconds later, after the other instance has already read
+/// back and concluded it won, so both believe they hold the lease. One attempt
+/// keeps the claim inside the window; a failure needs no retry here because
+/// `acquire` loops and re-reads anyway.
+async fn write_claim_once(
+    bucket: &s3::Bucket,
+    doc: &LeaseDoc,
+) -> Result<(), crate::infrastructure::error::Error> {
+    let path = lease_s3_path();
+    let bytes = serde_json::to_vec_pretty(doc)?;
+    bucket
+        .put_object_with_content_type(&path, &bytes, "application/json")
+        .await
+        .map(|_| ())
+        .map_err(|e| crate::infrastructure::error::s3_error(e, path))
+}
+
 /// Block until this instance holds the lease.
 ///
 /// Transient S3 errors are retried indefinitely — the lease guards S3
@@ -158,7 +180,7 @@ pub async fn acquire(bucket: &s3::Bucket, holder: &str) {
                         // Claim, settle, read back: the survivor of a
                         // simultaneous claim is whoever's PUT landed last.
                         let claim = LeaseDoc::new(holder, Utc::now());
-                        if let Err(e) = write(bucket, &claim).await {
+                        if let Err(e) = write_claim_once(bucket, &claim).await {
                             warn!(error = %e, "Failed to write lease claim; retrying");
                             tokio::time::sleep(WAIT_POLL).await;
                             continue;
@@ -200,9 +222,41 @@ pub async fn acquire(bucket: &s3::Bucket, holder: &str) {
 /// Transient S3 errors return `true` (still considered held): the TTL gives
 /// several heartbeats' worth of slack, and a holder that drops its own lease
 /// on a single blip would thrash leadership.
-pub async fn renew(bucket: &s3::Bucket, holder: &str) -> bool {
+/// [`LEASE_TTL`] as a std duration, for comparing against elapsed wall time.
+fn lease_ttl_std() -> Duration {
+    Duration::from_secs(LEASE_TTL.num_seconds().max(0) as u64)
+}
+
+/// What a renewal attempt established about our hold on the lease.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RenewOutcome {
+    /// The lease is ours and its expiry has been pushed out.
+    Renewed,
+    /// Another instance holds it, or ours lapsed and may have been taken.
+    /// Continuing would split-brain the bucket.
+    Lost,
+    /// S3 could not be reached, so nothing was established either way. Safe
+    /// only while the lease we last wrote is still within its TTL — the caller
+    /// tracks that, since this call cannot know when the last success was.
+    Indeterminate,
+}
+
+pub async fn renew(bucket: &s3::Bucket, holder: &str) -> RenewOutcome {
     match read(bucket).await {
         Ok(Some(doc)) if doc.holder == holder => {
+            // Our own name on an expired document is not proof we still hold
+            // it: the lease lapsed, so another instance was free to take it,
+            // and a release tombstones the document by setting expiry into the
+            // past precisely so it is not ours any more. Renewing either would
+            // reclaim a lease we had given up.
+            if doc.expires_at <= Utc::now() {
+                error!(
+                    holder = %holder,
+                    expired_at = %doc.expires_at,
+                    "Lease lapsed before this renewal; not reclaiming it"
+                );
+                return RenewOutcome::Lost;
+            }
             let renewed = LeaseDoc {
                 renewed_at: Utc::now(),
                 expires_at: Utc::now() + LEASE_TTL,
@@ -210,8 +264,9 @@ pub async fn renew(bucket: &s3::Bucket, holder: &str) -> bool {
             };
             if let Err(e) = write(bucket, &renewed).await {
                 warn!(error = %e, "Failed to renew lease; will retry at the next heartbeat");
+                return RenewOutcome::Indeterminate;
             }
-            true
+            RenewOutcome::Renewed
         }
         Ok(Some(doc)) => {
             error!(
@@ -219,17 +274,22 @@ pub async fn renew(bucket: &s3::Bucket, holder: &str) -> bool {
                 current_holder = %doc.holder,
                 "Lease is held by another instance"
             );
-            false
+            RenewOutcome::Lost
         }
         Ok(None) => {
             // Vanished (manual deletion?) — reclaim it.
             warn!(holder = %holder, "Lease document missing; reclaiming");
-            let _ = write(bucket, &LeaseDoc::new(holder, Utc::now())).await;
-            true
+            match write(bucket, &LeaseDoc::new(holder, Utc::now())).await {
+                Ok(()) => RenewOutcome::Renewed,
+                Err(e) => {
+                    warn!(error = %e, "Failed to reclaim the missing lease document");
+                    RenewOutcome::Indeterminate
+                }
+            }
         }
         Err(e) => {
-            warn!(error = %e, "Failed to read lease during renewal; assuming still held");
-            true
+            warn!(error = %e, "Failed to read lease during renewal");
+            RenewOutcome::Indeterminate
         }
     }
 }
@@ -249,14 +309,42 @@ pub fn spawn_heartbeat(
             .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick fires immediately; skip it (acquire just wrote).
         timer.tick().await;
+        // Acquire wrote the document, so the lease is good for a TTL from here.
+        let mut last_renewed = tokio::time::Instant::now();
         loop {
             timer.tick().await;
-            if !renew(bucket, &holder).await {
-                error!(
-                    holder = %holder,
-                    "Exiting: the single-writer lease belongs to another instance and continuing would split-brain the bucket"
-                );
-                std::process::exit(1);
+            match renew(bucket, &holder).await {
+                RenewOutcome::Renewed => {
+                    last_renewed = tokio::time::Instant::now()
+                }
+                RenewOutcome::Lost => {
+                    error!(
+                        holder = %holder,
+                        "Exiting: the single-writer lease belongs to another instance and continuing would split-brain the bucket"
+                    );
+                    std::process::exit(1);
+                }
+                // S3 said nothing either way. The document we last wrote keeps
+                // us the holder until its TTL runs out, so retrying is safe up
+                // to that point — but past it the lease is expired as far as
+                // every other instance is concerned, and one of them can
+                // acquire it while we carry on publishing.
+                RenewOutcome::Indeterminate => {
+                    let since_renewal = last_renewed.elapsed();
+                    if since_renewal >= lease_ttl_std() {
+                        error!(
+                            holder = %holder,
+                            seconds_since_renewal = since_renewal.as_secs(),
+                            "Exiting: no lease renewal has succeeded within the TTL, so another instance may already hold it"
+                        );
+                        std::process::exit(1);
+                    }
+                    warn!(
+                        holder = %holder,
+                        seconds_since_renewal = since_renewal.as_secs(),
+                        "Lease renewal could not be confirmed; retrying at the next heartbeat"
+                    );
+                }
             }
         }
     })
@@ -292,6 +380,41 @@ mod tests {
         let doc = LeaseDoc::new("a", Utc::now());
         assert!(!doc.is_expired(Utc::now()));
         assert!(doc.is_expired(Utc::now() + LEASE_TTL + ChronoDuration::seconds(1)));
+    }
+
+    #[test]
+    fn a_tombstoned_lease_reads_as_expired() {
+        // release() tombstones by setting expiry into the past. A renewal that
+        // ignored expiry would see its own name and push the lease back out,
+        // making the successor sit out the full TTL.
+        let mut doc = LeaseDoc::new("a", Utc::now());
+        doc.expires_at = Utc::now() - ChronoDuration::seconds(1);
+        assert!(doc.is_expired(Utc::now()));
+    }
+
+    #[test]
+    fn the_ttl_converts_to_a_std_duration_for_elapsed_comparisons() {
+        assert_eq!(
+            lease_ttl_std().as_secs(),
+            LEASE_TTL.num_seconds() as u64,
+            "the heartbeat compares elapsed wall time against this"
+        );
+    }
+
+    #[test]
+    fn a_renewal_budget_outlasts_several_indeterminate_heartbeats() {
+        // An unreachable S3 must not exit the process on the first failed
+        // heartbeat: the document already written keeps us the holder until it
+        // expires. But the budget has to run out before that, or another
+        // instance can acquire while this one carries on publishing.
+        assert!(
+            RENEW_INTERVAL < lease_ttl_std(),
+            "a single missed renewal must not immediately end the lease"
+        );
+        assert!(
+            lease_ttl_std().as_secs() / RENEW_INTERVAL.as_secs() >= 2,
+            "there must be room for more than one retry inside the TTL"
+        );
     }
 
     #[test]

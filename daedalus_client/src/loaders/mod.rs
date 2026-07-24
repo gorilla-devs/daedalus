@@ -186,7 +186,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                 .collect(),
         );
         info!(
-            "📊 {} - {} game versions, {} with mappings (installable)",
+            "{} - {} game versions, {} with mappings (installable)",
             self.strategy.name(),
             list.game().len(),
             mapped_game_versions.len()
@@ -247,7 +247,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         drop(known_ids);
         if has_new_mapped_version && old_manifest_was_present {
             info!(
-                "🔁 {} - New mapped game version(s) since the previous publish; refreshing all loader versions",
+                "{} - New mapped game version(s) since the previous publish; refreshing all loader versions",
                 self.strategy.name()
             );
         }
@@ -305,7 +305,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         }
 
         info!(
-            "📊 {} - {} loader versions ({} cached, {} to fetch)",
+            "{} - {} loader versions ({} cached, {} to fetch)",
             self.strategy.name(),
             to_skip.len() + to_fetch.len(),
             to_skip.len(),
@@ -348,7 +348,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                 Ok(profile) => fetched.push((stable, loader, profile)),
                 Err(e) => {
                     warn!(
-                        "⚠️  {} - Failed to fetch loader version {}: {}",
+                        "{} - Failed to fetch loader version {}: {}",
                         self.strategy.name(),
                         loader,
                         e
@@ -359,7 +359,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         }
 
         info!(
-            "📊 {} - Fetched {} loader profiles ({} failed)",
+            "{} - Fetched {} loader profiles ({} failed)",
             self.strategy.name(),
             fetched.len(),
             fetch_failed,
@@ -411,7 +411,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                 Ok(loader_version) => processed.push(loader_version),
                 Err(e) => {
                     warn!(
-                        "⚠️  {} - Failed to process loader {}: {}",
+                        "{} - Failed to process loader {}: {}",
                         self.strategy.name(),
                         loader,
                         e
@@ -422,7 +422,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         }
 
         info!(
-            "📊 {} - Processing complete: {} successful, {} failed",
+            "{} - Processing complete: {} successful, {} failed",
             self.strategy.name(),
             processed.len(),
             process_failed
@@ -591,7 +591,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         );
 
         info!(
-            "✅ {} - Processed {} game versions",
+            "{} - Processed {} game versions",
             self.strategy.name(),
             manifest.game_versions.len()
         );

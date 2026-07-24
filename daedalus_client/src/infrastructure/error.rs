@@ -154,8 +154,8 @@ impl ErrorKind {
             }
             ErrorKind::ChecksumFailure { .. } => true,
             ErrorKind::S3 { source, .. } => {
-                // Treat 4xx (auth, missing bucket, malformed request) as permanent —
-                // retrying these used to produce ~3-hour retry storms on misconfig.
+                // Treat 4xx (auth, missing bucket, malformed request) as permanent:
+                // retrying a misconfig only spins out multi-hour retry storms.
                 // 5xx, 429 (Too Many Requests), and 408 (Request Timeout) are retryable.
                 use s3::error::S3Error;
                 match source.as_ref() {
@@ -206,7 +206,7 @@ impl ErrorKind {
     }
 }
 
-/// Helper function to create a fetch error with context
+/// Wrap a `reqwest::Error` as a `Fetch` error, tagged with the item that failed.
 pub fn fetch_error(source: reqwest::Error, item: impl Into<String>) -> Error {
     Error::from(ErrorKind::Fetch {
         source,

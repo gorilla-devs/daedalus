@@ -13,11 +13,11 @@ use tracing_subscriber::layer::Context;
 /// # Design notes
 /// - `on_event` runs in arbitrary tracing-call contexts (sync code, hot loops). It uses
 ///   `try_send` so it never blocks; if the queue is full the event is dropped and
-///   counted, instead of either spawning per-event tasks (the old design, which flooded
-///   the runtime under bursty logging) or backpressuring tracing call sites.
+///   counted, rather than spawning a task per event (which floods the runtime under
+///   bursty logging) or backpressuring the tracing call site.
 /// - A single consumer task owns the buffer, flushing on batch_size or interval.
 /// - `BetterstackHandle::shutdown()` cleanly drains and ships any buffered logs before
-///   process exit. The old design dropped buffered logs on SIGTERM.
+///   process exit, so a SIGTERM doesn't drop them.
 pub struct BetterstackLayer {
     tx: mpsc::Sender<Value>,
 }

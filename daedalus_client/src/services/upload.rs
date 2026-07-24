@@ -6,16 +6,11 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{error, info, instrument};
 
-/// Batch uploader for immediate CAS (Content-Addressable Storage) uploads
+/// Batch uploader for immediate CAS (content-addressable storage) uploads.
 ///
-/// This uploader handles immediate uploads of content to S3 using content-addressable storage.
-/// Files are stored by their SHA256 hash at v{CAS_VERSION}/objects/{hash[0..2]}/{hash[2..]}.
-///
-/// Benefits:
-/// - **Immediate uploads**: No queuing, files upload as soon as requested
-/// - **Deduplication**: Same content (same hash) = same storage location, uploaded once
-/// - **Immutability**: Content never changes, only manifest pointers
-/// - **Reproducibility**: Hash is deterministic from file content
+/// Content uploads to S3 as soon as it is requested, keyed by its SHA256 hash
+/// at `v{CAS_VERSION}/objects/{hash[0..2]}/{hash[2..]}`. Identical content maps
+/// to the same key, so it is stored once and never rewritten.
 ///
 /// # Example
 ///
