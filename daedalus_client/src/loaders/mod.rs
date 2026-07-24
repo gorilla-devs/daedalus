@@ -29,6 +29,41 @@ fn is_intermediary_library(library_name: &str) -> bool {
     library_name.contains("intermediary") || library_name.contains("hashed")
 }
 
+/// Resolves what to do about a mapping artifact that did not come back usable.
+///
+/// A game version the manifest has never advertised is simply not installable
+/// yet — upstream lists a mapping before serving its jar — so it is omitted from
+/// the table, and the advertising gate keeps it unpublished until it resolves.
+///
+/// A game version already advertised is different: its jar has served before, so
+/// a miss now is a transient fault. Omitting it would bake a table missing an
+/// established version into every loader JSON republished this cycle, and those
+/// JSONs are then re-emitted from cache indefinitely, because the refresh only
+/// triggers when the mapped set grows. Failing instead keeps the last-good
+/// tables: every loader version referencing the coordinate fails, so the merge
+/// re-emits their previous entries untouched and the next cycle retries.
+fn resolve_mapping_miss(
+    game_version: &str,
+    coordinate: &str,
+    reason: &str,
+    established_game_versions: &HashSet<String>,
+) -> Result<Option<(String, String)>, crate::infrastructure::error::Error> {
+    if established_game_versions.contains(game_version) {
+        return Err(crate::infrastructure::error::invalid_input(format!(
+            "mapping artifact for already-published game version {game_version} \
+             ({coordinate}) {reason}; failing the expansion so the last-good \
+             tables are kept"
+        )));
+    }
+    warn!(
+        coordinate = %coordinate,
+        game_version = %game_version,
+        reason = %reason,
+        "Mapping artifact unusable; omitting this game version"
+    );
+    Ok(None)
+}
+
 /// Strategy trait for loader-specific behavior
 pub trait LoaderStrategy: Send + Sync {
     fn name(&self) -> &str;
@@ -72,21 +107,38 @@ pub struct LoaderProcessor<S: LoaderStrategy> {
     strategy: S,
 }
 
+/// One coordinate's expansion outcome, awaited by every loader build that
+/// references it: the mc_version → CAS hash table, or the error that failed it.
+type MappingExpansion = Arc<
+    tokio::sync::OnceCell<
+        Result<
+            BTreeMap<String, String>,
+            Arc<crate::infrastructure::error::Error>,
+        >,
+    >,
+>;
+
 /// Caches shared across all loader versions of a single retrieve_data run.
 ///
 /// - `regular_cas_urls`: maven coord (post-placeholder) → CAS URL of the unique artifact.
 ///   Lets duplicate non-intermediary libs across loader versions reuse the same CAS URL
 ///   without redownloading.
 /// - `intermediary_hashes`: intermediary coord (with placeholder) → async cell holding
-///   the mc_version → CAS hash table. The cell guarantees the per-game-version mapping
-///   sweep runs EXACTLY once per coordinate per cycle — every loader version referencing
-///   the coordinate awaits the same expansion instead of each running its own (which
-///   multiplied to loader_count × game_count downloads on cold cycles). A failed
-///   expansion leaves the cell empty, so the next loader version retries it.
+///   the outcome of the expansion: either the mc_version → CAS hash table, or the error
+///   that failed it. The cell guarantees the per-game-version mapping sweep runs EXACTLY
+///   once per coordinate per cycle — every loader version referencing the coordinate
+///   awaits the same outcome instead of each running its own (which multiplies to
+///   loader_count × game_count downloads).
+///
+///   The failure is stored in the cell rather than returned out of it: `get_or_try_init`
+///   releases its permit when the initializer returns `Err`, so each of the waiting
+///   loader versions would acquire it in turn and re-run the entire sweep. A retry there
+///   is worth little anyway — every individual download has already exhausted its own
+///   retry budget — while re-issuing the whole sweep once per loader version is what
+///   turns an upstream rate-limit into a self-sustaining one.
 struct LoaderCaches {
     regular_cas_urls: DashMap<String, String>,
-    intermediary_hashes:
-        DashMap<String, Arc<tokio::sync::OnceCell<BTreeMap<String, String>>>>,
+    intermediary_hashes: DashMap<String, MappingExpansion>,
 }
 
 impl LoaderCaches {
@@ -313,6 +365,15 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             fetch_failed,
         );
 
+        // Game versions the manifest already advertises. Read before the
+        // advertising loop below adds this cycle's new ones, so it is exactly
+        // the set whose mapping jars have served before: a miss on one of these
+        // is a fault rather than a version upstream has not published yet, and
+        // dropping it would bake a table missing an established version into
+        // every loader JSON republished this cycle.
+        let established_game_versions: Arc<HashSet<String>> =
+            Arc::new(versions.iter().map(|v| v.id.clone()).collect());
+
         // Process fetched profiles in parallel.
         let caches = Arc::new(LoaderCaches::new());
         let process_futures =
@@ -320,6 +381,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                 let semaphore = semaphore.clone();
                 let caches = Arc::clone(&caches);
                 let mapped_game_versions = Arc::clone(&mapped_game_versions);
+                let established_game_versions =
+                    Arc::clone(&established_game_versions);
                 let dummy_replace_string = dummy_replace_string.clone();
                 async move {
                     let result = self
@@ -328,6 +391,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                             loader.clone(),
                             profile,
                             &mapped_game_versions,
+                            &established_game_versions,
                             uploader,
                             s3_client,
                             &caches,
@@ -441,7 +505,12 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             caches
                 .intermediary_hashes
                 .iter()
-                .map(|entry| entry.value().get().cloned()),
+                // A coordinate whose expansion failed contributes no versions,
+                // so the intersection empties and nothing new is advertised —
+                // the same outcome as a coordinate that never ran.
+                .map(|entry| {
+                    entry.value().get().and_then(|r| r.as_ref().ok()).cloned()
+                }),
         );
 
         let notifier = crate::services::discord::notifier();
@@ -579,6 +648,7 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         loader: String,
         version: PartialVersionInfo,
         mapped_game_versions: &Arc<Vec<String>>,
+        established_game_versions: &Arc<HashSet<String>>,
         uploader: &BatchUploader,
         s3_client: &s3::Bucket,
         caches: &LoaderCaches,
@@ -590,6 +660,8 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
             version.libraries.into_iter().map(|mut lib| {
                 let semaphore = semaphore.clone();
                 let mapped_game_versions = Arc::clone(mapped_game_versions);
+                let established_game_versions =
+                    Arc::clone(established_game_versions);
                 let maven_fallback = self.strategy.maven_fallback().to_string();
 
                 async move {
@@ -614,15 +686,18 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                             .clone();
 
                         let lib_url = lib.url.clone();
+                        let coord_label = coord_with_placeholder.clone();
                         let version_hashes = cell
-                            .get_or_try_init(|| async {
-                                let results = futures::future::join_all(
+                            .get_or_init(|| async {
+                                let results = futures::future::try_join_all(
                                     mapped_game_versions.iter().map(|game_version| {
                                         let semaphore = semaphore.clone();
                                         let lib_url = lib_url.clone();
                                         let coord_with_placeholder =
                                             coord_with_placeholder.clone();
                                         let maven_fallback = maven_fallback.clone();
+                                        let established_game_versions =
+                                            Arc::clone(&established_game_versions);
 
                                         async move {
                                             let artifact_path =
@@ -650,16 +725,26 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                                                 // The meta lists a mapping the
                                                 // maven doesn't serve: that game
                                                 // version simply isn't
-                                                // installable. Omit its hash
+                                                // installable yet. Omit its hash
                                                 // instead of failing every
-                                                // loader version over it.
+                                                // loader version over it — but
+                                                // only for a version we have
+                                                // never published. Once it is
+                                                // advertised, its jar has served
+                                                // before, so a miss now is a
+                                                // transient fault rather than
+                                                // upstream lag, and omitting it
+                                                // would bake a table missing an
+                                                // established version into every
+                                                // loader JSON republished this
+                                                // cycle.
                                                 Err(e) if e.is_not_found() => {
-                                                    warn!(
-                                                        coordinate = %coord_with_placeholder,
-                                                        game_version = %game_version,
-                                                        "Mapping artifact missing on the maven; omitting this game version"
+                                                    return resolve_mapping_miss(
+                                                        game_version,
+                                                        &coord_with_placeholder,
+                                                        "is missing on the maven",
+                                                        &established_game_versions,
                                                     );
-                                                    return Ok(None);
                                                 }
                                                 Err(e) => return Err(e),
                                             };
@@ -673,12 +758,12 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                                             // bytes become the CAS object baked into
                                             // version_hashes for every cached re-emit.
                                             if !artifact.starts_with(b"PK") {
-                                                warn!(
-                                                    coordinate = %coord_with_placeholder,
-                                                    game_version = %game_version,
-                                                    "Mapping artifact is not a ZIP (wrong-body 200?); omitting this game version"
+                                                return resolve_mapping_miss(
+                                                    game_version,
+                                                    &coord_with_placeholder,
+                                                    "is not a ZIP (wrong-body 200?)",
+                                                    &established_game_versions,
                                                 );
-                                                return Ok(None);
                                             }
 
                                             let hash = uploader
@@ -705,24 +790,32 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
                                 )
                                 .await;
 
-                                // A transient failure anywhere fails the whole
-                                // expansion (the cell stays empty and the next
-                                // loader version retries it) — publishing a
-                                // partial mapping table would permanently break
-                                // the omitted game versions for every cached
-                                // re-emit of these loader JSONs.
-                                let mut map = BTreeMap::new();
-                                for result in results {
-                                    if let Some((game_version, hash)) = result? {
-                                        map.insert(game_version, hash);
-                                    }
-                                }
-                                Ok::<
-                                    BTreeMap<String, String>,
-                                    crate::infrastructure::error::Error,
-                                >(map)
+                                // A failure anywhere fails the whole expansion:
+                                // publishing a partial mapping table would
+                                // permanently break the omitted game versions
+                                // for every cached re-emit of these loader
+                                // JSONs. try_join_all stops the sweep at the
+                                // first failure instead of downloading and
+                                // re-uploading every remaining artifact only to
+                                // discard the table.
+                                results
+                                    .map(|resolved| {
+                                        resolved
+                                            .into_iter()
+                                            .flatten()
+                                            .collect::<BTreeMap<String, String>>()
+                                    })
+                                    .map_err(Arc::new)
                             })
-                            .await?
+                            .await
+                            .as_ref()
+                            .map_err(|e| {
+                                crate::infrastructure::error::invalid_input(
+                                    format!(
+                                        "mapping expansion for {coord_label} failed: {e}"
+                                    ),
+                                )
+                            })?
                             .clone();
 
                         lib.name = coord_with_placeholder.parse()?;
@@ -934,6 +1027,38 @@ mod tests {
         let refreshed: HashSet<&str> = ["0.16.0"].into_iter().collect();
 
         assert!(carries_forward("0.14.9", &attempted, &refreshed));
+    }
+
+    #[test]
+    fn a_miss_on_a_never_published_version_is_omitted() {
+        // Upstream lists a mapping before serving its jar. The version is not
+        // installable yet, and the advertising gate keeps it unpublished.
+        let resolved = resolve_mapping_miss(
+            "26w05a",
+            "net.fabricmc:intermediary",
+            "is missing on the maven",
+            &established(&["1.21", "1.21.1"]),
+        );
+        assert!(matches!(resolved, Ok(None)));
+    }
+
+    #[test]
+    fn a_miss_on_an_already_published_version_fails_the_expansion() {
+        // 1.21 has served before, so a miss is a transient fault. Omitting it
+        // would republish every loader JSON without it, and the cache would
+        // then re-emit those indefinitely.
+        let resolved = resolve_mapping_miss(
+            "1.21",
+            "net.fabricmc:intermediary",
+            "is missing on the maven",
+            &established(&["1.21", "1.21.1"]),
+        );
+        let err =
+            resolved.expect_err("an established version must not be dropped");
+        assert!(
+            err.to_string().contains("1.21"),
+            "the error should name the version: {err}"
+        );
     }
 
     #[test]
