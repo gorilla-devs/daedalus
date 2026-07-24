@@ -125,3 +125,6 @@ Cargo.lock
 bucket
 .DS_Store
 rust-analyzer-target
+
+# Local working notes and audit trackers; shipped docs live in the crate READMEs
+docs/
