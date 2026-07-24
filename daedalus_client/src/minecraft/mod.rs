@@ -81,33 +81,37 @@ pub async fn retrieve_data(
 ) -> Result<MinecraftData, crate::infrastructure::error::Error> {
     info!(is_first_run = is_first_run, "Retrieving Minecraft data");
 
-    // Previous publish's minecraft entries, resolved through the previous
-    // root manifest — they carry the original_sha1/assets/java fields the
-    // skip-reuse path below depends on. The first cycle after a process start
-    // skips the baseline on purpose so the full version set reprocesses
-    // (self-heal after restarts).
+    // Previous publish's minecraft entries, resolved through the previous root
+    // manifest — they carry the original_sha1/assets/java fields the skip-reuse
+    // path below depends on.
+    //
+    // Loaded on every cycle, including the first after a process start. The
+    // baseline serves two independent purposes and only one of them should be
+    // off on a first run: skip-reuse (which `is_first_run` disables at its own
+    // site, so the full version set reprocesses and self-heals) and
+    // carry-forward, which repairs a version whose processing failed. Without a
+    // baseline the repair has nothing to restore from and the failed version is
+    // dropped from the published manifest outright, so a single non-retryable
+    // flake — `should_retry_download` treats any 404 as final — erased an
+    // established version on the first cycle after every restart.
+    //
+    // Unlike the merge-based loaders (forge/neoforge/fabric/quilt), minecraft
+    // rebuilds from the full upstream Mojang manifest every cycle, so an
+    // unreadable baseline cannot silently drop entries the way an empty merge
+    // base can, and aborting here would skip the entire publish cycle (minecraft
+    // gates every other loader). Both Absent and Unreadable therefore fall back
+    // to "no baseline", which costs the repair but never publishes something
+    // wrong.
     let old_versions: Option<Vec<daedalus::minecraft::Version>> =
-        if is_first_run {
-            None
-        } else {
-            // Unlike the merge-based loaders (forge/neoforge/fabric/quilt),
-            // minecraft rebuilds from the full upstream Mojang manifest every
-            // cycle and uses this baseline only for the skip-reuse optimisation
-            // and per-version carry-forward. An unreadable baseline therefore
-            // cannot silently drop entries the way an empty merge base can, and
-            // aborting here would skip the entire publish cycle (minecraft gates
-            // every other loader). So both Absent and Unreadable fall back to
-            // "no baseline" — reprocess everything, which is always safe.
-            match crate::services::cas::fetch_previous_loader_versions(
-                s3_client,
-                "minecraft",
-            )
-            .await
-            {
-                crate::services::cas::PreviousVersions::Loaded(v) => Some(v),
-                crate::services::cas::PreviousVersions::Absent
-                | crate::services::cas::PreviousVersions::Unreadable => None,
-            }
+        match crate::services::cas::fetch_previous_loader_versions(
+            s3_client,
+            "minecraft",
+        )
+        .await
+        {
+            crate::services::cas::PreviousVersions::Loaded(v) => Some(v),
+            crate::services::cas::PreviousVersions::Absent
+            | crate::services::cas::PreviousVersions::Unreadable => None,
         };
 
     let mut manifest =
@@ -155,13 +159,11 @@ pub async fn retrieve_data(
     }
 
     // Detect new vanilla Minecraft versions against our previously-published
-    // manifest. Fired exactly once per (publish-cycle, new-version) — on a
-    // cold start (`old_manifest` is None) we suppress to avoid spamming one
-    // message per historical version. After the first run the
-    // `is_first_run` parameter is false on every subsequent retrieve_data
-    // call, so this guards both: cold-start and transient old-manifest fetch
-    // failures (which would also make `old_manifest` None and trip the
-    // notification path on a known set of versions).
+    // manifest. Fired exactly once per (publish-cycle, new-version), and
+    // suppressed whenever there is no baseline to compare against — a genuine
+    // cold start, or a transient failure reading the previous publish — because
+    // every historical version would otherwise look new and send one message
+    // each.
     if let Some(old) = &old_versions {
         if let Some(notifier) = crate::services::discord::notifier() {
             let known_ids: std::collections::HashSet<&str> =
@@ -223,6 +225,12 @@ pub async fn retrieve_data(
             // against `old_version.sha1` was wrong: that value is the hash of OUR
             // post-processed JSON, which never matches Mojang's upstream sha1, so every
             // version was reprocessed every run.
+            //
+            // Skipped entirely on the first cycle after a process start: that
+            // run reprocesses the full version set so a bad entry published by
+            // an earlier revision is repaired. The baseline itself stays loaded
+            // either way — carry-forward needs it when a version fails.
+            let old_version = old_version.filter(|_| !is_first_run);
             if let Some(old_version) = old_version {
                 if old_version
                     .original_sha1
