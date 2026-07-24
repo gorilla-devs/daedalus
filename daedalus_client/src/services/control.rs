@@ -37,7 +37,8 @@
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
 use tracing::{error, info, warn};
 
 use crate::services::cas::CAS_VERSION;
@@ -404,6 +405,44 @@ async fn persist_acks(
 ///
 /// Per-intent failures are Discord-notified and recorded as
 /// `outcome: { error: "..." }`; daedalus always continues to the next intent.
+/// Consecutive failures a rollback intent gets before it is acked as failed
+/// instead of retried.
+const MAX_ROLLBACK_ATTEMPTS: u32 = 3;
+
+/// Failure counts per rollback intent, for this process.
+///
+/// A rollback that aborts before changing anything — an unreadable live root, a
+/// pre-rollback backup that could not be written — is left unacked so the next
+/// poll retries it, which is what those abort paths document. Counting bounds
+/// that: an intent whose failure is not transient (a target that genuinely is
+/// not there) is acked as failed rather than re-running and alerting every
+/// poll forever.
+///
+/// Process-local deliberately. A restart is a legitimate fresh attempt, and
+/// keeping the count out of `control_acks.json` avoids changing a document
+/// enderium also reads.
+static ROLLBACK_ATTEMPTS: LazyLock<Mutex<HashMap<String, u32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Records a failed attempt and reports how many this intent has had.
+fn record_rollback_failure(request_id: &str) -> u32 {
+    let mut attempts = ROLLBACK_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let count = attempts.entry(request_id.to_string()).or_insert(0);
+    *count += 1;
+    *count
+}
+
+/// Drops the failure count for an intent that is finished, whether it
+/// succeeded or was acked as failed.
+fn clear_rollback_failures(request_id: &str) {
+    ROLLBACK_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(request_id);
+}
+
 pub async fn process_pending(bucket: &s3::Bucket) {
     let control = load(bucket).await;
     let mut acks = match load_acks(bucket).await {
@@ -527,6 +566,7 @@ pub async fn process_pending(bucket: &s3::Bucket) {
                             "rolled_back_to": outcome.rolled_back_to,
                         }),
                     });
+                    clear_rollback_failures(&req.request_id);
                     info!(
                         request_id = %req.request_id,
                         rolled_back_to = %outcome.rolled_back_to,
@@ -535,24 +575,45 @@ pub async fn process_pending(bucket: &s3::Bucket) {
                 }
                 Err(e) => {
                     let msg = e.to_string();
-                    // `error!` is auto-forwarded to Discord by DiscordTracingLayer,
-                    // so this single log both records and alerts — no separate
-                    // Discord notification (which would double-report).
-                    error!(
-                        request_id = %req.request_id,
-                        history_timestamp = %req.history_timestamp,
-                        error = %msg,
-                        "Rollback intent failed"
-                    );
-                    acks.push(AckEntry {
-                        request_id: req.request_id.clone(),
-                        kind: "rollback".to_string(),
-                        processed_at: Utc::now(),
-                        outcome: AckOutcome::error(msg),
-                        details: serde_json::json!({
-                            "history_timestamp": req.history_timestamp,
-                        }),
-                    });
+                    let attempts = record_rollback_failure(&req.request_id);
+                    if attempts < MAX_ROLLBACK_ATTEMPTS {
+                        // Left unacked so the next poll retries, which is what
+                        // the abort paths in `execute_rollback` promise: they
+                        // stop before changing anything precisely so the intent
+                        // can be re-run. Acking here would consume the
+                        // operator's intent on the first transient S3 error and
+                        // leave the rollback silently undone.
+                        warn!(
+                            request_id = %req.request_id,
+                            history_timestamp = %req.history_timestamp,
+                            error = %msg,
+                            attempt = attempts,
+                            max_attempts = MAX_ROLLBACK_ATTEMPTS,
+                            "Rollback intent failed; leaving it pending for the next poll"
+                        );
+                    } else {
+                        // `error!` is auto-forwarded to Discord by DiscordTracingLayer,
+                        // so this single log both records and alerts — no separate
+                        // Discord notification (which would double-report).
+                        error!(
+                            request_id = %req.request_id,
+                            history_timestamp = %req.history_timestamp,
+                            error = %msg,
+                            attempts = attempts,
+                            "Rollback intent failed on every attempt; giving up"
+                        );
+                        clear_rollback_failures(&req.request_id);
+                        acks.push(AckEntry {
+                            request_id: req.request_id.clone(),
+                            kind: "rollback".to_string(),
+                            processed_at: Utc::now(),
+                            outcome: AckOutcome::error(msg),
+                            details: serde_json::json!({
+                                "history_timestamp": req.history_timestamp,
+                                "attempts": attempts,
+                            }),
+                        });
+                    }
                 }
             }
             persist_acks(bucket, &mut acks, &control).await;
@@ -1024,6 +1085,64 @@ mod tests {
 
         assert_eq!(acks.processed.len(), 1);
         assert_eq!(acks.processed[0].request_id, "old-but-live");
+    }
+
+    #[test]
+    fn a_rollback_retries_before_it_is_given_up_on() {
+        // The abort paths in execute_rollback stop before changing anything so
+        // the intent can be re-run; acking on the first transient S3 error
+        // would consume the operator's intent and silently leave the rollback
+        // undone.
+        let id = "retry-budget-test";
+        clear_rollback_failures(id);
+
+        assert_eq!(record_rollback_failure(id), 1);
+        assert_eq!(record_rollback_failure(id), 2);
+        assert!(
+            2 < MAX_ROLLBACK_ATTEMPTS,
+            "the first failures must leave the intent pending"
+        );
+        assert_eq!(record_rollback_failure(id), MAX_ROLLBACK_ATTEMPTS);
+
+        clear_rollback_failures(id);
+    }
+
+    #[test]
+    fn a_finished_rollback_starts_over_from_zero() {
+        // A success, or a give-up that acked, must not leave a count behind for
+        // a later intent to inherit.
+        let id = "clear-on-finish-test";
+        clear_rollback_failures(id);
+
+        record_rollback_failure(id);
+        record_rollback_failure(id);
+        clear_rollback_failures(id);
+
+        assert_eq!(
+            record_rollback_failure(id),
+            1,
+            "a cleared intent must begin a fresh budget"
+        );
+        clear_rollback_failures(id);
+    }
+
+    #[test]
+    fn rollback_attempt_counts_are_tracked_per_intent() {
+        let a = "per-intent-a";
+        let b = "per-intent-b";
+        clear_rollback_failures(a);
+        clear_rollback_failures(b);
+
+        record_rollback_failure(a);
+        record_rollback_failure(a);
+        assert_eq!(
+            record_rollback_failure(b),
+            1,
+            "one struggling intent must not spend another's budget"
+        );
+
+        clear_rollback_failures(a);
+        clear_rollback_failures(b);
     }
 
     #[test]
