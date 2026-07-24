@@ -446,7 +446,10 @@ async fn run_publish_cycle(
             .await
             {
                 Ok(res) => {
-                    info!(version_count = res.versions.len(), "Minecraft data retrieved");
+                    info!(
+                        version_count = res.manifest.versions.len(),
+                        "Minecraft data retrieved"
+                    );
                     Some(res)
                 }
                 Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
@@ -475,7 +478,11 @@ async fn run_publish_cycle(
         .await
     };
 
-    if let Some(manifest) = versions {
+    if let Some(minecraft::MinecraftData {
+        manifest,
+        upstream_version_ids,
+    }) = versions
+    {
         outcome.published = true;
         if cfg!(feature = "fabric") {
             let span = tracing::info_span!("fabric_processing");
@@ -592,6 +599,7 @@ async fn run_publish_cycle(
                 match NEOFORGE_BREAKER.call(async {
                     neoforge::retrieve_data(
                         &manifest,
+                        &upstream_version_ids,
                         &uploader,
                         &manifest_builder,
                         &CLIENT,

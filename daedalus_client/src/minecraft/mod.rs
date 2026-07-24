@@ -32,6 +32,7 @@ use crate::download_file;
 use crate::services::upload::BatchUploader;
 use daedalus::minecraft::{JavaVersion, MinecraftJavaProfile, VersionManifest};
 use futures::future::join_all;
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Instant;
@@ -60,13 +61,24 @@ use tracing::{info, warn};
 ///
 /// # Returns
 /// The processed Minecraft version manifest with all versions and metadata
+/// The processed Minecraft manifest together with the set of version ids Mojang
+/// currently publishes.
+///
+/// Loaders prune groups whose Minecraft version does not exist. They must test
+/// against `upstream_version_ids` rather than `manifest`, which legitimately
+/// omits versions this cycle failed to process.
+pub struct MinecraftData {
+    pub manifest: VersionManifest,
+    pub upstream_version_ids: HashSet<String>,
+}
+
 pub async fn retrieve_data(
     uploader: &BatchUploader,
     manifest_builder: &crate::services::cas::ManifestBuilder,
     s3_client: &s3::Bucket,
     semaphore: Arc<Semaphore>,
     is_first_run: bool,
-) -> Result<VersionManifest, crate::infrastructure::error::Error> {
+) -> Result<MinecraftData, crate::infrastructure::error::Error> {
     info!(is_first_run = is_first_run, "Retrieving Minecraft data");
 
     // Previous publish's minecraft entries, resolved through the previous
@@ -100,6 +112,11 @@ pub async fn retrieve_data(
 
     let mut manifest =
         daedalus::minecraft::fetch_version_manifest(None).await?;
+
+    // Captured before the filters below narrow the manifest, so it records every
+    // id Mojang publishes rather than the subset this cycle managed to process.
+    let upstream_version_ids: HashSet<String> =
+        manifest.versions.iter().map(|v| v.id.clone()).collect();
 
     // §1.2(a/b): Tolerant parsing + never-publish-unknowns.
     // `VersionType` has an `Unknown(String)` catch-all so the whole manifest
@@ -661,7 +678,10 @@ pub async fn retrieve_data(
         "Set Minecraft versions with rich metadata in CAS manifest builder"
     );
 
-    Ok(final_manifest)
+    Ok(MinecraftData {
+        manifest: final_manifest,
+        upstream_version_ids,
+    })
 }
 
 #[cfg(test)]

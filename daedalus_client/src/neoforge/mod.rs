@@ -47,6 +47,7 @@ static NEOFORGE_SKIP_LIST: LazyLock<HashSet<&'static str>> =
 
 pub async fn retrieve_data(
     minecraft_versions: &VersionManifest,
+    upstream_mc_version_ids: &HashSet<String>,
     uploader: &BatchUploader,
     manifest_builder: &crate::services::cas::ManifestBuilder,
     s3_client: &s3::Bucket,
@@ -656,22 +657,28 @@ pub async fn retrieve_data(
     let mut final_versions =
         merge_loader_versions(old_manifest_versions, new_versions, "NeoForge");
 
-    // Drop phantom MC-version groups: entries whose id is not a currently-valid
-    // Minecraft version. The fresh path filters builds to valid MC ids
-    // (profile.minecraft), but merge_loader_versions only adds/updates, so
-    // entries published under an earlier inference heuristic's bogus ids (MC
-    // versions that never existed) would otherwise persist forever. Mojang's
-    // manifest is monotonic — real versions never disappear from it — so any id
-    // absent here is genuinely phantom. NOTE: a one-time cleanup of a LARGE
-    // pre-existing phantom set can trip the sanity gate's MC-coverage check (a
-    // big drop looks like a regression); that is the gate working as designed
-    // and may need an operator to inspect once.
-    let before = final_versions.len();
-    final_versions.retain(|v| valid_mc_versions.contains(&v.id));
-    let pruned = before - final_versions.len();
+    // Drop phantom MC-version groups: entries whose id is not a Minecraft
+    // version Mojang publishes at all. The fresh path filters builds to ids in
+    // this cycle's processed manifest, but merge_loader_versions only adds and
+    // updates, so groups published under an earlier inference heuristic's bogus
+    // ids would otherwise persist forever.
+    //
+    // The test is Mojang's upstream id set, not this cycle's processed manifest:
+    // a version whose processing fails with no baseline to carry forward is
+    // absent from the processed manifest while still being a real version (see
+    // minecraft::retrieve_data), so pruning against that would delete an
+    // established group over one transient fetch failure. Keeping such a group
+    // leaves it briefly unusable until the version processes again, which the
+    // next cycle repairs; deleting it is not recoverable.
+    //
+    // NOTE: a one-time cleanup of a LARGE pre-existing phantom set can trip the
+    // sanity gate's MC-coverage check (a big drop looks like a regression); that
+    // is the gate working as designed and may need an operator to inspect once.
+    let pruned =
+        prune_phantom_mc_groups(&mut final_versions, upstream_mc_version_ids);
     if pruned > 0 {
         warn!(
-            "⚠️  NeoForge - Pruned {} phantom MC-version group(s) not present in the Minecraft manifest",
+            "⚠️  NeoForge - Pruned {} phantom MC-version group(s) absent from Mojang's version manifest",
             pruned
         );
     }
@@ -855,4 +862,68 @@ pub async fn fetch_maven_metadata(
     }
 
     Ok(map)
+}
+
+/// Removes groups whose Minecraft version id Mojang does not publish, returning
+/// how many were dropped.
+///
+/// `upstream_mc_version_ids` must come from Mojang's manifest rather than a
+/// processed one, so that a version this cycle failed to process keeps its
+/// group instead of having it deleted.
+fn prune_phantom_mc_groups(
+    versions: &mut Vec<daedalus::modded::Version>,
+    upstream_mc_version_ids: &HashSet<String>,
+) -> usize {
+    let before = versions.len();
+    versions.retain(|v| upstream_mc_version_ids.contains(&v.id));
+    before - versions.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group(id: &str) -> daedalus::modded::Version {
+        daedalus::modded::Version {
+            id: id.to_string(),
+            stable: true,
+            loaders: Vec::new(),
+        }
+    }
+
+    fn ids(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn prunes_groups_whose_mc_version_never_existed() {
+        let mut versions =
+            vec![group("1.20.1"), group("1.20.256"), group("1.21")];
+
+        let pruned =
+            prune_phantom_mc_groups(&mut versions, &ids(&["1.20.1", "1.21"]));
+
+        assert_eq!(pruned, 1);
+        assert_eq!(
+            versions.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(),
+            vec!["1.20.1", "1.21"]
+        );
+    }
+
+    #[test]
+    fn keeps_a_real_version_missing_from_this_cycles_processed_manifest() {
+        // 1.20.1 failed to process this cycle with no baseline to carry forward,
+        // so it is absent from the processed manifest while still being a real
+        // Mojang version. Pruning it here would delete an established group over
+        // one transient fetch failure.
+        let mut versions = vec![group("1.20.1"), group("1.21")];
+
+        let pruned = prune_phantom_mc_groups(
+            &mut versions,
+            &ids(&["1.20.1", "1.21", "1.21.1"]),
+        );
+
+        assert_eq!(pruned, 0);
+        assert_eq!(versions.len(), 2);
+    }
 }
