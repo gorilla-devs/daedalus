@@ -340,7 +340,7 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
             ensure_static_files_synced(semaphore.clone()).await;
 
-            let mut is_first_run = true;
+            let mut first_run = FirstRunLoaders::all();
             let mut shutdown = ShutdownListener::new();
 
             loop {
@@ -348,11 +348,18 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
 
                 tokio::select! {
                     _ = publish_timer.tick() => {
-                        let loop_span = tracing::info_span!("processing_cycle", is_first_run);
-                        run_publish_cycle(is_first_run, semaphore.clone())
+                        let loop_span = tracing::info_span!(
+                            "processing_cycle",
+                            first_run = first_run.any()
+                        );
+                        let cycle = run_publish_cycle(first_run, semaphore.clone())
                             .instrument(loop_span)
                             .await;
-                        is_first_run = false;
+                        // Only retire a loader's first-cycle flag once that
+                        // loader has actually run. A loader gated out by
+                        // minecraft, held off by its circuit breaker, or aborted
+                        // early still owes the work.
+                        first_run.clear_completed(&cycle.first_run_done);
                     }
                     _ = control_timer.tick() => {
                         // §2.3: poll control.json for pending operator intents.
@@ -403,15 +410,59 @@ pub struct CycleOutcome {
     /// force-run must ack against THIS, not `published`, to avoid reporting a
     /// success for a cycle whose changes never went live.
     pub root_committed: bool,
+    /// Loaders that completed this cycle, and so have done any first-cycle-only
+    /// work owed to them. See [`FirstRunLoaders`].
+    pub first_run_done: FirstRunLoaders,
+}
+
+/// Per-loader first-cycle state: minecraft's full reprocess (skip-reuse
+/// disabled, so an entry published by an earlier revision is repaired) and
+/// forge/neoforge's re-verification of each installer against its `.sha1`
+/// sidecar, which every later cycle skips in favour of trusting immutability.
+///
+/// Tracked per loader rather than as one flag because loaders complete
+/// independently: minecraft gates the others entirely, and a circuit breaker or
+/// an early abort can stop one while the rest run. A loader that never ran has
+/// not done its first-cycle work, so its flag has to survive the cycle —
+/// otherwise the pass is skipped for the process's whole lifetime and stale
+/// entries latch until someone restarts into a clean first cycle.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FirstRunLoaders {
+    pub minecraft: bool,
+    pub forge: bool,
+    pub neoforge: bool,
+}
+
+impl FirstRunLoaders {
+    /// Every loader still owes its first-cycle work — the state at startup.
+    pub fn all() -> Self {
+        Self {
+            minecraft: true,
+            forge: true,
+            neoforge: true,
+        }
+    }
+
+    /// Drops the loaders that have since completed.
+    pub fn clear_completed(&mut self, done: &Self) {
+        self.minecraft &= !done.minecraft;
+        self.forge &= !done.forge;
+        self.neoforge &= !done.neoforge;
+    }
+
+    pub fn any(&self) -> bool {
+        self.minecraft || self.forge || self.neoforge
+    }
 }
 
 /// Execute one full publish cycle (all loaders).
 ///
 /// Extracted from the select! branch so the publish branch stays short and
-/// readable.  `is_first_run` controls whether first-cycle-specific behaviour
-/// fires (currently passed through to `minecraft::retrieve_data`).
+/// readable. `first_run` says which loaders still owe their first-cycle-only
+/// behaviour; the returned outcome reports which of them completed, so the
+/// caller only retires a loader's flag once that loader has actually run.
 async fn run_publish_cycle(
-    is_first_run: bool,
+    first_run: FirstRunLoaders,
     semaphore: Arc<Semaphore>,
 ) -> CycleOutcome {
     let mut outcome = CycleOutcome::default();
@@ -439,7 +490,7 @@ async fn run_publish_cycle(
                     &manifest_builder,
                     &CLIENT,
                     semaphore.clone(),
-                    is_first_run,
+                    first_run.minecraft,
                 )
                 .await
             })
@@ -450,6 +501,7 @@ async fn run_publish_cycle(
                         version_count = res.manifest.versions.len(),
                         "Minecraft data retrieved"
                     );
+                    outcome.first_run_done.minecraft = true;
                     Some(res)
                 }
                 Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
@@ -530,13 +582,16 @@ async fn run_publish_cycle(
                         &manifest_builder,
                         &CLIENT,
                         semaphore.clone(),
-                        is_first_run,
+                        first_run.forge,
                     )
                     .await
                 })
                 .await
                 {
-                    Ok(_) => info!("Forge processing completed"),
+                    Ok(_) => {
+                        info!("Forge processing completed");
+                        outcome.first_run_done.forge = true;
+                    }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
                         warn!("Forge circuit breaker is open, skipping");
                         run_state
@@ -604,13 +659,16 @@ async fn run_publish_cycle(
                         &manifest_builder,
                         &CLIENT,
                         semaphore.clone(),
-                        is_first_run,
+                        first_run.neoforge,
                     )
                     .await
                 })
                 .await
                 {
-                    Ok(_) => info!("NeoForge processing completed"),
+                    Ok(_) => {
+                        info!("NeoForge processing completed");
+                        outcome.first_run_done.neoforge = true;
+                    }
                     Err(crate::infrastructure::circuit_breaker::CircuitBreakerError::Open) => {
                         warn!("NeoForge circuit breaker is open, skipping");
                         run_state
@@ -1525,4 +1583,73 @@ pub async fn upload_static_files(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod first_run_tests {
+    use super::FirstRunLoaders;
+
+    #[test]
+    fn every_loader_starts_owing_its_first_cycle_work() {
+        let pending = FirstRunLoaders::all();
+        assert!(pending.minecraft && pending.forge && pending.neoforge);
+        assert!(pending.any());
+    }
+
+    #[test]
+    fn a_loader_that_completed_retires_its_flag() {
+        let mut pending = FirstRunLoaders::all();
+        pending.clear_completed(&FirstRunLoaders {
+            minecraft: true,
+            forge: true,
+            neoforge: true,
+        });
+        assert!(
+            !pending.any(),
+            "a fully successful cycle retires everything"
+        );
+    }
+
+    #[test]
+    fn a_loader_that_never_ran_keeps_owing_its_first_cycle_work() {
+        // Minecraft gates the others, so a cycle where it fails runs no loader
+        // at all. Retiring the flags here would skip forge and neoforge's
+        // installer re-verification for the rest of the process's life.
+        let mut pending = FirstRunLoaders::all();
+        pending.clear_completed(&FirstRunLoaders::default());
+        assert!(pending.minecraft && pending.forge && pending.neoforge);
+    }
+
+    #[test]
+    fn loaders_retire_independently() {
+        // A circuit breaker can hold off one loader while the rest complete.
+        let mut pending = FirstRunLoaders::all();
+        pending.clear_completed(&FirstRunLoaders {
+            minecraft: true,
+            forge: true,
+            neoforge: false,
+        });
+        assert!(!pending.minecraft);
+        assert!(!pending.forge);
+        assert!(
+            pending.neoforge,
+            "neoforge never ran, so it still owes its verification pass"
+        );
+        assert!(pending.any());
+
+        // The next cycle it completes, and only then is it retired.
+        pending.clear_completed(&FirstRunLoaders {
+            minecraft: true,
+            forge: true,
+            neoforge: true,
+        });
+        assert!(!pending.any());
+    }
+
+    #[test]
+    fn retiring_is_idempotent() {
+        let mut pending = FirstRunLoaders::default();
+        pending.clear_completed(&FirstRunLoaders::all());
+        assert!(!pending.any(), "already retired stays retired");
+    }
 }

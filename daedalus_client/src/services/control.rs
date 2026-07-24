@@ -446,7 +446,14 @@ pub async fn process_pending(bucket: &s3::Bucket) {
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
             crate::MAX_CONCURRENT_UPLOADS,
         ));
-        let cycle = crate::run_publish_cycle(false, semaphore).await;
+        // No first-cycle work: an operator force-run is an extra cycle on top of
+        // the schedule, so it neither performs nor retires the startup passes
+        // the timer-driven loop owns.
+        let cycle = crate::run_publish_cycle(
+            crate::FirstRunLoaders::default(),
+            semaphore,
+        )
+        .await;
 
         // The ack reflects what the cycle actually did — an operator
         // force-running during an outage must see the failure (and may
