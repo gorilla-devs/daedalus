@@ -14,10 +14,12 @@ use crate::common::{
 };
 use crate::services::upload::BatchUploader;
 use crate::download_file;
+use crate::{BUILDS_IN_FLIGHT, MC_GROUPS_IN_FLIGHT};
 use daedalus::GradleSpecifier;
 use daedalus::minecraft::{Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo, SidedDataEntry};
 use dashmap::{DashMap, DashSet};
+use futures::StreamExt;
 use tracing::{info, warn};
 // Note: Using lenient_semver instead of semver::Version to handle
 // non-standard NeoForge versions like "26.1.0.0-alpha.1+snapshot-1"
@@ -129,12 +131,16 @@ pub async fn retrieve_data(
 
                 {
                     let loaders_futures = loaders.into_iter().map(|(loader_version_full, new_forge)| async {
+                        // Completion order is not input order, so the build id
+                        // travels with its own result rather than being inferred
+                        // from position.
+                        let build_id = loader_version_full.clone();
                         let versions_mutex = Arc::clone(&old_versions);
                         let visited_assets = Arc::clone(&visited_assets);
                         let visited_lib_hashes = Arc::clone(&visited_lib_hashes);
                         let semaphore = Arc::clone(&semaphore);
 
-                        async move {
+                        let outcome = async move {
                             // Check skip list first
                             if NEOFORGE_SKIP_LIST.contains(loader_version_full.as_str()) {
                                 info!("⏭️  NeoForge - Skipping excluded version: {}", loader_version_full);
@@ -532,15 +538,23 @@ pub async fn retrieve_data(
                             }
 
                             Ok(None)
-                        }.await
+                        }.await;
+
+                        (build_id, outcome)
                     });
 
                     {
-                        let len = loaders_futures.len();
                         let mut successful = 0;
                         let mut failed = 0;
 
-                        for (idx, result) in futures::future::join_all(loaders_futures).await.into_iter().enumerate() {
+                        // Bounded rather than joined: each future holds its installer
+                        // and the jars it extracted from download until its libraries
+                        // finish uploading, so an unbounded fan-out parks the entire
+                        // installer corpus in memory before the first library uploads.
+                        let mut builds = futures::stream::iter(loaders_futures)
+                            .buffer_unordered(BUILDS_IN_FLIGHT);
+
+                        while let Some((build_id, result)) = builds.next().await {
                             match result {
                                 Ok(Some(entry)) => {
                                     loaders_versions.push(entry);
@@ -548,7 +562,7 @@ pub async fn retrieve_data(
                                 }
                                 Ok(None) => {}
                                 Err(e) => {
-                                    warn!("NeoForge - Failed to process version {}/{len}: {}", idx + 1, e);
+                                    warn!("NeoForge - Failed to process build {build_id}: {e}");
                                     failed += 1;
                                 }
                             }
@@ -610,23 +624,20 @@ pub async fn retrieve_data(
     }
 
     {
-        let len = version_futures.len();
         let mut successful_mc_versions = 0;
         let mut failed_mc_versions = 0;
 
-        for (idx, result) in futures::future::join_all(version_futures)
-            .await
-            .into_iter()
-            .enumerate()
-        {
+        // Every group in flight multiplies the builds in flight beneath it, so
+        // this bound and BUILDS_IN_FLIGHT together set the ceiling on resident
+        // installers. The group's own id is carried by the error.
+        let mut groups = futures::stream::iter(version_futures)
+            .buffer_unordered(MC_GROUPS_IN_FLIGHT);
+
+        while let Some(result) = groups.next().await {
             match result {
                 Ok(()) => successful_mc_versions += 1,
                 Err(e) => {
-                    warn!(
-                        "NeoForge - Failed to process Minecraft version {}/{len}: {}",
-                        idx + 1,
-                        e
-                    );
+                    warn!("NeoForge - Failed to process a Minecraft version: {e}");
                     failed_mc_versions += 1;
                 }
             }

@@ -18,7 +18,9 @@ use crate::{download_file, download_file_mirrors};
 use daedalus::GradleSpecifier;
 use daedalus::minecraft::{Argument, ArgumentType, Library, VersionManifest};
 use daedalus::modded::{LoaderVersion, PartialVersionInfo};
+use crate::{BUILDS_IN_FLIGHT, MC_GROUPS_IN_FLIGHT};
 use dashmap::{DashMap, DashSet};
+use futures::StreamExt;
 use semver::{Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
@@ -194,6 +196,10 @@ pub async fn retrieve_data(
 
                 {
                     let loaders_futures = loaders.into_iter().map(|(loader_version_full, version)| async {
+                        // Completion order is not input order, so the build id
+                        // travels with its own result rather than being inferred
+                        // from position.
+                        let build_id = loader_version_full.clone();
                         let mc_library_cache_mutex = Arc::clone(&mc_library_cache_mutex);
                         let mc_version_urls = Arc::clone(&mc_version_urls);
                         let versions_mutex = Arc::clone(&old_versions);
@@ -204,7 +210,7 @@ pub async fn retrieve_data(
                         let minecraft_version = minecraft_version.clone();
                         let is_first_run = is_first_run;
 
-                        async move {
+                        let outcome = async move {
                             /// These forge versions are not worth supporting!
                             const FORGE_SKIP_LIST : &[&str] = &[
                                 // Not supported due to `data` field being `[]` even though the type is a map
@@ -777,17 +783,23 @@ pub async fn retrieve_data(
                             }
 
                             Ok(None)
-                        }.await
+                        }.await;
+
+                        (build_id, outcome)
                     });
 
                     {
-                        let len = loaders_futures.len();
                         let mut successful = 0;
                         let mut failed = 0;
 
-                        // The downloads inside each future already gate on `semaphore`; running
-                        // these futures concurrently lets the semaphore actually do its job.
-                        for (idx, result) in futures::future::join_all(loaders_futures).await.into_iter().enumerate() {
+                        // Bounded rather than joined: each future holds its installer
+                        // and the jars it extracted from download until its libraries
+                        // finish uploading, so an unbounded fan-out parks the entire
+                        // installer corpus in memory before the first library uploads.
+                        let mut builds = futures::stream::iter(loaders_futures)
+                            .buffer_unordered(BUILDS_IN_FLIGHT);
+
+                        while let Some((build_id, result)) = builds.next().await {
                             match result {
                                 Ok(Some(loader_version)) => {
                                     loaders_versions.push(loader_version);
@@ -795,7 +807,7 @@ pub async fn retrieve_data(
                                 }
                                 Ok(None) => {}
                                 Err(e) => {
-                                    warn!("Forge - Failed to process version {}/{len}: {}", idx + 1, e);
+                                    warn!("Forge - Failed to process build {build_id}: {e}");
                                     failed += 1;
                                 }
                             }
@@ -831,23 +843,20 @@ pub async fn retrieve_data(
     }
 
     {
-        let len = version_futures.len();
         let mut successful = 0;
         let mut failed = 0;
 
-        for (idx, result) in futures::future::join_all(version_futures)
-            .await
-            .into_iter()
-            .enumerate()
-        {
+        // Every group in flight multiplies the builds in flight beneath it, so
+        // this bound and BUILDS_IN_FLIGHT together set the ceiling on resident
+        // installers. The group's own id is carried by the error.
+        let mut groups = futures::stream::iter(version_futures)
+            .buffer_unordered(MC_GROUPS_IN_FLIGHT);
+
+        while let Some(result) = groups.next().await {
             match result {
                 Ok(_) => successful += 1,
                 Err(e) => {
-                    warn!(
-                        "Forge - Failed to process Minecraft version {}/{len}: {}",
-                        idx + 1,
-                        e
-                    );
+                    warn!("Forge - Failed to process a Minecraft version: {e}");
                     failed += 1;
                 }
             }

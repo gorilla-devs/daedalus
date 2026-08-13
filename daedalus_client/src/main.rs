@@ -30,6 +30,17 @@ use tokio::signal::unix::{SignalKind, signal};
 const UPDATE_INTERVAL_SECS: u64 = 60 * 60;
 /// Maximum number of concurrent upload operations
 const MAX_CONCURRENT_UPLOADS: usize = 10;
+/// Minecraft version groups a loader processes concurrently, and installer
+/// builds processed concurrently within one group.
+///
+/// Their product bounds how many installers are resident at once, and that —
+/// not MAX_CONCURRENT_UPLOADS — is what caps peak memory: an installer and its
+/// decompressed extracts stay live from download until the build's libraries
+/// finish uploading, while the semaphore caps permits rather than live futures.
+/// Sized just above the permit count so every permit stays busy during the
+/// download phase without parking idle installers behind the FIFO queue.
+pub(crate) const MC_GROUPS_IN_FLIGHT: usize = 2;
+pub(crate) const BUILDS_IN_FLIGHT: usize = 6;
 /// Circuit breaker: number of consecutive failures before opening
 const CIRCUIT_BREAKER_FAILURE_THRESHOLD: u32 = 5;
 /// Circuit breaker: duration to wait before retrying (5 minutes)
