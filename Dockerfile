@@ -9,7 +9,7 @@ RUN update-ca-certificates
 
 WORKDIR /usr/src/daedalus
 COPY . .
-RUN cargo build --release
+RUN cargo build --release --locked
 RUN cp target/release/daedalus_client ./daedalus_binary
 
 CMD ["./daedalus_binary"]

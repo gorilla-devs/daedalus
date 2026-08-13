@@ -7,6 +7,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # common::cas reads BASE_URL through a LazyLock, so any test that touches a
+  # CAS URL panics without it. Nothing loads .env under `cargo test` — dotenvy
+  # is only called from main.
+  BASE_URL: https://meta.example.com
 
 jobs:
   test:
@@ -14,14 +18,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
-        # Honours rust-toolchain.toml (channel 1.85, Rust 2024 edition).
-        uses: dtolnay/rust-toolchain@1.85.0
+        # Must match rust-toolchain.toml: the toolchain file overrides whatever
+        # this action selects, and clippy is installed per-toolchain, so a
+        # mismatch installs the component on a toolchain that never runs.
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --workspace --all-features
+        run: cargo build --workspace --all-features --locked
       - name: Test
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features --locked
       - name: Clippy
-        run: cargo clippy --workspace --all-features
+        run: cargo clippy --workspace --all-features --locked
