@@ -323,8 +323,8 @@ fn main() -> Result<(), crate::infrastructure::error::Error> {
             let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS));
 
             // Static CDN files are init state, not a degraded mode: published
-            // version JSONs embed ${BASE_URL}/maven/... URLs that resolve to
-            // objects sourced from this directory. A missing directory is a
+            // version JSONs embed {BASE_URL}/v{CAS_VERSION}/maven/... URLs that
+            // resolve to objects sourced from this directory. A missing directory is a
             // configuration error that can never heal — fail the process so
             // the operator notices, instead of publishing dangling URLs
             // forever. Checked BEFORE acquiring the lease so a crash-looping
@@ -1530,7 +1530,8 @@ pub async fn upload_static_files(
     }
 
     // One failing file must not abandon the rest of the walk — every object
-    // skipped here is a dangling /maven URL in published metadata. Failures
+    // skipped here is a dangling /v{CAS_VERSION}/maven URL in published
+    // metadata. Failures
     // are counted and reported so the caller retries the pass.
     let mut failed = 0usize;
 
@@ -1561,9 +1562,17 @@ pub async fn upload_static_files(
                 continue;
             }
 
+            // The mirror is served from the CAS-versioned prefix rather than the
+            // bucket root. The v2 generator publishes the same maven/** keys
+            // from its own copy of this directory, and a shared mutable prefix
+            // means either generator can overwrite an object whose sha1 and size
+            // the other's already-published metadata pins.
+            let upload_key =
+                format!("v{}/{}", crate::services::cas::CAS_VERSION, upload_path);
+
             info!(
                 file = %entry.path().display(),
-                cdn_path = %upload_path,
+                cdn_path = %upload_key,
                 "Uploading static file to CDN"
             );
 
@@ -1584,7 +1593,7 @@ pub async fn upload_static_files(
             };
 
             if let Err(e) = upload_file_to_bucket(
-                upload_path.to_string(), // NOTE: if path is non utf8 this will not be a pretty path
+                upload_key.clone(),
                 bytes,
                 content_type,
                 uploaded_files.clone(),
@@ -1592,7 +1601,7 @@ pub async fn upload_static_files(
             )
             .await
             {
-                warn!(cdn_path = %upload_path, error = %e, "Failed to upload static file; continuing");
+                warn!(cdn_path = %upload_key, error = %e, "Failed to upload static file; continuing");
                 failed += 1;
             }
         }

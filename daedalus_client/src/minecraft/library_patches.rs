@@ -126,10 +126,26 @@ pub async fn get_library_patches()
     Ok(LibraryPatchIndex::new(processed))
 }
 
+/// Expand the `${BASE_URL}` placeholder in a patch URL.
+///
+/// The mirrored maven artifacts are published under the CAS-versioned prefix, so
+/// the placeholder expands to the versioned base for those URLs. Expanding it
+/// here rather than writing the version into the patch file keeps the committed
+/// JSON correct across a CAS_VERSION bump, and leaves URLs that merely contain
+/// the word "maven" — upstream repo1.maven.org entries — untouched.
+fn expand_base_url(url: &str) -> String {
+    let base = crate::common::BASE_URL.as_str();
+    url.replace(
+        "${BASE_URL}/maven/",
+        &format!("{base}/v{}/maven/", crate::services::cas::CAS_VERSION),
+    )
+    .replace("${BASE_URL}", base)
+}
+
 /// Pre-process a patch by replacing ${BASE_URL} placeholders
 fn pre_process_patch(patch: &LibraryPatch) -> LibraryPatch {
     fn patch_url(url: &mut String) {
-        *url = url.replace("${BASE_URL}", crate::common::BASE_URL.as_str());
+        *url = expand_base_url(url);
     }
 
     fn patch_downloads(downloads: &mut LibraryDownloads) {
@@ -164,4 +180,45 @@ fn pre_process_patch(patch: &LibraryPatch) -> LibraryPatch {
         }
     }
     patch_copy
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mirrored_maven_url_gets_the_cas_versioned_prefix() {
+        // The mirror is uploaded under v{CAS_VERSION}/maven/, so a patch URL
+        // that resolves to it has to carry the same prefix or 404.
+        let base = crate::common::BASE_URL.as_str();
+        let version = crate::services::cas::CAS_VERSION;
+
+        assert_eq!(
+            expand_base_url(
+                "${BASE_URL}/maven/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar"
+            ),
+            format!(
+                "{base}/v{version}/maven/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar"
+            )
+        );
+    }
+
+    #[test]
+    fn a_placeholder_outside_the_mirror_expands_to_the_bare_base() {
+        let base = crate::common::BASE_URL.as_str();
+
+        assert_eq!(
+            expand_base_url("${BASE_URL}/something-else.json"),
+            format!("{base}/something-else.json")
+        );
+    }
+
+    #[test]
+    fn an_upstream_maven_url_is_left_alone() {
+        // Contains "maven" but no placeholder: rewriting it would point a
+        // patched library at our CDN for an artifact we never mirrored.
+        let upstream = "https://repo1.maven.org/maven2/org/x/1.0/x-1.0.jar";
+
+        assert_eq!(expand_base_url(upstream), upstream);
+    }
 }

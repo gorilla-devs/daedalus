@@ -42,7 +42,13 @@ pub fn map_log4j_artifact(
 
     if parsed <= cutoff_2_0 {
         debug!("log4j use beta9 patch");
-        return Ok(Some(("2.0-beta9-fixed".to_string(), format_url("maven/"))));
+        return Ok(Some((
+            "2.0-beta9-fixed".to_string(),
+            format_url(&format!(
+                "v{}/maven/",
+                crate::services::cas::CAS_VERSION
+            )),
+        )));
     }
     if parsed < cutoff_2_17_1 {
         debug!("bump log4j to 2.17.1");
