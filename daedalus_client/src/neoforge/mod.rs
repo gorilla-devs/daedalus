@@ -90,6 +90,16 @@ pub async fn retrieve_data(
                 ));
             }
         };
+    crate::common::manifest_merge::report_absent_upstream(
+        &old_versions,
+        &maven_metadata
+            .values()
+            .flatten()
+            .map(|(loader_version, _)| loader_version.clone())
+            .collect(),
+        "neoforge",
+    );
+
     let old_versions = Arc::new(Mutex::new(old_versions));
 
     let versions: Arc<Mutex<Vec<daedalus::modded::Version>>> =

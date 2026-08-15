@@ -6,7 +6,60 @@
 use crate::services::discord;
 use daedalus::minecraft::VersionManifest;
 use daedalus::modded::Version;
-use tracing::info;
+use std::collections::HashSet;
+use tracing::{info, warn};
+
+/// Published loader builds that upstream no longer lists.
+///
+/// Nothing prunes them: the merge is deliberately additive so a truncated or
+/// failed upstream response can never unpublish content, and instances pinned
+/// to a build keep resolving it. The cost of that safety is that a build
+/// withdrawn upstream is served forever with no signal, so report it and let a
+/// human decide rather than letting it accumulate silently.
+///
+/// Reports one aggregated line per loader rather than one per build — the same
+/// set is absent on every subsequent cycle, and a per-build line would bury the
+/// signal it exists to provide.
+///
+/// An empty `upstream_ids` is treated as "unknown", not "everything was
+/// delisted": a fetch that returned nothing must not look like mass withdrawal.
+pub fn report_absent_upstream(
+    published: &[Version],
+    upstream_ids: &HashSet<String>,
+    loader_name: &str,
+) -> Vec<String> {
+    if upstream_ids.is_empty() {
+        return Vec::new();
+    }
+
+    let mut absent: Vec<String> = published
+        .iter()
+        .flat_map(|version| version.loaders.iter())
+        .map(|loader| loader.id.clone())
+        .filter(|id| !upstream_ids.contains(id))
+        .collect();
+    absent.sort();
+    absent.dedup();
+
+    if !absent.is_empty() {
+        let sample = absent
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        warn!(
+            loader = %loader_name,
+            count = absent.len(),
+            sample = %sample,
+            "Published builds are no longer listed upstream; they stay published \
+             because the merge is additive, so remove them deliberately if they \
+             should go"
+        );
+    }
+
+    absent
+}
 
 /// Merge newly generated loader versions onto the previous manifest.
 ///
@@ -170,6 +223,62 @@ pub fn sort_loaders_by_metadata(
 mod tests {
     use super::*;
     use daedalus::modded::LoaderVersion;
+
+    fn published(builds: &[&str]) -> Vec<Version> {
+        vec![Version {
+            id: "1.21".to_string(),
+            stable: true,
+            loaders: builds
+                .iter()
+                .map(|id| LoaderVersion {
+                    id: id.to_string(),
+                    url: format!("https://example.com/{id}.json"),
+                    stable: true,
+                    original_sha1: None,
+                })
+                .collect(),
+        }]
+    }
+
+    fn upstream(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_build_upstream_dropped_is_reported() {
+        let absent = report_absent_upstream(
+            &published(&["0.17.5-beta.4", "0.17.5-beta.6"]),
+            &upstream(&["0.17.5-beta.6", "0.17.6"]),
+            "quilt",
+        );
+
+        assert_eq!(absent, vec!["0.17.5-beta.4".to_string()]);
+    }
+
+    #[test]
+    fn an_empty_upstream_list_reports_nothing() {
+        // A fetch that came back empty means "unknown", not "everything was
+        // withdrawn". Reporting here would flag the entire manifest every time
+        // upstream had a bad minute.
+        let absent = report_absent_upstream(
+            &published(&["0.17.5-beta.4", "0.17.5-beta.6"]),
+            &upstream(&[]),
+            "quilt",
+        );
+
+        assert!(absent.is_empty());
+    }
+
+    #[test]
+    fn nothing_is_reported_when_upstream_still_lists_everything() {
+        let absent = report_absent_upstream(
+            &published(&["0.17.6"]),
+            &upstream(&["0.17.6", "0.17.7"]),
+            "quilt",
+        );
+
+        assert!(absent.is_empty());
+    }
 
     #[test]
     fn test_merge_adds_new_minecraft_version() {

@@ -226,6 +226,16 @@ impl<S: LoaderStrategy> LoaderProcessor<S> {
         let old_manifest_was_present = old_versions.is_some();
         let mut versions = old_versions.unwrap_or_default();
 
+        crate::common::manifest_merge::report_absent_upstream(
+            &versions,
+            &list
+                .loader()
+                .iter()
+                .map(|l| l.version().to_string())
+                .collect(),
+            self.strategy.name(),
+        );
+
         let dummy_replace_string = BRANDING
             .get()
             .expect("Branding must be set via Branding::set_branding before retrieve_data")

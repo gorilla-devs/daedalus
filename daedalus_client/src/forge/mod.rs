@@ -104,6 +104,12 @@ pub async fn retrieve_data(
                 ));
             }
         };
+    crate::common::manifest_merge::report_absent_upstream(
+        &old_versions,
+        &maven_metadata.values().flatten().cloned().collect(),
+        "forge",
+    );
+
     let old_versions = Arc::new(Mutex::new(old_versions));
 
     let mc_library_cache_mutex =
