@@ -23,8 +23,31 @@ where
 {
     let s = String::deserialize(deserializer)?;
 
+    // Forge has published version.json files with malformed offsets like
+    // "+0:00" (single-digit hour). Normalize trailing "[+-]H:MM" to
+    // "[+-]0H:MM" so chrono's strict parsers accept it.
+    let normalized = {
+        let bytes = s.as_bytes();
+        let n = bytes.len();
+        if n >= 5
+            && matches!(bytes[n - 5], b'+' | b'-')
+            && bytes[n - 4].is_ascii_digit()
+            && bytes[n - 3] == b':'
+            && bytes[n - 2].is_ascii_digit()
+            && bytes[n - 1].is_ascii_digit()
+        {
+            let mut fixed = String::with_capacity(n + 1);
+            fixed.push_str(&s[..n - 4]);
+            fixed.push('0');
+            fixed.push_str(&s[n - 4..]);
+            fixed
+        } else {
+            s.clone()
+        }
+    };
+
     // Try parsing with timezone first (standard ISO 8601)
-    serde_json::from_str::<DateTime<Utc>>(&format!("\"{s}\""))
+    serde_json::from_str::<DateTime<Utc>>(&format!("\"{normalized}\""))
         // Fallback: parse as naive datetime (no timezone) and assume UTC
         // Uses %.f to accept any number of fractional seconds (not just 9)
         .or_else(|_| {
@@ -287,6 +310,50 @@ mod tests {
             "type": "release"
         }))
         .unwrap()
+    }
+
+    fn partial_with_time(
+        time: &str,
+    ) -> Result<PartialVersionInfo, serde_json::Error> {
+        serde_json::from_value(serde_json::json!({
+            "id": "1.21.11-forge-61.1.7",
+            "inheritsFrom": "1.21.11",
+            "releaseTime": time,
+            "time": time,
+            "libraries": [],
+            "type": "release"
+        }))
+    }
+
+    #[test]
+    fn a_single_digit_timezone_offset_still_parses() {
+        // Forge shipped 1.21.11-61.1.7 through 61.1.12 with "+0:00", which is
+        // not valid RFC 3339. Rejecting it loses the entire build: the version
+        // is dropped with a warning and never published.
+        let malformed = partial_with_time("2026-05-27T14:13:59+0:00")
+            .expect("a single-digit offset must not cost us the build");
+        let canonical = partial_with_time("2026-05-27T14:13:59+00:00").unwrap();
+
+        assert_eq!(malformed.time, canonical.time);
+        assert_eq!(malformed.release_time, canonical.release_time);
+    }
+
+    #[test]
+    fn a_negative_single_digit_offset_still_parses() {
+        let malformed = partial_with_time("2026-05-27T14:13:59-5:00").unwrap();
+        let canonical = partial_with_time("2026-05-27T14:13:59-05:00").unwrap();
+
+        assert_eq!(malformed.time, canonical.time);
+    }
+
+    #[test]
+    fn well_formed_timestamps_are_left_alone() {
+        // The normalisation keys off the last five bytes, so it must not fire
+        // on a trailing "Z" or an already two-digit offset.
+        let zulu = partial_with_time("2026-05-27T14:13:59Z").unwrap();
+        let offset = partial_with_time("2026-05-27T14:13:59+00:00").unwrap();
+
+        assert_eq!(zulu.time, offset.time);
     }
 
     #[test]
