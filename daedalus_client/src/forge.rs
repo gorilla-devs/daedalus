@@ -23,10 +23,12 @@ use tokio::sync::{Mutex, Semaphore};
 lazy_static! {
     static ref FORGE_MANIFEST_V1_QUERY: VersionReq =
         VersionReq::parse(">=8.0.684, <23.5.2851").unwrap();
-    static ref FORGE_MANIFEST_V2_QUERY_P1: VersionReq =
-        VersionReq::parse(">=23.5.2851, <31.2.52").unwrap();
-    static ref FORGE_MANIFEST_V2_QUERY_P2: VersionReq =
-        VersionReq::parse(">=32.0.1, <37.0.0").unwrap();
+    /// install_profile.json format 2, one contiguous range: 1.12.2's
+    /// 14.23.5.2851 through the 1.16.x line. The 1.15.2 tail (31.2.52-31.2.62,
+    /// including the upstream-recommended 31.2.57) sits inside it and is
+    /// handled identically to its neighbours.
+    static ref FORGE_MANIFEST_V2_QUERY: VersionReq =
+        VersionReq::parse(">=23.5.2851, <37.0.0").unwrap();
     static ref FORGE_MANIFEST_V3_QUERY: VersionReq =
         VersionReq::parse(">=37.0.0").unwrap();
 }
@@ -198,8 +200,7 @@ pub async fn retrieve_data(
                 let version = Version::parse(&loader_version)?;
 
                 if FORGE_MANIFEST_V1_QUERY.matches(&version)
-                    || FORGE_MANIFEST_V2_QUERY_P1.matches(&version)
-                    || FORGE_MANIFEST_V2_QUERY_P2.matches(&version)
+                    || FORGE_MANIFEST_V2_QUERY.matches(&version)
                     || FORGE_MANIFEST_V3_QUERY.matches(&version)
                 {
                     loaders.push((loader_version_full, version))
@@ -374,7 +375,7 @@ pub async fn retrieve_data(
                                         url: format_url(&version_path),
                                         stable: false
                                     }));
-                                } else if FORGE_MANIFEST_V2_QUERY_P1.matches(&version) || FORGE_MANIFEST_V2_QUERY_P2.matches(&version) || FORGE_MANIFEST_V3_QUERY.matches(&version) {
+                                } else if FORGE_MANIFEST_V2_QUERY.matches(&version) || FORGE_MANIFEST_V3_QUERY.matches(&version) {
                                     let mut archive_clone = archive.clone();
                                     let mut profile = tokio::task::spawn_blocking(move || {
                                         let mut install_profile = archive_clone.by_name("install_profile.json")?;
