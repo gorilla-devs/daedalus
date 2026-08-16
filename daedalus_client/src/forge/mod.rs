@@ -43,6 +43,24 @@ static FORGE_MANIFEST_V2_QUERY: LazyLock<VersionReq> =
 static FORGE_MANIFEST_V3_QUERY: LazyLock<VersionReq> =
     LazyLock::new(|| VersionReq::parse(">=37.0.0").unwrap());
 
+/// Lower bound of the oldest installer format we support. Everything below it
+/// is Forge for Minecraft 1.1-1.5.x, whose installer format will never be
+/// added.
+static FORGE_SUPPORTED_FLOOR: LazyLock<Version> =
+    LazyLock::new(|| Version::parse("8.0.684").unwrap());
+
+/// Whether an unsupported version is one of the permanently-excluded ancient
+/// builds, as opposed to something that should have matched.
+///
+/// The three format ranges are contiguous from the floor upwards, so a version
+/// at or above it that matches none of them means Forge shipped a family we
+/// don't know about, or the ranges have a gap. That is worth a line each; the
+/// hundreds below the floor are not, and logging them per-version is what hid a
+/// real gap in the ranges for weeks.
+fn is_below_supported_floor(version: &Version) -> bool {
+    version < &FORGE_SUPPORTED_FLOOR
+}
+
 // Re-export version utilities for convenience
 pub use version::{
     extract_hash_from_cas_url, fetch_generated_version_info,
@@ -135,6 +153,8 @@ pub async fn retrieve_data(
         Arc::new(DashMap::new());
 
     let mut version_futures = Vec::new();
+    // Counted, not logged per-version: see is_below_supported_floor.
+    let mut below_floor = 0usize;
 
     for (minecraft_version, loader_versions) in maven_metadata.clone() {
         let mut loaders = Vec::new();
@@ -183,14 +203,12 @@ pub async fn retrieve_data(
                     || FORGE_MANIFEST_V3_QUERY.matches(&version)
                 {
                     loaders.push((loader_version_full, version))
+                } else if is_below_supported_floor(&version) {
+                    below_floor += 1;
                 } else {
-                    // Version parses but falls into none of our supported
-                    // installer-format ranges. Warn rather than drop it
-                    // silently, so a new Forge family that needs its own query
-                    // range gets noticed instead of vanishing.
                     warn!(
                         forge_id = %loader_version_full,
-                        "Forge - version matches no installer-format query range; skipping"
+                        "Forge - version is at or above the supported floor but matches no installer-format query range; a family or range is missing"
                     );
                 }
             }
@@ -848,6 +866,14 @@ pub async fn retrieve_data(
         }
     }
 
+    if below_floor > 0 {
+        info!(
+            count = below_floor,
+            floor = %*FORGE_SUPPORTED_FLOOR,
+            "Forge - skipped versions below the oldest supported installer format"
+        );
+    }
+
     {
         let mut successful = 0;
         let mut failed = 0;
@@ -967,4 +993,35 @@ pub async fn fetch_forge_promotions(
         recommended.insert(format!("{}-{}", mc, short_forge_version));
     }
     Ok(recommended)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_ancient_build_is_below_the_supported_floor() {
+        // Forge for Minecraft 1.1-1.5.x, normalised by the loop above. These
+        // are permanently unsupported and are counted rather than logged.
+        assert!(is_below_supported_floor(&Version::parse("1.2.1").unwrap()));
+        assert!(is_below_supported_floor(&Version::parse("7.8.1").unwrap()));
+    }
+
+    #[test]
+    fn the_floor_itself_is_supported() {
+        assert!(!is_below_supported_floor(
+            &Version::parse("8.0.684").unwrap()
+        ));
+    }
+
+    #[test]
+    fn a_build_falling_in_a_range_gap_is_not_treated_as_ancient() {
+        // 1.15.2-31.2.57 -- the upstream-recommended build that a gap between
+        // two format ranges silently dropped for weeks. It is far above the
+        // floor, so it must be reported individually rather than counted away
+        // with the 2012 builds; that is the whole point of the split.
+        assert!(!is_below_supported_floor(
+            &Version::parse("31.2.57").unwrap()
+        ));
+    }
 }
