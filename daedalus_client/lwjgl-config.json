@@ -1,10 +1,6 @@
 {
   "accept": [
     {
-      "match": "87d20523db83ea582e37ca0034647803ff62aa3e",
-      "_comment": "#3.4.1 (2026-06-08 13:04:25 UTC) natives: [] Split: true. 26.2-pre variant: includes lwjgl-vulkan/-shaderc/-spvc/-vma and the unsafe core jar (drop-in core build, verified same base classes); serves every version that suggests 3.4.1."
-    },
-    {
       "match": "2eb6e2bfa1f9435e1b414c08cf8471f75d4173f2",
       "_comment": "#3.3.6 (2025-10-21 11:38:51 UTC) natives: [] Split: true. Used by 25w43a only."
     },
@@ -67,6 +63,14 @@
       "match": "006718e3459b13572cc23d91dc7b25718fde46ba",
       "_comment": "#2.9.0 (2013-10-11 15:09:17 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
       "equals": "27dcadcba29a1a7127880ca1a77efa9ece866f24 / # 2.9.0 (2013-09-06 12:31:58+00:00)"
+    },
+    {
+      "match": "7b1e4fe782cecf9d0b3739eb836c2a5075334345",
+      "_comment": "#3.4.1 (2026-07-16 13:59:30 UTC) natives: [] Split: true. 26.3-snapshot-4 variant: adds lwjgl-sdl and drops glfw. Published for every version suggesting 3.4.1 -- glfw is re-added by the 'Add GLFW to LWJGL 3.4.1 for older versions' library patch, so the one group serves both the pre-SDL and SDL shapes."
+    },
+    {
+      "match": "d5046f446db390c30012501d11cd9077dfe1e1a7",
+      "_comment": "#3.4.2 (2026-07-21 11:45:42 UTC) natives: [] Split: true. Sole 3.4.2 variant so far, shared by 26.3-snapshot-5 through -8; SDL module set. Its linux-arm32/arm64/riscv64 natives are mirrored via library-patches (Mojang ships none)."
     }
   ],
   "reject": [
@@ -142,6 +146,10 @@
       "match": "7c776ed8420502f4839717fd1cfecab062f1f9b2",
       "_comment": "#2.9.0 (2013-04-25 15:45:00 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
       "equals": "6442fc475f501fbd0fc4244fd1c38c02d9ebaf7e / # 2.9.0 (2011-03-30 22:00:00+00:00) fine but newer variant available"
+    },
+    {
+      "match": "87d20523db83ea582e37ca0034647803ff62aa3e",
+      "_comment": "#3.4.1 (2026-06-08 13:04:25 UTC) natives: [] Split: true. 26.2-pre variant: the pre-SDL module set (glfw, no lwjgl-sdl); superseded by the 26.3-snapshot-4 variant, which is published instead with glfw re-added via library-patches so older versions still resolve it."
     }
   ]
 }
