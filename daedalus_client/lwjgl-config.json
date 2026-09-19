@@ -2,7 +2,8 @@
   "accept": [
     {
       "match": "2eb6e2bfa1f9435e1b414c08cf8471f75d4173f2",
-      "_comment": "#3.3.6 (2025-10-21 11:38:51 UTC) natives: [] Split: true. Used by 25w43a only."
+      "_comment": "#3.3.6 (2025-10-21 11:38:51 UTC) natives: [] Split: true. Used by 25w43a only.",
+      "equals": "2b00f31688148fc95dbc8c8ef37308942cf0dce0 / # PASS 3.3.6 (2025-10-21 11:38:51+00:00)"
     },
     {
       "match": "4abf9e55d73bb6502e84cb9eff5d9ab2e2895a33",
@@ -17,7 +18,7 @@
     {
       "match": "454646b137b4de147e253040d0fbaaad1001b69b",
       "_comment": "#3.3.1 (2022-12-05 13:21:34 UTC) natives: [] Split: true",
-      "equals": "??"
+      "equals": "none / # no Prism entry for this variant"
     },
     {
       "match": "5b89cf6b701884ebd2e4880d98a86bbf647cc8f2",
@@ -66,21 +67,30 @@
     },
     {
       "match": "7b1e4fe782cecf9d0b3739eb836c2a5075334345",
-      "_comment": "#3.4.1 (2026-07-16 13:59:30 UTC) natives: [] Split: true. 26.3-snapshot-4 variant: adds lwjgl-sdl and drops glfw. Published for every version suggesting 3.4.1 -- glfw is re-added by the 'Add GLFW to LWJGL 3.4.1 for older versions' library patch, so the one group serves both the pre-SDL and SDL shapes."
+      "_comment": "#3.4.1 (2026-07-16 13:59:30 UTC) natives: [] Split: true. 26.3-snapshot-4 variant: adds lwjgl-sdl and drops glfw. Published for every version suggesting 3.4.1 -- glfw is re-added by the 'Add GLFW to LWJGL 3.4.1 for older versions' library patch, so the one group serves both the pre-SDL and SDL shapes.",
+      "equals": "317adbdf3b02845f7240549bb4aaa5fcd1344c49 / # PASS 3.4.1 (2026-07-16 13:59:30+00:00) SDL"
     },
     {
       "match": "d5046f446db390c30012501d11cd9077dfe1e1a7",
-      "_comment": "#3.4.2 (2026-07-21 11:45:42 UTC) natives: [] Split: true. Sole 3.4.2 variant so far, shared by 26.3-snapshot-5 through -8; SDL module set. Its linux-arm32/arm64/riscv64 natives are mirrored via library-patches (Mojang ships none)."
+      "_comment": "#3.4.2 (2026-07-21 11:45:42 UTC) natives: [] Split: true. 26.3-snapshot-5 through -8; SDL module set, and the superset of the two 3.4.2 shapes -- 26.3-snapshot-9 dropped lwjgl-tinyfd and is rejected below. Its linux-arm32/arm64/riscv64 natives are mirrored via library-patches (Mojang ships none).",
+      "equals": "fd17e8d3473d57ff4141a36cbfcfabade5fbb7c5 / # PASS 3.4.2 (2026-07-21 11:45:42+00:00)"
+    },
+    {
+      "match": "241a181f3f2a6895413708f16a6deaadbc6fcf88",
+      "_comment": "#3.4.3 (2026-09-01 11:29:01 UTC) natives: [] Split: true. 26.3-pre-1 variant: the most complete 3.4.3 shape -- it alone carries lwjgl-spng and the natives-windows-x86 classifiers that the later variants drop, and it is a strict superset of both. Published for every version suggesting 3.4.3 so the one group serves the 26.3 release and the earlier pre-releases alike.",
+      "equals": "40ee0dc8739c4539b51df3a92386941bd1d9d911 / # PASS 3.4.3 (2026-09-01 11:29:01+00:00)"
     }
   ],
   "reject": [
     {
       "match": "820490e4cebf628aa23dbca3e058b225ff6e4c73",
-      "_comment": "#3.4.1 (2026-05-19 15:19:20 UTC) natives: [] Split: true. 26.2-snapshot variant: has the Vulkan modules but the plain core jar; superseded by the 26.2-pre variant."
+      "_comment": "#3.4.1 (2026-05-19 15:19:20 UTC) natives: [] Split: true. 26.2-snapshot variant: has the Vulkan modules but the plain core jar; superseded by the 26.2-pre variant.",
+      "equals": "472ee33f7a1294822aa2d617cd6ccdfd92f949a0 / # BAD 3.4.1 (2026-04-07 11:52:43+00:00) vulkan, has significant performance regressions"
     },
     {
       "match": "fcf37d03db6ad0b457f9c23a5bfe91f5b96975b2",
-      "_comment": "#3.4.1 (2026-03-24 12:11:04 UTC) natives: [] Split: true. 26.1 variant without the Vulkan modules; superseded by the 26.2-pre variant."
+      "_comment": "#3.4.1 (2026-03-24 12:11:04 UTC) natives: [] Split: true. 26.1 variant without the Vulkan modules; superseded by the 26.2-pre variant.",
+      "equals": "1fd0e4d1f0f7c97e8765a69d38225e1f27ee14ef / # BAD 3.4.1 (2026-02-17 12:42:24+00:00) before vulkan"
     },
     {
       "match": "465d40d8db05f5e04055ddf0582ab143d10e0e9f",
@@ -100,32 +110,32 @@
     {
       "match": "4320441f17a1c53bbab32e31b530651d972d998a",
       "_comment": "#3.3.1 (2023-08-17 11:39:08 UTC) natives: [] Split: true",
-      "equals": "??"
+      "equals": "8836c419f90f69a278b97d945a34af165c24ff60 / # BAD 3.3.1 (2022-05-18 13:51:54+00:00) split natives, with workaround, replaced by 23w26a; 54c4fb1d6a96ac3007c947bf310c8bcf94a862be / # PASS 3.3.1 (2023-04-20 11:55:19+00:00) split natives, with WoA natives"
     },
     {
       "match": "7719b93913cd34c1055d34824f4aa44159ad60a7",
       "_comment": "#3.3.1 (2022-05-12 15:36:11 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: true",
-      "equals": "??"
+      "equals": "3c624b94c06dbc4abae08fe6156d74abe4a2cca5 / # BAD 3.3.1 (2022-05-04 14:41:35+00:00) we already have a nice 3.3.1; e1106ca765798218323b7a6d7528050260ea9d88 / # BAD 3.3.1 (2022-05-04 14:41:35+00:00) doesn't use split natives"
     },
     {
       "match": "8572ad80f0a5755aa645cecf66b8be3012fd32f0",
       "_comment": "#3.3.1 (2022-04-27 15:54:15 UTC) natives: [[Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux], [Osx, Windows, Linux]] Split: false",
-      "equals": "??"
+      "equals": "none / # no Prism entry for this variant"
     },
     {
       "match": "236a22a6deafe4747e1066fadd4bc83faf6d557a",
       "_comment": "#3.2.2 (2022-04-13 15:41:17 UTC) natives: [[Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux]] Split: false",
-      "equals": "??"
+      "equals": "90b3d9ca01058286c033b6b7ae7f6dc370a04015 / # BAD 3.2.2 (2022-03-31 14:53:25+00:00) only linux, windows; d986df9598fa2bcf4a5baab5edf044548e66d011 / # BAD 3.2.2 (2021-12-10 03:36:38+00:00) only linux, windows"
     },
     {
       "match": "c09f4588dd082778cae54ea93f4168498d26299a",
       "_comment": "#3.2.2 (2019-11-08 12:42:44 UTC) natives: [[Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux]] Split: false",
-      "equals": "??"
+      "equals": "51d8ff5a7efc949b4ad2088930e151d6b88ba616 / # BAD 3.2.2 (2019-07-19 09:25:47+00:00) only linux, windows"
     },
     {
       "match": "d454d79d4cba8009196d8ccef4f51aca56047f13",
       "_comment": "#3.2.2 (2021-10-13 15:23:23 UTC) natives: [[Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux], [Windows, Linux]] Split: false",
-      "equals": "??"
+      "equals": "090cec3577ecfe438b890b2a9410ea07aa725e16 / # BAD 3.2.2 (2021-04-07 14:04:09+00:00) only linux, windows"
     },
     {
       "match": "cc6675018d4c9f2bef861ea94e539b7418d108ad",
@@ -149,7 +159,26 @@
     },
     {
       "match": "87d20523db83ea582e37ca0034647803ff62aa3e",
-      "_comment": "#3.4.1 (2026-06-08 13:04:25 UTC) natives: [] Split: true. 26.2-pre variant: the pre-SDL module set (glfw, no lwjgl-sdl); superseded by the 26.3-snapshot-4 variant, which is published instead with glfw re-added via library-patches so older versions still resolve it."
+      "_comment": "#3.4.1 (2026-06-08 13:04:25 UTC) natives: [] Split: true. 26.2-pre variant: the pre-SDL module set (glfw, no lwjgl-sdl); superseded by the 26.3-snapshot-4 variant, which is published instead with glfw re-added via library-patches so older versions still resolve it.",
+      "equals": "0ab5c885c21dfd8133277e8f557839f5fab35311 / # BAD 3.4.1 (2026-05-26 13:48:31+00:00) no SDL"
+    },
+    {
+      "match": "9d9eb0a0868d155e2e09dddd3fc0178c021801f3",
+      "_comment": "#3.4.3 (2026-09-15 11:23:02 UTC) natives: [] Split: true. Shared by 26.3-pre-3, 26.3-rc-1/2/3 and the 26.3 release: drops lwjgl-spng and the windows-x86 natives. A strict subset of the 26.3-pre-1 variant, which is published instead.",
+      "reason": "no lwjgl-spng; strict subset of the published 26.3-pre-1 variant",
+      "equals": "02a9f886ad37d391d2b34a08800e8bd852b92059 / # BAD 3.4.3 (2026-09-08 13:04:44+00:00) no lwjgl-spng"
+    },
+    {
+      "match": "ca87e70ede260daba3dd7dfc295f8cf6527469de",
+      "_comment": "#3.4.3 (2026-09-04 11:54:52 UTC) natives: [] Split: true. Shared by 26.3-snapshot-10 and 26.3-pre-2: drops lwjgl-spng but still carries the windows-x86 natives. Subset of the 26.3-pre-1 variant, which is published instead.",
+      "reason": "no lwjgl-spng; subset of the published 26.3-pre-1 variant",
+      "equals": "b510ab8669cd8b031298f171aa810c7d3e7acb8f / # BAD 3.4.3 (2026-08-25 12:53:43+00:00) no lwjgl-spng"
+    },
+    {
+      "match": "67c4a141f654b3d9cb41adc797dc168a9dccdde3",
+      "_comment": "#3.4.2 (2026-08-17 11:46:16 UTC) natives: [] Split: true. 26.3-snapshot-9 variant: drops all seven lwjgl-tinyfd entries. It appeared 57 minutes after the last successful 3.4.2 publish and, being unmarked, held org.lwjgl3/3.4.2.json frozen at 2026-08-17 until this entry was added.",
+      "reason": "removed tinyfd; subset of the published 26.3-snapshot-5 variant",
+      "equals": "17754e4d1045947c3b99d22b9db7e75bfb6d252a / # BAD 3.4.2 (2026-08-17 11:46:16+00:00) removed tinyfd"
     }
   ]
 }
