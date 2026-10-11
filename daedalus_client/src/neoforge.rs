@@ -43,6 +43,11 @@ pub async fn retrieve_data(
         let mut loaders = Vec::new();
 
         for (loader_version, new_forge) in loader_versions {
+            if BROKEN_UPSTREAM_VERSIONS.contains(&loader_version.as_str()) {
+                info!("Skipping NeoForge version '{}' broken upstream", loader_version);
+                continue;
+            }
+
             // Validate version format using lenient_semver (handles 4+ component versions like "26.1.0.0-alpha.1")
             if let Err(e) = lenient_semver::parse(&loader_version) {
                 warn!("Skipping NeoForge version '{}' with invalid format: {}", loader_version, e);
@@ -413,6 +418,8 @@ pub async fn retrieve_data(
 
     Ok(())
 }
+
+const BROKEN_UPSTREAM_VERSIONS: &[&str] = &["21.4.31-beta"];
 
 const DEFAULT_MAVEN_METADATA_URL_1: &str =
     "https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml";
