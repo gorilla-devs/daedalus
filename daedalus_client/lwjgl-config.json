@@ -76,9 +76,9 @@
       "equals": "fd17e8d3473d57ff4141a36cbfcfabade5fbb7c5 / # PASS 3.4.2 (2026-07-21 11:45:42+00:00)"
     },
     {
-      "match": "241a181f3f2a6895413708f16a6deaadbc6fcf88",
-      "_comment": "#3.4.3 (2026-09-01 11:29:01 UTC) natives: [] Split: true. 26.3-pre-1 variant: the most complete 3.4.3 shape -- it alone carries lwjgl-spng and the natives-windows-x86 classifiers that the later variants drop, and it is a strict superset of both. Published for every version suggesting 3.4.3 so the one group serves the 26.3 release and the earlier pre-releases alike.",
-      "equals": "40ee0dc8739c4539b51df3a92386941bd1d9d911 / # PASS 3.4.3 (2026-09-01 11:29:01+00:00)"
+      "match": "da7051e48ebb1138675d80fcec1f34a730cf7184",
+      "_comment": "#3.4.3 (2026-09-01 11:29:01 UTC) natives: [] Split: true. 26.3-pre-1 variant: the most complete 3.4.3 shape -- it alone carries lwjgl-spng and the natives-windows-x86 classifiers that the later variants drop, and it is a strict superset of both. Published for every version suggesting 3.4.3 so the one group serves the 26.3 release and the earlier pre-releases alike. Since 2026-11-24 Mojang ships lwjgl-freetype 3.4.3-mojang-2.15.0 (a FreeType 2.15.0 security fix) in every 3.4.3 version; its natives-windows-x86 entry has no download. Replaces 241a181f, the same shape with stock lwjgl-freetype 3.4.3.",
+      "equals": "c2405f432a298301d2de6a3c92240acc5a9b9acc / # PASS 3.4.3 (2026-09-01 11:29:01+00:00)"
     }
   ],
   "reject": [
@@ -163,16 +163,16 @@
       "equals": "0ab5c885c21dfd8133277e8f557839f5fab35311 / # BAD 3.4.1 (2026-05-26 13:48:31+00:00) no SDL"
     },
     {
-      "match": "9d9eb0a0868d155e2e09dddd3fc0178c021801f3",
-      "_comment": "#3.4.3 (2026-09-15 11:23:02 UTC) natives: [] Split: true. Shared by 26.3-pre-3, 26.3-rc-1/2/3 and the 26.3 release: drops lwjgl-spng and the windows-x86 natives. A strict subset of the 26.3-pre-1 variant, which is published instead.",
+      "match": "cc78664ee7ff7d37d41460951bafecbbd5bff125",
+      "_comment": "#3.4.3 (2026-09-15 11:23:02 UTC) natives: [] Split: true. Shared by 26.3-pre-3, 26.3-rc-1/2/3, the 26.3 release, every 26.4 snapshot and 26.4-pre-1: drops lwjgl-spng and the windows-x86 natives. A strict subset of the 26.3-pre-1 variant, which is published instead. Replaces 9d9eb0a0 after Mojang's 2026-11-24 switch to lwjgl-freetype 3.4.3-mojang-2.15.0.",
       "reason": "no lwjgl-spng; strict subset of the published 26.3-pre-1 variant",
-      "equals": "02a9f886ad37d391d2b34a08800e8bd852b92059 / # BAD 3.4.3 (2026-09-08 13:04:44+00:00) no lwjgl-spng"
+      "equals": "941b1e03fb28e63748fbcc988b051cee73ee586b / # BAD 3.4.3 (2026-09-08 13:04:44+00:00) no lwjgl-spng"
     },
     {
-      "match": "ca87e70ede260daba3dd7dfc295f8cf6527469de",
-      "_comment": "#3.4.3 (2026-09-04 11:54:52 UTC) natives: [] Split: true. Shared by 26.3-snapshot-10 and 26.3-pre-2: drops lwjgl-spng but still carries the windows-x86 natives. Subset of the 26.3-pre-1 variant, which is published instead.",
+      "match": "a54b1e0fc443b77e7d700ae77bff455d4cd3299e",
+      "_comment": "#3.4.3 (2026-09-04 11:54:52 UTC) natives: [] Split: true. Shared by 26.3-snapshot-10 and 26.3-pre-2: drops lwjgl-spng but still carries the windows-x86 natives. Subset of the 26.3-pre-1 variant, which is published instead. Replaces ca87e70e after Mojang's 2026-11-24 switch to lwjgl-freetype 3.4.3-mojang-2.15.0.",
       "reason": "no lwjgl-spng; subset of the published 26.3-pre-1 variant",
-      "equals": "b510ab8669cd8b031298f171aa810c7d3e7acb8f / # BAD 3.4.3 (2026-08-25 12:53:43+00:00) no lwjgl-spng"
+      "equals": "8ba8287872295c37a70f7fab2a4febd6a98710bc / # BAD 3.4.3 (2026-09-04 11:54:52+00:00) no lwjgl-spng"
     },
     {
       "match": "67c4a141f654b3d9cb41adc797dc168a9dccdde3",

@@ -8,6 +8,7 @@
       "org.lwjgl:lwjgl-freetype-natives-macos-arm64:3.4.1",
       "org.lwjgl:lwjgl-freetype-natives-macos-arm64:3.4.2",
       "org.lwjgl:lwjgl-freetype-natives-macos-arm64:3.4.3",
+      "org.lwjgl:lwjgl-freetype-natives-macos-arm64:3.4.3-mojang-2.15.0",
       "org.lwjgl:lwjgl-glfw-natives-macos-arm64:3.3.2",
       "org.lwjgl:lwjgl-glfw-natives-macos-arm64:3.3.3",
       "org.lwjgl:lwjgl-glfw-natives-macos-arm64:3.3.6",
@@ -84,6 +85,7 @@
       "org.lwjgl:lwjgl-freetype-natives-windows-arm64:3.4.1",
       "org.lwjgl:lwjgl-freetype-natives-windows-arm64:3.4.2",
       "org.lwjgl:lwjgl-freetype-natives-windows-arm64:3.4.3",
+      "org.lwjgl:lwjgl-freetype-natives-windows-arm64:3.4.3-mojang-2.15.0",
       "org.lwjgl:lwjgl-glfw-natives-windows-arm64:3.3.2",
       "org.lwjgl:lwjgl-glfw-natives-windows-arm64:3.3.3",
       "org.lwjgl:lwjgl-glfw-natives-windows-arm64:3.3.6",
@@ -5541,7 +5543,8 @@
   {
     "_comment": "Add linux-arm32 support for LWJGL 3.4.3",
     "match": [
-      "org.lwjgl:lwjgl-freetype:3.4.3"
+      "org.lwjgl:lwjgl-freetype:3.4.3",
+      "org.lwjgl:lwjgl-freetype:3.4.3-mojang-2.15.0"
     ],
     "additionalLibraries": [
       {
@@ -5827,7 +5830,8 @@
   {
     "_comment": "Add linux-arm64 support for LWJGL 3.4.3",
     "match": [
-      "org.lwjgl:lwjgl-freetype:3.4.3"
+      "org.lwjgl:lwjgl-freetype:3.4.3",
+      "org.lwjgl:lwjgl-freetype:3.4.3-mojang-2.15.0"
     ],
     "additionalLibraries": [
       {
@@ -6113,7 +6117,8 @@
   {
     "_comment": "Add linux-riscv64 support for LWJGL 3.4.3",
     "match": [
-      "org.lwjgl:lwjgl-freetype:3.4.3"
+      "org.lwjgl:lwjgl-freetype:3.4.3",
+      "org.lwjgl:lwjgl-freetype:3.4.3-mojang-2.15.0"
     ],
     "additionalLibraries": [
       {
